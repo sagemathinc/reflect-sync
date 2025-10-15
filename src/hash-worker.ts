@@ -20,26 +20,26 @@ async function sha256(path: string, size: number): Promise<string> {
   return h.digest("hex");
 }
 
-const updateHashStmt = `
-  UPDATE files SET hash=?, deleted=0, size=?, ctime=?, mtime=? WHERE path=?
-`;
-
-import Database from "better-sqlite3"; // optional: write hashes from worker
-// If you prefer all DB writes on main thread, postMessage(...) and let main flush.
-// If you want to avoid one big results array, you can have workers write directly:
-const db = new Database("alpha.db", { readonly: false });
+type Job = { path: string; size: number; ctime: number; mtime: number };
+type JobBatch = { jobs: Job[] };
 
 if (!parentPort) throw new Error("worker only");
 
-parentPort.on("message", async ({ path, size, ctime, mtime }) => {
-  try {
-    const hash = await sha256(path, size);
-    // Option A: send to main to batch (what you have today)
-    parentPort!.postMessage({ path, size, ctime, mtime, hash });
+parentPort.on("message", async (payload: JobBatch) => {
+  const jobs = payload.jobs || [];
+  const out: Array<
+    | { path: string; hash: string; ctime: number }
+    | { path: string; error: string }
+  > = [];
 
-    // Option B (optional): write directly, no big results buffer:
-    // db.prepare(updateHashStmt).run(hash, size, ctime, mtime, path);
-  } catch (err: any) {
-    parentPort!.postMessage({ path, error: err.message || String(err) });
+  for (const j of jobs) {
+    try {
+      const hash = await sha256(j.path, j.size);
+      out.push({ path: j.path, hash, ctime: j.ctime });
+    } catch (e: any) {
+      out.push({ path: j.path, error: e?.message || String(e) });
+    }
   }
+
+  parentPort!.postMessage({ done: out });
 });

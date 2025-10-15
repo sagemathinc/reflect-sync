@@ -1,153 +1,244 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import Database from "better-sqlite3";
 import { Worker } from "node:worker_threads";
-import { cpus } from "node:os";
+import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
 
-const db = new Database("alpha.db");
+type Row = {
+  path: string;
+  size: number;
+  ctime: number;
+  mtime: number;
+  hash: string | null;
+  last_seen: number;
+  hashed_ctime: number | null;
+};
+
+const DB_PATH = "alpha.db";
+const CPU_COUNT = Math.min(os.cpus().length, 8);
+const DB_BATCH_SIZE = 2000;
+const DISPATCH_BATCH = 256; // files per worker message
+
+// ----------------- SQLite setup -----------------
+const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
+
 db.exec(`
-  CREATE TABLE IF NOT EXISTS files (
-    path TEXT PRIMARY KEY,
-    size INTEGER,
-    ctime INTEGER,
-    mtime INTEGER,
-    hash TEXT,
-    deleted INTEGER DEFAULT 0,
-    last_seen INTEGER
-  )
+CREATE TABLE IF NOT EXISTS files (
+  path TEXT PRIMARY KEY,
+  size INTEGER,
+  ctime INTEGER,
+  mtime INTEGER,
+  hash TEXT,
+  deleted INTEGER DEFAULT 0,
+  last_seen INTEGER,
+  hashed_ctime INTEGER
+);
 `);
 
-const insert = db.prepare(`
-  INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen)
-  VALUES (@path,@size,@ctime,@mtime,@hash,0,@last_seen)
-  ON CONFLICT(path) DO UPDATE SET
-    size=excluded.size,
-    ctime=excluded.ctime,
-    mtime=excluded.mtime,
-    last_seen=excluded.last_seen,
-    -- keep prior hash unless we provide a new one later:
-    deleted=0
+function ensureColumn(col: string, def: string) {
+  try {
+    db.prepare(`ALTER TABLE files ADD COLUMN ${col} ${def}`).run();
+  } catch {
+    // ignore if it already exists
+  }
+}
+// For existing DBs that predate these:
+ensureColumn("last_seen", "INTEGER");
+ensureColumn("hashed_ctime", "INTEGER");
+
+const upsertMeta = db.prepare(`
+INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen,hashed_ctime)
+VALUES (@path,@size,@ctime,@mtime,@hash,0,@last_seen,@hashed_ctime)
+ON CONFLICT(path) DO UPDATE SET
+  size=excluded.size,
+  ctime=excluded.ctime,
+  mtime=excluded.mtime,
+  last_seen=excluded.last_seen,
+  deleted=0
+-- NOTE: we intentionally DO NOT overwrite hash or hashed_ctime here.
 `);
 
-// Batch transaction wrapper
-const batchInsert = db.transaction((rows: any[]) => {
-  for (const r of rows) insert.run(r);
+const applyMetaBatch = db.transaction((rows: Row[]) => {
+  for (const r of rows) upsertMeta.run(r);
 });
 
-// Flush a batch of rows to the DB
-function flushBatch(rows: any[], force = false) {
-  if (rows.length === 0) return;
-  batchInsert(rows);
-  rows.length = 0;
-}
+const applyHashBatch = db.transaction(
+  (rows: { path: string; hash: string; ctime: number }[]) => {
+    const stmt = db.prepare(
+      `UPDATE files
+       SET hash = ?, hashed_ctime = ?, deleted = 0
+       WHERE path = ?`,
+    );
+    for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
+  },
+);
 
-// ---------------- worker pool -----------------
-const CPU_COUNT = Math.max(1, Math.min(cpus().length, 8));
+// ----------------- Worker pool ------------------
+type Job = { path: string; size: number; ctime: number; mtime: number };
+type JobBatch = { jobs: Job[] };
+type Result =
+  | { path: string; hash: string; ctime: number }
+  | { path: string; error: string };
+
 const workers = Array.from(
   { length: CPU_COUNT },
   () => new Worker(new URL("./hash-worker.ts", import.meta.url)),
 );
 const freeWorkers: Worker[] = [...workers];
-const pending: (() => void)[] = [];
+const waiters: Array<() => void> = [];
 
-const BATCH_SIZE = 250;
-let last_seen = 0;
-let received = 0;
-for (const w of workers) {
-  w.on("message", (msg) => {
-    received++;
-    freeWorkers.push(w);
-    pending.shift()?.(); // wake next waiters
-    if (msg.error) {
-      //console.error("Worker error for", msg.path, msg.error);
-      return;
-    }
-    results.push({ ...msg, last_seen });
-    if (results.length >= BATCH_SIZE) {
-      flushBatch(results);
-    }
-  });
-}
-
-const results: any[] = [];
 function nextWorker(): Promise<Worker> {
   return new Promise((resolve) => {
-    if (freeWorkers.length) {
-      return resolve(freeWorkers.pop()!);
-    }
-    pending.push(() => resolve(freeWorkers.pop()!));
+    const w = freeWorkers.pop();
+    if (w) return resolve(w);
+    waiters.push(() => resolve(freeWorkers.pop()!));
   });
 }
 
-// ---------------- walker (streaming) -----------
-type Entry = {
-  path: string; // full path
-  dirent: import("fs").Dirent;
-  stats?: import("fs").Stats;
-};
+// Buffer for hash results (to batch DB writes)
+const hashResults: { path: string; hash: string; ctime: number }[] = [];
 
+let dispatched = 0;
+let received = 0;
+
+// Handle worker replies (batched)
+for (const w of workers) {
+  w.on("message", (msg: { done?: Result[] }) => {
+    freeWorkers.push(w);
+    waiters.shift()?.();
+
+    const arr = msg.done || [];
+    received += arr.length;
+
+    // Collect successful ones for batched DB write
+    for (const r of arr) {
+      if ("error" in r) {
+        // Log and continue
+        // console.error("hash error:", r.path, r.error);
+      } else {
+        hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
+        if (hashResults.length >= DB_BATCH_SIZE) {
+          applyHashBatch(hashResults);
+          hashResults.length = 0;
+        }
+      }
+    }
+  });
+}
+
+// --------------- Walk + incremental logic ---------------
 async function scan(root: string) {
-  let dispatched = 0;
-  const start = Date.now();
+  const t0 = Date.now();
   const scan_id = Date.now();
-  last_seen = scan_id;
 
-  // Stream entries; request Stats to avoid a second stat() in workers
+  // stream entries with stats so we avoid a second stat in main thread
   const stream = walk.walkStream(root, {
     stats: true,
     followSymbolicLinks: false,
-    concurrency: 64, // tune: 32–256 are typical
+    concurrency: 128,
     entryFilter: (e) => e.dirent.isFile(),
     errorFilter: () => true,
   });
 
-  // small periodic flush so results don’t sit too long
-  const flushTimer = setInterval(() => flushBatch(results), 500).unref();
+  // Periodic flush so we don't hold large arrays in RAM too long
+  const periodicFlush = setInterval(() => {
+    if (hashResults.length) {
+      applyHashBatch(hashResults);
+      hashResults.length = 0;
+    }
+  }, 500).unref();
 
-  const rowBuf: any[] = [];
-  for await (const entry of stream as AsyncIterable<Entry>) {
+  // Mini-buffers
+  const metaBuf: Row[] = [];
+  let jobBuf: Job[] = [];
+
+  // Prepare a fast fetch of existing meta to check ctime change
+  const getExisting = db.prepare<
+    [string],
+    | {
+        size: number;
+        ctime: number;
+        mtime: number;
+        hashed_ctime: number | null;
+      }
+    | undefined
+  >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
+
+  for await (const entry of stream as AsyncIterable<{
+    path: string;
+    stats: import("fs").Stats;
+  }>) {
+    const full = entry.path; // already full path
     const st = entry.stats!;
-    // record metadata immediately (no hash yet)
-    rowBuf.push({
-      path: entry.path,
-      size: st.size,
-      ctime: st.ctimeMs ?? st.ctime.getTime(),
-      mtime: st.mtimeMs ?? st.mtime.getTime(),
+    const size = st.size;
+    const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
+    const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+
+    // Upsert *metadata only* (no hash/hashed_ctime change here)
+    metaBuf.push({
+      path: full,
+      size,
+      ctime,
+      mtime,
       hash: null,
       last_seen: scan_id,
+      hashed_ctime: null,
     });
-    if (rowBuf.length >= 2000) flushBatch(rowBuf);
+    if (metaBuf.length >= DB_BATCH_SIZE) {
+      applyMetaBatch(metaBuf);
+      metaBuf.length = 0;
+    }
 
-    // dispatch hashing job (worker uses provided size to choose stream vs readFile)
+    // Decide if we need to hash: only when ctime changed since last time
+    const row = getExisting.get(full);
+    const needsHash = !row || row.hashed_ctime !== ctime;
+
+    if (needsHash) {
+      //console.log(full, !row, row?.hashed_ctime, ctime);
+      jobBuf.push({ path: full, size, ctime, mtime });
+      // Dispatch in batches to minimize IPC
+      if (jobBuf.length >= DISPATCH_BATCH) {
+        const w = await nextWorker();
+        (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+        dispatched += jobBuf.length;
+        jobBuf = [];
+      }
+    }
+  }
+
+  // Flush remaining meta
+  if (metaBuf.length) {
+    applyMetaBatch(metaBuf);
+    metaBuf.length = 0;
+  }
+
+  // Flush remaining job batch
+  if (jobBuf.length) {
     const w = await nextWorker();
-    w.postMessage({
-      path: entry.path,
-      size: st.size,
-      ctime: st.ctimeMs ?? st.ctime.getTime(),
-      mtime: st.mtimeMs ?? st.mtime.getTime(),
-    });
-    dispatched++;
+    (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+    dispatched += jobBuf.length;
+    jobBuf = [];
   }
-  flushBatch(rowBuf);
 
-  // wait for all hashes to complete
+  // Wait for all hashes to finish
   while (received < dispatched) {
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((r) => setTimeout(r, 20));
   }
-  flushBatch(results);
-  clearInterval(flushTimer);
 
-  // mark deletions (anything not seen this pass)
+  // Final flush of hash results and meta
+  if (hashResults.length) applyHashBatch(hashResults);
+  hashResults.length = 0;
+
+  // Mark deletions (anything not seen this pass)
   db.prepare(`UPDATE files SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
 
+  clearInterval(periodicFlush);
   await Promise.all(workers.map((w) => w.terminate()));
-  console.log(`Done in ${Date.now() - start} ms (files: ${dispatched})`);
+
+  console.log(
+    `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
+  );
 }
 
-(async () => {
-  await scan(process.argv[2] ?? ".");
-  console.log("Scan complete");
-})();
+await scan(process.argv[2] ?? ".");
