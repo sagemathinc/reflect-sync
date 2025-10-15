@@ -1,46 +1,45 @@
 import { parentPort } from "node:worker_threads";
-import { createReadStream, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import { readFile } from "node:fs/promises";
+import fs from "node:fs/promises";
 
 const HASH_STREAM_CUTOFF = 10_000_000;
 
-async function hashFile(filename: string, size: number): Promise<string> {
-  const hash = createHash("sha256");
+async function sha256(path: string, size: number): Promise<string> {
+  const h = createHash("sha256");
   if (size <= HASH_STREAM_CUTOFF) {
-    const buf = await readFile(filename);
-    hash.update(buf);
+    const buf = await fs.readFile(path);
+    h.update(buf);
   } else {
-    const stream = createReadStream(filename, {
-      highWaterMark: 8 * 1024 * 1024,
-    });
-    await pipeline(stream, async function* (source) {
-      for await (const chunk of source) hash.update(chunk);
+    const rs = createReadStream(path, { highWaterMark: 8 * 1024 * 1024 });
+    await pipeline(rs, async function* (src) {
+      for await (const chunk of src) h.update(chunk);
     });
   }
-  return hash.digest("hex");
+  return h.digest("hex");
 }
 
-if (!parentPort) throw new Error("Must be run as a worker");
+const updateHashStmt = `
+  UPDATE files SET hash=?, deleted=0, size=?, ctime=?, mtime=? WHERE path=?
+`;
 
-parentPort.on("message", async ({ path }: { path: string }) => {
+import Database from "better-sqlite3"; // optional: write hashes from worker
+// If you prefer all DB writes on main thread, postMessage(...) and let main flush.
+// If you want to avoid one big results array, you can have workers write directly:
+const db = new Database("alpha.db", { readonly: false });
+
+if (!parentPort) throw new Error("worker only");
+
+parentPort.on("message", async ({ path, size, ctime, mtime }) => {
   try {
-    const stat = lstatSync(path);
-    let hash;
-    if (stat.isSymbolicLink()) {
-      hash = "";
-    } else {
-      hash = await hashFile(path, stat.size);
-    }
-    parentPort!.postMessage({
-      path,
-      size: stat.size,
-      ctime: stat.ctimeMs,
-      mtime: stat.mtimeMs,
-      hash,
-    });
-  } catch (err) {
-    parentPort!.postMessage({ path, error: (err as Error).message });
+    const hash = await sha256(path, size);
+    // Option A: send to main to batch (what you have today)
+    parentPort!.postMessage({ path, size, ctime, mtime, hash });
+
+    // Option B (optional): write directly, no big results buffer:
+    // db.prepare(updateHashStmt).run(hash, size, ctime, mtime, path);
+  } catch (err: any) {
+    parentPort!.postMessage({ path, error: err.message || String(err) });
   }
 });

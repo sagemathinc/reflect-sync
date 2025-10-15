@@ -1,10 +1,9 @@
-// src/scan.ts
 import fs from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { fdir } from "fdir";
 import { Worker } from "node:worker_threads";
 import { cpus } from "node:os";
+import * as walk from "@nodelib/fs.walk";
 
 const db = new Database("alpha.db");
 db.pragma("journal_mode = WAL");
@@ -16,18 +15,20 @@ db.exec(`
     ctime INTEGER,
     mtime INTEGER,
     hash TEXT,
-    deleted INTEGER DEFAULT 0
+    deleted INTEGER DEFAULT 0,
+    last_seen INTEGER
   )
 `);
 
 const insert = db.prepare(`
-  INSERT INTO files (path, size, ctime, mtime, hash, deleted)
-  VALUES (@path, @size, @ctime, @mtime, @hash, 0)
+  INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen)
+  VALUES (@path,@size,@ctime,@mtime,@hash,0,@last_seen)
   ON CONFLICT(path) DO UPDATE SET
     size=excluded.size,
     ctime=excluded.ctime,
     mtime=excluded.mtime,
-    hash=excluded.hash,
+    last_seen=excluded.last_seen,
+    -- keep prior hash unless we provide a new one later:
     deleted=0
 `);
 
@@ -53,6 +54,7 @@ const freeWorkers: Worker[] = [...workers];
 const pending: (() => void)[] = [];
 
 const BATCH_SIZE = 250;
+let last_seen = 0;
 let received = 0;
 for (const w of workers) {
   w.on("message", (msg) => {
@@ -63,7 +65,7 @@ for (const w of workers) {
       //console.error("Worker error for", msg.path, msg.error);
       return;
     }
-    results.push(msg);
+    results.push({ ...msg, last_seen });
     if (results.length >= BATCH_SIZE) {
       flushBatch(results);
     }
@@ -80,41 +82,72 @@ function nextWorker(): Promise<Worker> {
   });
 }
 
-async function listFiles(dir: string): Promise<string[]> {
-  const api = new fdir()
-    .withBasePath()
-    .withFullPaths()
-    .withMaxDepth(999) // 0 = no limit
-    .crawl(dir);
+// ---------------- walker (streaming) -----------
+type Entry = {
+  path: string; // full path
+  dirent: import("fs").Dirent;
+  stats?: import("fs").Stats;
+};
 
-  // Run asynchronously
-  const files = await api.withPromise();
-  return files;
-}
-async function walk(root: string) {
-  const t0 = Date.now();
-  const files = await listFiles(root);
-  console.log(`Found ${files.length} files`, Date.now() - t0, "ms");
+async function scan(root: string) {
+  let dispatched = 0;
+  const start = Date.now();
+  const scan_id = Date.now();
+  last_seen = scan_id;
 
-  let processed = 0;
-  received = 0;
-  for (const path of files) {
-    const worker = await nextWorker();
-    worker.postMessage({ path });
-    processed++;
+  // Stream entries; request Stats to avoid a second stat() in workers
+  const stream = walk.walkStream(root, {
+    stats: true,
+    followSymbolicLinks: false,
+    concurrency: 64, // tune: 32–256 are typical
+    entryFilter: (e) => e.dirent.isFile(),
+    errorFilter: () => true,
+  });
+
+  // small periodic flush so results don’t sit too long
+  const flushTimer = setInterval(() => flushBatch(results), 500).unref();
+
+  const rowBuf: any[] = [];
+  for await (const entry of stream as AsyncIterable<Entry>) {
+    const st = entry.stats!;
+    // record metadata immediately (no hash yet)
+    rowBuf.push({
+      path: entry.path,
+      size: st.size,
+      ctime: st.ctimeMs ?? st.ctime.getTime(),
+      mtime: st.mtimeMs ?? st.mtime.getTime(),
+      hash: null,
+      last_seen: scan_id,
+    });
+    if (rowBuf.length >= 2000) flushBatch(rowBuf);
+
+    // dispatch hashing job (worker uses provided size to choose stream vs readFile)
+    const w = await nextWorker();
+    w.postMessage({
+      path: entry.path,
+      size: st.size,
+      ctime: st.ctimeMs ?? st.ctime.getTime(),
+      mtime: st.mtimeMs ?? st.mtime.getTime(),
+    });
+    dispatched++;
   }
-  // Wait for all to finish
-  while (received < processed) {
-    await new Promise((r) => setTimeout(r, 100));
+  flushBatch(rowBuf);
+
+  // wait for all hashes to complete
+  while (received < dispatched) {
+    await new Promise((r) => setTimeout(r, 30));
   }
   flushBatch(results);
-  for (const w of workers) {
-    w.terminate();
-  }
-  console.log("Done", Date.now() - t0, "ms");
+  clearInterval(flushTimer);
+
+  // mark deletions (anything not seen this pass)
+  db.prepare(`UPDATE files SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
+
+  await Promise.all(workers.map((w) => w.terminate()));
+  console.log(`Done in ${Date.now() - start} ms (files: ${dispatched})`);
 }
 
 (async () => {
-  await walk(process.argv[2] ?? ".");
+  await scan(process.argv[2] ?? ".");
   console.log("Scan complete");
 })();

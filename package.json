@@ -12,8 +12,10 @@
   "license": "ISC",
   "packageManager": "pnpm@10.15.0",
   "dependencies": {
-    "better-sqlite3": "^12.4.1",
-    "fdir": "^6.5.0",
+    "@nodelib/fs.walk": "^3.0.1",
+    "better-sqlite3": "^12.4.1"
+  },
+  "devDependencies": {
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
