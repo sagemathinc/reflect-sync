@@ -13,7 +13,7 @@ type Row = {
   hashed_ctime: number | null;
 };
 
-const DB_PATH = "alpha.db";
+const DB_PATH = process.env.DB_PATH ?? "alpha.db";
 const CPU_COUNT = Math.min(os.cpus().length, 8);
 const DB_BATCH_SIZE = 2000;
 const DISPATCH_BATCH = 256; // files per worker message
