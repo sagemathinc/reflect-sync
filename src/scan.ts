@@ -1,11 +1,10 @@
 // src/scan.ts
 import fs from "node:fs/promises";
-import { createReadStream } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { pipeline } from "node:stream/promises";
 import { fdir } from "fdir";
+import { Worker } from "node:worker_threads";
+import { cpus } from "node:os";
 
 const db = new Database("alpha.db");
 db.pragma("journal_mode = WAL");
@@ -44,6 +43,43 @@ function flushBatch(rows: any[], force = false) {
   rows.length = 0;
 }
 
+// ---------------- worker pool -----------------
+const CPU_COUNT = Math.max(1, Math.min(cpus().length, 8));
+const workers = Array.from(
+  { length: CPU_COUNT },
+  () => new Worker(new URL("./hash-worker.ts", import.meta.url)),
+);
+const freeWorkers: Worker[] = [...workers];
+const pending: (() => void)[] = [];
+
+const BATCH_SIZE = 250;
+let received = 0;
+for (const w of workers) {
+  w.on("message", (msg) => {
+    received++;
+    freeWorkers.push(w);
+    pending.shift()?.(); // wake next waiters
+    if (msg.error) {
+      //console.error("Worker error for", msg.path, msg.error);
+      return;
+    }
+    results.push(msg);
+    if (results.length >= BATCH_SIZE) {
+      flushBatch(results);
+    }
+  });
+}
+
+const results: any[] = [];
+function nextWorker(): Promise<Worker> {
+  return new Promise((resolve) => {
+    if (freeWorkers.length) {
+      return resolve(freeWorkers.pop()!);
+    }
+    pending.push(() => resolve(freeWorkers.pop()!));
+  });
+}
+
 async function listFiles(dir: string): Promise<string[]> {
   const api = new fdir()
     .withBasePath()
@@ -55,55 +91,40 @@ async function listFiles(dir: string): Promise<string[]> {
   const files = await api.withPromise();
   return files;
 }
-
-const HASH_STREAM_CUTOFF = 10_000_000;
-
-async function hashFile(filename: string, size: number): Promise<string> {
-  const hash = createHash("sha256");
-  if (size <= HASH_STREAM_CUTOFF) {
-    // test non-streaming version:
-    const x = await fs.readFile(filename);
-    hash.update(x);
-  } else {
-    const stream = createReadStream(filename, {
-      highWaterMark: 8 * 1024 * 1024,
-    });
-    // pipeline() handles back-pressure and avoids manual 'data' events.
-    await pipeline(stream, async function* (source) {
-      for await (const chunk of source) {
-        hash.update(chunk);
-      }
-    });
-  }
-  return hash.digest("hex");
-}
-
 async function walk(root: string) {
-  const t = Date.now();
+  const t0 = Date.now();
   const files = await listFiles(root);
-  console.log(`Found ${files.length} files`, Date.now() - t, "ms");
+  console.log(`Found ${files.length} files`, Date.now() - t0, "ms");
 
-  const batch: any[] = [];
-  for (const path of files) {
+  let processed = 0;
+  received = 0;
+  for (const p of files) {
     let stat;
     try {
-      stat = await fs.stat(path);
+      stat = await fs.stat(p);
     } catch {
       continue;
     }
-    const hash = await hashFile(path, stat.size);
-    batch.push({
-      path,
+    const worker = await nextWorker();
+    worker.postMessage({
+      path: p,
       size: stat.size,
       ctime: stat.ctimeMs,
       mtime: stat.mtimeMs,
-      hash,
     });
-    if (batch.length >= 2000) flushBatch(batch);
+    processed++;
   }
-  flushBatch(batch, true);
 
-  console.log("Done", Date.now() - t, "ms");
+  // Wait for all to finish
+  while (received < processed) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  flushBatch(results);
+
+  for (const w of workers) {
+    w.terminate();
+  }
+  console.log("Done", Date.now() - t0, "ms");
 }
 
 (async () => {
