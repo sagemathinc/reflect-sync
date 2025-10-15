@@ -19,12 +19,14 @@
     "sourceMap": true,
     "strictNullChecks": true,
     "target": "es2020",
-    "module": "commonjs"
+    "module": "commonjs",
+    "outDir": "dist"
   },
   "watchOptions": {
     "fallbackPolling": "dynamicPriority",
     "synchronousWatchDirectory": true,
     "watchDirectory": "useFsEvents",
     "watchFile": "useFsEvents"
-  }
+  },
+  "exclude": ["node_modules", "dist"],
 }

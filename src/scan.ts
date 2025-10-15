@@ -98,29 +98,16 @@ async function walk(root: string) {
 
   let processed = 0;
   received = 0;
-  for (const p of files) {
-    let stat;
-    try {
-      stat = await fs.stat(p);
-    } catch {
-      continue;
-    }
+  for (const path of files) {
     const worker = await nextWorker();
-    worker.postMessage({
-      path: p,
-      size: stat.size,
-      ctime: stat.ctimeMs,
-      mtime: stat.mtimeMs,
-    });
+    worker.postMessage({ path });
     processed++;
   }
-
   // Wait for all to finish
   while (received < processed) {
     await new Promise((r) => setTimeout(r, 100));
   }
   flushBatch(results);
-
   for (const w of workers) {
     w.terminate();
   }
