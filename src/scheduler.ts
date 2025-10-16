@@ -1,11 +1,13 @@
-// Minimal orchestrator with adaptive watching:
-// - Shallow root watchers (depth-limited) to discover candidate subtrees
-// - Bounded HotWatchManager adds depth-limited watchers on hot subtrees
-// - Escalates deeper on activity at the depth frontier
-// - Seeds hot subtrees from recent_touch after each scan
-// - Reuses your microSync + full cycle merge-rsync flow
+// schedule.ts (SSH-enabled)
 
-import { spawn } from "node:child_process";
+// Minimal orchestrator with adaptive watching and optional SSH:
+// - Local or remote scans (over ssh) with NDJSON ingest
+// - Local watchers only (remote sides can't be watched locally)
+// - microSync supports rsync -e ssh if a side is remote
+// - Full merge still uses merge-rsync.ts (local planning);
+//   pass-through works if you later add host support there.
+
+import { spawn, SpawnOptions } from "node:child_process";
 import chokidar, { FSWatcher } from "chokidar";
 import Database from "better-sqlite3";
 import path from "node:path";
@@ -54,8 +56,26 @@ const baseDb = String(args["base-db"] ?? "base.db");
 const prefer = String(args["prefer"] ?? "alpha").toLowerCase();
 const verbose = Boolean(args["verbose"] ?? false);
 const dryRun = Boolean(args["dry-run"] ?? false);
+
+// NEW: remote knobs
+const alphaHost =
+  (args["alpha-host"] ? String(args["alpha-host"]) : "").trim() || undefined;
+const betaHost =
+  (args["beta-host"] ? String(args["beta-host"]) : "").trim() || undefined;
+const alphaRemoteDb = String(
+  args["alpha-remote-db"] ?? "~/.cache/cocalc-sync/alpha.db",
+);
+const betaRemoteDb = String(
+  args["beta-remote-db"] ?? "~/.cache/cocalc-sync/beta.db",
+);
+const remoteScanCmd = String(args["remote-scan-cmd"] ?? "node dist/scan.js"); // on remote host
+
 if (!alphaRoot || !betaRoot) {
   console.error("Need --alpha-root and --beta-root");
+  process.exit(1);
+}
+if (alphaHost && betaHost) {
+  console.error("Both sides remote is not supported yet (rsync two-remote).");
   process.exit(1);
 }
 
@@ -111,6 +131,7 @@ function spawnTask(
   args: string[],
   envExtra: Record<string, string> = {},
   okCodes: number[] = [0],
+  opts: SpawnOptions = {},
 ): Promise<{
   code: number | null;
   ms: number;
@@ -123,6 +144,7 @@ function spawnTask(
     const p = spawn(cmd, args, {
       stdio: verbose ? "inherit" : "ignore",
       env: { ...process.env, ...envExtra },
+      ...opts,
     });
     p.on("exit", (code) => {
       lastZero = code === 0;
@@ -179,6 +201,88 @@ function minimalCover(dirs: string[]): string[] {
       out.push(d);
   }
   return out;
+}
+
+// ---------- SSH helpers ----------
+function splitCmd(s: string): string[] {
+  // naive split; if you need complex quoting, pass a simpler cmd or adjust
+  return s.trim().split(/\s+/);
+}
+
+// Pipe: ssh scan --emit-delta  →  tsx src/ingest-delta.ts --db <local.db>
+// Returns a pseudo spawnTask result (waits for both to finish).
+async function sshScanIntoMirror(params: {
+  host: string;
+  remoteDb: string;
+  remoteScanCmd: string; // e.g. "node dist/scan.js"
+  root: string;
+  localDb: string; // e.g. alpha.db
+}): Promise<{
+  code: number | null;
+  ms: number;
+  ok: boolean;
+  lastZero: boolean;
+}> {
+  const t0 = Date.now();
+  const sshArgs = [
+    "-C",
+    params.host,
+    "env",
+    `DB_PATH=${params.remoteDb}`,
+    ...splitCmd(params.remoteScanCmd),
+    params.root,
+    "--emit-delta",
+  ];
+  if (verbose) console.log("$ ssh", sshArgs.join(" "));
+
+  const sshP = spawn("ssh", sshArgs, {
+    stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
+  });
+
+  const ingestArgs = [
+    "src/ingest-delta.ts",
+    "--db",
+    params.localDb,
+    "--root",
+    params.root,
+  ];
+  if (verbose) console.log("$ tsx", ingestArgs.join(" "));
+  const ingestP = spawn("tsx", ingestArgs, {
+    stdio: [
+      "pipe",
+      verbose ? "inherit" : "ignore",
+      verbose ? "inherit" : "ignore",
+    ],
+  });
+
+  // Pipe ssh stdout -> ingest stdin
+  if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
+
+  const wait = (p: import("node:child_process").ChildProcess) =>
+    new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
+
+  const [sshCode, ingestCode] = await Promise.all([wait(sshP), wait(ingestP)]);
+  const ok = sshCode === 0 && ingestCode === 0;
+  return {
+    code: ok ? 0 : (sshCode ?? ingestCode),
+    ms: Date.now() - t0,
+    ok,
+    lastZero: ok,
+  };
+}
+
+// Build rsync endpoints + transport
+function rsyncRoots(
+  fromRoot: string,
+  fromHost: string | undefined,
+  toRoot: string,
+  toHost: string | undefined,
+) {
+  const slash = (s: string) => (s.endsWith("/") ? s : s + "/");
+  const from = fromHost ? `${fromHost}:${slash(fromRoot)}` : slash(fromRoot);
+  const to = toHost ? `${toHost}:${slash(toRoot)}` : slash(toRoot);
+  const transport = fromHost || toHost ? (["-e", "ssh"] as string[]) : [];
+  return { from, to, transport };
 }
 
 // ---------- scheduler state ----------
@@ -255,9 +359,7 @@ class HotWatchManager {
     private side: "alpha" | "beta",
     private root: string,
     private onHotEvent: (abs: string, ev: string) => void,
-  ) {
-    console.log("created hot watch manager", this.side);
-  }
+  ) {}
 
   size() {
     return this.map.size;
@@ -348,7 +450,7 @@ class HotWatchManager {
   }
 }
 
-// ---------- shallow root watchers + hot managers ----------
+// ---------- root watchers & hot managers (locals only) ----------
 function onAlphaHot(abs: string, evt: string) {
   const r = rel(alphaRoot, abs);
   if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
@@ -364,43 +466,59 @@ function onBetaHot(abs: string, evt: string) {
   }
 }
 
-const hotAlphaMgr = new HotWatchManager("alpha", alphaRoot, onAlphaHot);
-const hotBetaMgr = new HotWatchManager("beta", betaRoot, onBetaHot);
+const alphaIsRemote = !!alphaHost;
+const betaIsRemote = !!betaHost;
 
-// very cheap root watchers
-const shallowAlpha = chokidar.watch(alphaRoot, {
-  persistent: true,
-  ignoreInitial: true,
-  depth: SHALLOW_DEPTH,
-  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-});
-const shallowBeta = chokidar.watch(betaRoot, {
-  persistent: true,
-  ignoreInitial: true,
-  depth: SHALLOW_DEPTH,
-  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-});
+const hotAlphaMgr = alphaIsRemote
+  ? null
+  : new HotWatchManager("alpha", alphaRoot, onAlphaHot);
+const hotBetaMgr = betaIsRemote
+  ? null
+  : new HotWatchManager("beta", betaRoot, onBetaHot);
 
-// any shallow signal -> start (or refresh) a hot subtree watcher on its parent
-["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-  shallowAlpha.on(evt as any, async (p: string) => {
-    const rdir = parentDir(rel(alphaRoot, p));
-    if (rdir) await hotAlphaMgr.add(rdir);
+const shallowAlpha = alphaIsRemote
+  ? null
+  : chokidar.watch(alphaRoot, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: SHALLOW_DEPTH,
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    });
+const shallowBeta = betaIsRemote
+  ? null
+  : chokidar.watch(betaRoot, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: SHALLOW_DEPTH,
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    });
+
+if (shallowAlpha && hotAlphaMgr) {
+  ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+    shallowAlpha.on(evt as any, async (p: string) => {
+      const rdir = parentDir(rel(alphaRoot, p));
+      if (rdir) await hotAlphaMgr.add(rdir);
+    });
   });
-  shallowBeta.on(evt as any, async (p: string) => {
-    const rdir = parentDir(rel(betaRoot, p));
-    if (rdir) await hotBetaMgr.add(rdir);
+}
+if (shallowBeta && hotBetaMgr) {
+  ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+    shallowBeta.on(evt as any, async (p: string) => {
+      const rdir = parentDir(rel(betaRoot, p));
+      if (rdir) await hotBetaMgr.add(rdir);
+    });
   });
-});
+}
 
-// ---------- seed hot watchers from DB recent_touch ----------
+// ---------- seed hot watchers from DB recent_touch (locals only) ----------
 function seedHotFromDb(
   dbPath: string,
   root: string,
-  mgr: HotWatchManager,
+  mgr: HotWatchManager | null,
   sinceTs: number | null,
   maxDirs = 256,
 ) {
+  if (!mgr) return;
   const sdb = new Database(dbPath);
   try {
     const rows = sinceTs
@@ -427,7 +545,7 @@ function seedHotFromDb(
   }
 }
 
-// ---------- realtime micro-sync (unchanged from your version) ----------
+// ---------- realtime micro-sync (SSH-aware) ----------
 async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
   // Decide direction per rpath using just the event sets
   const setA = new Set(rpathsAlpha);
@@ -450,25 +568,25 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
     }
   }
 
-  // Filter: only regular files for now (skip dirs/links)
-  async function keepFiles(root: string, rpaths: string[]) {
+  // Filter only for local sides (we can't lstat remote)
+  async function keepFilesLocal(root: string, rpaths: string[]) {
     const out: string[] = [];
     for (const r of rpaths) {
       try {
         const st = await fsLstat(path.join(root, r));
         if (st.isFile()) out.push(r);
       } catch {
-        /* file might have vanished; ignore in micro pass */
+        /* file might have vanished; ignore */
       }
     }
     return out;
   }
-  const [toBetaFiles, toAlphaFiles] = (
-    await Promise.all([
-      keepFiles(alphaRoot, toBeta),
-      keepFiles(betaRoot, toAlpha),
-    ])
-  ).map(keepFresh);
+  const toBetaFiles = alphaIsRemote
+    ? keepFresh(toBeta)
+    : keepFresh(await keepFilesLocal(alphaRoot, toBeta));
+  const toAlphaFiles = betaIsRemote
+    ? keepFresh(toAlpha)
+    : keepFresh(await keepFilesLocal(betaRoot, toAlpha));
 
   if (toBetaFiles.length === 0 && toAlphaFiles.length === 0) return;
 
@@ -482,17 +600,24 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
   // Run small rsyncs now. Accept partial codes (23/24) so we don't blow up on edits-in-flight.
   if (await fileNonEmpty(listToBeta)) {
     log("info", "realtime", `alpha→beta ${toBetaFiles.length} paths`);
+    const { from, to, transport } = rsyncRoots(
+      alphaRoot,
+      alphaHost,
+      betaRoot,
+      betaHost,
+    );
     await spawnTask(
       "rsync",
       [
         ...(dryRun ? ["-n"] : []),
+        ...transport,
         "-a",
         "--inplace",
         "--relative",
         "--from0",
         `--files-from=${listToBeta}`,
-        alphaRoot.endsWith("/") ? alphaRoot : alphaRoot + "/",
-        betaRoot.endsWith("/") ? betaRoot : betaRoot + "/",
+        from,
+        to,
       ],
       {},
       [0, 23, 24],
@@ -501,17 +626,24 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
 
   if (await fileNonEmpty(listToAlpha)) {
     log("info", "realtime", `beta→alpha ${toAlphaFiles.length} paths`);
+    const { from, to, transport } = rsyncRoots(
+      betaRoot,
+      betaHost,
+      alphaRoot,
+      alphaHost,
+    );
     await spawnTask(
       "rsync",
       [
         ...(dryRun ? ["-n"] : []),
+        ...transport,
         "-a",
         "--inplace",
         "--relative",
         "--from0",
         `--files-from=${listToAlpha}`,
-        betaRoot.endsWith("/") ? betaRoot : betaRoot + "/",
-        alphaRoot.endsWith("/") ? alphaRoot : alphaRoot + "/",
+        from,
+        to,
       ],
       {},
       [0, 23, 24],
@@ -525,22 +657,42 @@ async function oneCycle(): Promise<void> {
   running = true;
   const t0 = Date.now();
 
-  // Scan alpha & beta (record start times so we can seed recent touches since each scan)
+  // Scan alpha (local or remote)
   const tAlphaStart = Date.now();
-  log("info", "scan", `alpha: ${alphaRoot}`);
-  const a = await spawnTask("tsx", ["src/scan.ts", alphaRoot], {
-    DB_PATH: alphaDb,
-  });
+  log(
+    "info",
+    "scan",
+    `alpha: ${alphaRoot}${alphaHost ? ` @ ${alphaHost}` : ""}`,
+  );
+  const a = alphaIsRemote
+    ? await sshScanIntoMirror({
+        host: alphaHost!,
+        remoteDb: alphaRemoteDb,
+        remoteScanCmd,
+        root: alphaRoot,
+        localDb: alphaDb,
+      })
+    : await spawnTask("tsx", ["src/scan.ts", alphaRoot], { DB_PATH: alphaDb });
+
   seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
 
+  // Scan beta (local or remote)
   const tBetaStart = Date.now();
-  log("info", "scan", `beta: ${betaRoot}`);
-  const b = await spawnTask("tsx", ["src/scan.ts", betaRoot], {
-    DB_PATH: betaDb,
-  });
+  log("info", "scan", `beta: ${betaRoot}${betaHost ? ` @ ${betaHost}` : ""}`);
+  const b = betaIsRemote
+    ? await sshScanIntoMirror({
+        host: betaHost!,
+        remoteDb: betaRemoteDb,
+        remoteScanCmd,
+        root: betaRoot,
+        localDb: betaDb,
+      })
+    : await spawnTask("tsx", ["src/scan.ts", betaRoot], { DB_PATH: betaDb });
+
   seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
 
-  // Merge/rsync (full)
+  // Merge/rsync (full). NOTE: merge-rsync.ts must be taught about -e ssh later.
+  // For now we pass through the host flags (no harm if ignored).
   log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
   const mArgs = [
     "src/merge-rsync.ts",
@@ -557,8 +709,11 @@ async function oneCycle(): Promise<void> {
     "--prefer",
     prefer,
   ];
+  if (alphaHost) mArgs.push("--alpha-host", alphaHost);
+  if (betaHost) mArgs.push("--beta-host", betaHost);
   if (dryRun) mArgs.push("--dry-run", "true");
   if (verbose) mArgs.push("--verbose", "true");
+
   const m = await spawnTask("tsx", mArgs);
 
   const ms = Date.now() - t0;
@@ -623,13 +778,18 @@ log("info", "scheduler", "starting", {
   prefer,
   dryRun,
   verbose,
+  alphaHost,
+  betaHost,
+  alphaRemoteDb,
+  betaRemoteDb,
+  remoteScanCmd,
   MAX_HOT_WATCHERS,
   HOT_TTL_MS,
   SHALLOW_DEPTH,
   HOT_DEPTH,
 });
 
-// cheap root watchers start immediately; hot managers add anchors on demand
+// cheap root watchers start immediately (locals); hot managers add anchors on demand
 loop().catch((e) => {
   log("error", "scheduler", "fatal", { err: String(e?.stack || e) });
   process.exit(1);
