@@ -166,7 +166,7 @@ let running = false,
   nextDelayMs = 10_000,
   backoffMs = 0;
 const MIN_INTERVAL_MS = 7_500,
-  MAX_INTERVAL_MS = 120_000,
+  MAX_INTERVAL_MS = 60_000,
   MAX_BACKOFF_MS = 600_000,
   JITTER_MS = 500;
 
@@ -421,8 +421,8 @@ async function loop() {
     if (!running) {
       pending = false;
       await oneCycle();
-      // Dynamic interval: aim for ~4x last cycle, clamped.
-      const baseNext = clamp(lastCycleMs * 4, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
+      // Dynamic interval: aim for ~2x last cycle, clamped.
+      const baseNext = clamp(lastCycleMs * 2, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
       // If there was backoff (errors), add it; otherwise a small jitter.
       nextDelayMs =
         baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));

@@ -46,25 +46,6 @@ function rsyncArgsDelete() {
   if (verbose) a.push("-v");
   return a;
 }
-function run(
-  cmd: string,
-  args: string[],
-  okCodes: number[] = [0],
-): Promise<void> {
-  if (verbose)
-    console.log(
-      `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
-    );
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: "inherit" });
-    p.on("exit", (code) =>
-      code !== null && okCodes.includes(code)
-        ? resolve()
-        : reject(new Error(`${cmd} exited ${code}`)),
-    );
-    p.on("error", reject);
-  });
-}
 async function fileNonEmpty(p: string) {
   try {
     return (await fsStat(p)).size > 0;
@@ -72,117 +53,145 @@ async function fileNonEmpty(p: string) {
     return false;
   }
 }
+function run(
+  cmd: string,
+  args: string[],
+  okCodes: number[] = [0],
+): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
+  if (verbose)
+    console.log(
+      `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
+    );
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { stdio: "inherit" });
+    p.on("exit", (code) => {
+      const zero = code === 0;
+      const ok = code !== null && okCodes.includes(code!);
+      resolve({ code, ok, zero });
+    });
+    p.on("error", () =>
+      resolve({ code: 1, ok: okCodes.includes(1), zero: false }),
+    );
+  });
+}
 
 async function main() {
   // ---------- DB ----------
   const db = new Database(baseDb);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
+  db.pragma("temp_store = MEMORY"); // keep temp tables in RAM for speed
+
   db.exec(`
-  CREATE TABLE IF NOT EXISTS base (
-    path TEXT PRIMARY KEY,  -- stored as RELATIVE PATH
-    hash TEXT,
-    deleted INTEGER DEFAULT 0
-  );
-  CREATE INDEX IF NOT EXISTS idx_base_path ON base(path);
-`);
+    CREATE TABLE IF NOT EXISTS base (
+      path TEXT PRIMARY KEY,  -- stored as RELATIVE PATH
+      hash TEXT,
+      deleted INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_base_path ON base(path);
+  `);
+
   db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
   db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
-  // indexes on attached DBs (note schema lives there)
+  // indexes on attached DBs (schema lives there)
   db.exec(`CREATE INDEX IF NOT EXISTS alpha.idx_files_path ON files(path);`);
   db.exec(`CREATE INDEX IF NOT EXISTS beta.idx_files_path  ON files(path);`);
 
-  // ---------- Build relative-path temp tables in SQL ----------
+  // ---------- Build relative-path temp tables ----------
   db.exec(
     `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
   );
 
-  // alpha_rel: rpath = alpha.files.path stripped of alphaRoot + '/'
   db.prepare(
     `
-  CREATE TEMP TABLE alpha_rel AS
-  SELECT
-    CASE
-      WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-      WHEN path = ? THEN '' ELSE path
-    END AS rpath,
-    hash, deleted
-  FROM alpha.files
-`,
+    CREATE TEMP TABLE alpha_rel AS
+    SELECT
+      CASE
+        WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
+        WHEN path = ? THEN '' ELSE path
+      END AS rpath,
+      hash, deleted
+    FROM alpha.files
+  `,
   ).run(alphaRoot, alphaRoot, alphaRoot);
 
-  // beta_rel: rpath = beta.files.path stripped of betaRoot + '/'
   db.prepare(
     `
-  CREATE TEMP TABLE beta_rel AS
-  SELECT
-    CASE
-      WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-      WHEN path = ? THEN '' ELSE path
-    END AS rpath,
-    hash, deleted
-  FROM beta.files
-`,
+    CREATE TEMP TABLE beta_rel AS
+    SELECT
+      CASE
+        WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
+        WHEN path = ? THEN '' ELSE path
+      END AS rpath,
+      hash, deleted
+    FROM beta.files
+  `,
   ).run(betaRoot, betaRoot, betaRoot);
 
-  // base_rel: rpath = base.path stripped of either alphaRoot or betaRoot (if previously stored absolute)
   db.prepare(
     `
-  CREATE TEMP TABLE base_rel AS
-  SELECT
-    CASE
-      WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-      WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-      ELSE path
-    END AS rpath,
-    hash, deleted
-  FROM base
-`,
+    CREATE TEMP TABLE base_rel AS
+    SELECT
+      CASE
+        WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
+        WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
+        ELSE path
+      END AS rpath,
+      hash, deleted
+    FROM base
+  `,
   ).run(alphaRoot, alphaRoot, betaRoot, betaRoot);
+
+  // Index the temp rel tables for fast joins/lookups
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_alpha_rel_rpath ON alpha_rel(rpath);
+    CREATE INDEX IF NOT EXISTS idx_beta_rel_rpath  ON beta_rel(rpath);
+    CREATE INDEX IF NOT EXISTS idx_base_rel_rpath  ON base_rel(rpath);
+  `);
 
   // ---------- 3-way plan on rpath ----------
   db.exec(`
-  DROP TABLE IF EXISTS tmp_changedA;
-  DROP TABLE IF EXISTS tmp_changedB;
-  DROP TABLE IF EXISTS tmp_deletedA;
-  DROP TABLE IF EXISTS tmp_deletedB;
+    DROP TABLE IF EXISTS tmp_changedA;
+    DROP TABLE IF EXISTS tmp_changedB;
+    DROP TABLE IF EXISTS tmp_deletedA;
+    DROP TABLE IF EXISTS tmp_deletedB;
 
-  CREATE TEMP TABLE tmp_changedA AS
-    SELECT a.rpath AS rpath, a.hash
-    FROM alpha_rel a
-    LEFT JOIN base_rel b ON b.rpath = a.rpath
-    WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
+    CREATE TEMP TABLE tmp_changedA AS
+      SELECT a.rpath AS rpath, a.hash
+      FROM alpha_rel a
+      LEFT JOIN base_rel b ON b.rpath = a.rpath
+      WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
 
-  CREATE TEMP TABLE tmp_changedB AS
-    SELECT b.rpath AS rpath, b.hash
-    FROM beta_rel b
-    LEFT JOIN base_rel bb ON bb.rpath = b.rpath
-    WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
+    CREATE TEMP TABLE tmp_changedB AS
+      SELECT b.rpath AS rpath, b.hash
+      FROM beta_rel b
+      LEFT JOIN base_rel bb ON bb.rpath = b.rpath
+      WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
 
-  CREATE TEMP TABLE tmp_deletedA AS
-    SELECT b.rpath
-    FROM base_rel b
-    LEFT JOIN alpha_rel a ON a.rpath = b.rpath
-    WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+    CREATE TEMP TABLE tmp_deletedA AS
+      SELECT b.rpath
+      FROM base_rel b
+      LEFT JOIN alpha_rel a ON a.rpath = b.rpath
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
 
-  CREATE TEMP TABLE tmp_deletedB AS
-    SELECT b.rpath
-    FROM base_rel b
-    LEFT JOIN beta_rel a ON a.rpath = b.rpath
-    WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
-`);
+    CREATE TEMP TABLE tmp_deletedB AS
+      SELECT b.rpath
+      FROM base_rel b
+      LEFT JOIN beta_rel a ON a.rpath = b.rpath
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+  `);
 
   const toBeta = db
     .prepare(
       `
-  SELECT rpath FROM tmp_changedA
-  WHERE rpath NOT IN (SELECT rpath FROM tmp_changedB)
-  UNION ALL
-  SELECT cA.rpath FROM tmp_changedA cA
-  INNER JOIN tmp_changedB cB USING(rpath)
-  WHERE ? = 'alpha'
-`,
+    SELECT rpath FROM tmp_changedA
+    WHERE rpath NOT IN (SELECT rpath FROM tmp_changedB)
+    UNION ALL
+    SELECT cA.rpath FROM tmp_changedA cA
+    INNER JOIN tmp_changedB cB USING(rpath)
+    WHERE ? = 'alpha'
+  `,
     )
     .all(prefer)
     .map((r) => r.rpath as string);
@@ -190,13 +199,13 @@ async function main() {
   const toAlpha = db
     .prepare(
       `
-  SELECT rpath FROM tmp_changedB
-  WHERE rpath NOT IN (SELECT rpath FROM tmp_changedA)
-  UNION ALL
-  SELECT cB.rpath FROM tmp_changedB cB
-  INNER JOIN tmp_changedA cA USING(rpath)
-  WHERE ? = 'beta'
-`,
+    SELECT rpath FROM tmp_changedB
+    WHERE rpath NOT IN (SELECT rpath FROM tmp_changedA)
+    UNION ALL
+    SELECT cB.rpath FROM tmp_changedB cB
+    INNER JOIN tmp_changedA cA USING(rpath)
+    WHERE ? = 'beta'
+  `,
     )
     .all(prefer)
     .map((r) => r.rpath as string);
@@ -204,17 +213,17 @@ async function main() {
   const delInBeta = db
     .prepare(
       `
-  SELECT dA.rpath
-  FROM tmp_deletedA dA
-  LEFT JOIN tmp_changedB cB ON cB.rpath = dA.rpath
-  WHERE cB.rpath IS NULL
-  UNION ALL
-  SELECT b.rpath
-  FROM base_rel b
-  LEFT JOIN alpha_rel a ON a.rpath = b.rpath
-  LEFT JOIN tmp_changedB cB ON cB.rpath = b.rpath
-  WHERE ?='alpha' AND b.deleted=0 AND (a.rpath IS NULL OR a.deleted=1) AND cB.rpath IS NOT NULL
-`,
+    SELECT dA.rpath
+    FROM tmp_deletedA dA
+    LEFT JOIN tmp_changedB cB ON cB.rpath = dA.rpath
+    WHERE cB.rpath IS NULL
+    UNION ALL
+    SELECT b.rpath
+    FROM base_rel b
+    LEFT JOIN alpha_rel a ON a.rpath = b.rpath
+    LEFT JOIN tmp_changedB cB ON cB.rpath = b.rpath
+    WHERE ?='alpha' AND b.deleted=0 AND (a.rpath IS NULL OR a.deleted=1) AND cB.rpath IS NOT NULL
+  `,
     )
     .all(prefer)
     .map((r) => r.rpath as string);
@@ -222,17 +231,17 @@ async function main() {
   const delInAlpha = db
     .prepare(
       `
-  SELECT dB.rpath
-  FROM tmp_deletedB dB
-  LEFT JOIN tmp_changedA cA ON cA.rpath = dB.rpath
-  WHERE cA.rpath IS NULL
-  UNION ALL
-  SELECT b.rpath
-  FROM base_rel b
-  LEFT JOIN beta_rel a ON a.rpath = b.rpath
-  LEFT JOIN tmp_changedA cA ON cA.rpath = b.rpath
-  WHERE ?='beta' AND b.deleted=0 AND (a.rpath IS NULL OR a.deleted=1) AND cA.rpath IS NOT NULL
-`,
+    SELECT dB.rpath
+    FROM tmp_deletedB dB
+    LEFT JOIN tmp_changedA cA ON cA.rpath = dB.rpath
+    WHERE cA.rpath IS NULL
+    UNION ALL
+    SELECT b.rpath
+    FROM base_rel b
+    LEFT JOIN beta_rel a ON a.rpath = b.rpath
+    LEFT JOIN tmp_changedA cA ON cA.rpath = b.rpath
+    WHERE ?='beta' AND b.deleted=0 AND (a.rpath IS NULL OR a.deleted=1) AND cA.rpath IS NOT NULL
+  `,
     )
     .all(prefer)
     .map((r) => r.rpath as string);
@@ -260,6 +269,9 @@ async function main() {
 `);
 
   // ---------- rsync ----------
+  let copyAlphaBetaZero = false;
+  let copyBetaAlphaZero = false;
+
   async function rsyncCopy(
     fromRoot: string,
     toRoot: string,
@@ -267,14 +279,10 @@ async function main() {
     label: string,
   ) {
     if (!(await fileNonEmpty(listFile))) {
-      if (verbose) {
-        console.log(`>>> rsync ${label}: nothing to do`);
-      }
-      return;
+      if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
+      return { zero: false };
     }
-    if (verbose) {
-      console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
-    }
+    if (verbose) console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
     const args = [
       ...rsyncArgsBase(),
       "--from0",
@@ -282,10 +290,9 @@ async function main() {
       fromRoot.endsWith("/") ? fromRoot : fromRoot + "/",
       toRoot.endsWith("/") ? toRoot : toRoot + "/",
     ];
-    await run("rsync", args);
-    if (verbose) {
-      console.log(`>>> rsync ${label}: done`);
-    }
+    const res = await run("rsync", args, [0, 23, 24]); // accept partials but only advance base on exit 0
+    if (verbose) console.log(`>>> rsync ${label}: done (code ${res.code})`);
+    return { zero: res.zero };
   }
 
   async function rsyncDelete(
@@ -307,42 +314,109 @@ async function main() {
       fromRoot.endsWith("/") ? fromRoot : fromRoot + "/",
       toRoot.endsWith("/") ? toRoot : toRoot + "/",
     ];
-    // With --delete-missing-args, exit 24 is normal/ok when entries don't exist on sender.
-    await run("rsync", args, [0, 24]);
+    await run("rsync", args, [0, 24]); // 24=vanished is fine for delete-missing-args
   }
 
-  await rsyncCopy(alphaRoot, betaRoot, listToBeta, "alpha→beta");
-  await rsyncCopy(betaRoot, alphaRoot, listToAlpha, "beta→alpha");
+  copyAlphaBetaZero = (
+    await rsyncCopy(alphaRoot, betaRoot, listToBeta, "alpha→beta")
+  ).zero;
+  copyBetaAlphaZero = (
+    await rsyncCopy(betaRoot, alphaRoot, listToAlpha, "beta→alpha")
+  ).zero;
   await rsyncDelete(alphaRoot, betaRoot, listDelInBeta, "alpha deleted");
   await rsyncDelete(betaRoot, alphaRoot, listDelInAlpha, "beta deleted");
 
   console.log("rsync's all done, now updating database");
-  // ---------- update base to the MERGED result (store RELATIVE paths) ----------
-  const upsertBase = db.prepare(`
-  INSERT INTO base(path,hash,deleted) VALUES (?,?,?)
-  ON CONFLICT(path) DO UPDATE SET hash=excluded.hash, deleted=excluded.deleted
-`);
-  const aHashStmt = db.prepare(`SELECT hash FROM alpha_rel WHERE rpath = ?`);
-  const bHashStmt = db.prepare(`SELECT hash FROM beta_rel  WHERE rpath = ?`);
 
-  const tx = db.transaction(() => {
-    for (const r of toBeta) {
-      upsertBase.run(r, aHashStmt.get(r)?.hash ?? null, 0);
-    }
-    for (const r of toAlpha) {
-      upsertBase.run(r, bHashStmt.get(r)?.hash ?? null, 0);
-    }
-    for (const r of delInBeta) {
-      upsertBase.run(r, null, 1);
-    }
-    for (const r of delInAlpha) {
-      upsertBase.run(r, null, 1);
-    }
-  });
-  console.log("commit transaction");
-  tx();
+  if (dryRun) {
+    console.log("(dry-run) skipping base updates");
+    console.log("Merge complete.");
+    return;
+  }
 
-  console.log("database updated!");
+  // ---------- set-based base updates (fast) ----------
+  // Build plan tables from arrays
+  db.exec(`
+    DROP TABLE IF EXISTS plan_to_beta;
+    DROP TABLE IF EXISTS plan_to_alpha;
+    DROP TABLE IF EXISTS plan_del_beta;
+    DROP TABLE IF EXISTS plan_del_alpha;
+
+    CREATE TEMP TABLE plan_to_beta  (rpath TEXT PRIMARY KEY);
+    CREATE TEMP TABLE plan_to_alpha (rpath TEXT PRIMARY KEY);
+    CREATE TEMP TABLE plan_del_beta (rpath TEXT PRIMARY KEY);
+    CREATE TEMP TABLE plan_del_alpha(rpath TEXT PRIMARY KEY);
+  `);
+
+  const insToBeta = db.prepare(
+    `INSERT OR IGNORE INTO plan_to_beta(rpath) VALUES (?)`,
+  );
+  const insToAlpha = db.prepare(
+    `INSERT OR IGNORE INTO plan_to_alpha(rpath) VALUES (?)`,
+  );
+  const insDelBeta = db.prepare(
+    `INSERT OR IGNORE INTO plan_del_beta(rpath) VALUES (?)`,
+  );
+  const insDelAlpha = db.prepare(
+    `INSERT OR IGNORE INTO plan_del_alpha(rpath) VALUES (?)`,
+  );
+
+  db.transaction(() => {
+    for (const r of toBeta) insToBeta.run(r);
+    for (const r of toAlpha) insToAlpha.run(r);
+    for (const r of delInBeta) insDelBeta.run(r);
+    for (const r of delInAlpha) insDelAlpha.run(r);
+  })();
+
+  // Index plan tables for faster joins on big sets
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_plan_to_beta_rpath   ON plan_to_beta(rpath);
+    CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_rpath  ON plan_to_alpha(rpath);
+    CREATE INDEX IF NOT EXISTS idx_plan_del_beta_rpath  ON plan_del_beta(rpath);
+    CREATE INDEX IF NOT EXISTS idx_plan_del_alpha_rpath ON plan_del_alpha(rpath);
+  `);
+
+  // Now set-based updates in a single transaction (no UPSERT; use OR REPLACE)
+  db.transaction(() => {
+    if (copyAlphaBetaZero && toBeta.length) {
+      db.exec(`
+      INSERT OR REPLACE INTO base(path, hash, deleted)
+      SELECT p.rpath, a.hash, 0
+      FROM plan_to_beta p
+      JOIN alpha_rel a ON a.rpath = p.rpath;
+    `);
+    }
+
+    if (copyBetaAlphaZero && toAlpha.length) {
+      db.exec(`
+      INSERT OR REPLACE INTO base(path, hash, deleted)
+      SELECT p.rpath, b.hash, 0
+      FROM plan_to_alpha p
+      JOIN beta_rel b ON b.rpath = p.rpath;
+    `);
+    }
+
+    if (delInBeta.length) {
+      db.exec(`
+      INSERT OR REPLACE INTO base(path, hash, deleted)
+      SELECT rpath, NULL, 1
+      FROM plan_del_beta;
+    `);
+    }
+
+    if (delInAlpha.length) {
+      db.exec(`
+      INSERT OR REPLACE INTO base(path, hash, deleted)
+      SELECT rpath, NULL, 1
+      FROM plan_del_alpha;
+    `);
+    }
+  })();
+
+  // Optional hygiene on big runs
+  db.exec("PRAGMA optimize");
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
   console.log("Merge complete.");
 }
 
