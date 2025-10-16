@@ -1,14 +1,32 @@
 {
-  "name": "@cocalc/file-sync",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "ccsync",
+  "version": "0.1.0",
+  "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "main": "dist/index.js",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   },
-  "keywords": [],
-  "author": "",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "ccsync": "dist/cli.js",
+    "ccsync-scan": "dist/cli.js",
+    "ccsync-ingest": "dist/cli.js",
+    "ccsync-merge": "dist/cli.js",
+    "ccsync-scheduler": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "dev:scan": "tsx src/scan.ts",
+    "dev:ingest": "tsx src/ingest-delta.ts",
+    "dev:merge": "tsx src/merge-rsync.ts",
+    "dev:scheduler": "tsx src/scheduler.ts",
+    "prepare": "pnpm run build"
+  },
+  "engines": { "node": ">=24" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "ISC",
   "packageManager": "pnpm@10.15.0",
   "dependencies": {
@@ -20,5 +38,7 @@
     "@types/node": "^24.7.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
-  }
+  },
+  "author": "William Stein (wstein@sagemath.com)",
+  "license": "MIT"
 }

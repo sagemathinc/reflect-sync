@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // src/ingest-delta.ts
 //
 // Read NDJSON deltas from stdin and mirror them into a local files table.

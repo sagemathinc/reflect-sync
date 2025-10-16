@@ -13,6 +13,7 @@
     "strictNullChecks": true,
     "target": "es2022",
     "module": "es2022",
+    "rootDir": "src",
     "outDir": "dist"
   },
   "exclude": ["node_modules", "dist"]

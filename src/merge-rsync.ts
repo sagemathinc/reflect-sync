@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+// merge-rsync.ts
 import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";

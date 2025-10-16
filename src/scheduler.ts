@@ -1,4 +1,5 @@
-// schedule.ts (SSH-enabled)
+#!/usr/bin/env node
+// scheduler.ts (SSH-enabled)
 
 // Minimal orchestrator with adaptive watching and optional SSH:
 // - Local or remote scans (over ssh) with NDJSON ingest
@@ -68,7 +69,8 @@ const alphaRemoteDb = String(
 const betaRemoteDb = String(
   args["beta-remote-db"] ?? "~/.cache/cocalc-sync/beta.db",
 );
-const remoteScanCmd = String(args["remote-scan-cmd"] ?? "node dist/scan.js"); // on remote host
+// on remote host
+const remoteScanCmd = String(args["remote-scan-cmd"] ?? "ccsync scan");
 
 if (!alphaRoot || !betaRoot) {
   console.error("Need --alpha-root and --beta-root");
@@ -138,6 +140,9 @@ function spawnTask(
   ok: boolean;
   lastZero: boolean;
 }> {
+  if (verbose) {
+    console.log(`${cmd} ${args.join(" ")}`);
+  }
   return new Promise((resolve) => {
     const t0 = Date.now();
     let lastZero = false;
@@ -239,15 +244,9 @@ async function sshScanIntoMirror(params: {
     stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
   });
 
-  const ingestArgs = [
-    "src/ingest-delta.ts",
-    "--db",
-    params.localDb,
-    "--root",
-    params.root,
-  ];
-  if (verbose) console.log("$ tsx", ingestArgs.join(" "));
-  const ingestP = spawn("tsx", ingestArgs, {
+  const ingestArgs = ["ingest", "--db", params.localDb, "--root", params.root];
+  if (verbose) console.log("ccsync", ingestArgs.join(" "));
+  const ingestP = spawn("ccsync", ingestArgs, {
     stdio: [
       "pipe",
       verbose ? "inherit" : "ignore",
@@ -356,6 +355,7 @@ class HotWatchManager {
   private lru: string[] = []; // oldest first
 
   constructor(
+    // @ts-ignore
     private side: "alpha" | "beta",
     private root: string,
     private onHotEvent: (abs: string, ev: string) => void,
@@ -672,7 +672,7 @@ async function oneCycle(): Promise<void> {
         root: alphaRoot,
         localDb: alphaDb,
       })
-    : await spawnTask("tsx", ["src/scan.ts", alphaRoot], { DB_PATH: alphaDb });
+    : await spawnTask("ccsync", ["scan", alphaRoot], { DB_PATH: alphaDb });
 
   seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
 
@@ -687,7 +687,7 @@ async function oneCycle(): Promise<void> {
         root: betaRoot,
         localDb: betaDb,
       })
-    : await spawnTask("tsx", ["src/scan.ts", betaRoot], { DB_PATH: betaDb });
+    : await spawnTask("ccsync", ["scan", betaRoot], { DB_PATH: betaDb });
 
   seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
 
@@ -695,7 +695,7 @@ async function oneCycle(): Promise<void> {
   // For now we pass through the host flags (no harm if ignored).
   log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
   const mArgs = [
-    "src/merge-rsync.ts",
+    "merge",
     "--alpha-root",
     alphaRoot,
     "--beta-root",
@@ -714,7 +714,7 @@ async function oneCycle(): Promise<void> {
   if (dryRun) mArgs.push("--dry-run", "true");
   if (verbose) mArgs.push("--verbose", "true");
 
-  const m = await spawnTask("tsx", mArgs);
+  const m = await spawnTask("ccsync", mArgs);
 
   const ms = Date.now() - t0;
   lastCycleMs = ms;
