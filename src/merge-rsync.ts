@@ -49,7 +49,6 @@ function rsyncArgsDelete() {
 function run(
   cmd: string,
   args: string[],
-  cwd?: string,
   okCodes: number[] = [0],
 ): Promise<void> {
   if (verbose)
@@ -57,7 +56,7 @@ function run(
       `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
     );
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: "inherit", cwd });
+    const p = spawn(cmd, args, { stdio: "inherit" });
     p.on("exit", (code) =>
       code !== null && okCodes.includes(code)
         ? resolve()
@@ -268,10 +267,14 @@ async function main() {
     label: string,
   ) {
     if (!(await fileNonEmpty(listFile))) {
-      if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
+      if (verbose) {
+        console.log(`>>> rsync ${label}: nothing to do`);
+      }
       return;
     }
-    console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+    if (verbose) {
+      console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+    }
     const args = [
       ...rsyncArgsBase(),
       "--from0",
@@ -280,6 +283,9 @@ async function main() {
       toRoot.endsWith("/") ? toRoot : toRoot + "/",
     ];
     await run("rsync", args);
+    if (verbose) {
+      console.log(`>>> rsync ${label}: done`);
+    }
   }
 
   async function rsyncDelete(
@@ -302,7 +308,7 @@ async function main() {
       toRoot.endsWith("/") ? toRoot : toRoot + "/",
     ];
     // With --delete-missing-args, exit 24 is normal/ok when entries don't exist on sender.
-    await run("rsync", args, undefined, [0, 24]);
+    await run("rsync", args, [0, 24]);
   }
 
   await rsyncCopy(alphaRoot, betaRoot, listToBeta, "alpha→beta");
@@ -310,6 +316,7 @@ async function main() {
   await rsyncDelete(alphaRoot, betaRoot, listDelInBeta, "alpha deleted");
   await rsyncDelete(betaRoot, alphaRoot, listDelInAlpha, "beta deleted");
 
+  console.log("rsync's all done, now updating database");
   // ---------- update base to the MERGED result (store RELATIVE paths) ----------
   const upsertBase = db.prepare(`
   INSERT INTO base(path,hash,deleted) VALUES (?,?,?)
@@ -319,15 +326,23 @@ async function main() {
   const bHashStmt = db.prepare(`SELECT hash FROM beta_rel  WHERE rpath = ?`);
 
   const tx = db.transaction(() => {
-    for (const r of toBeta)
+    for (const r of toBeta) {
       upsertBase.run(r, aHashStmt.get(r)?.hash ?? null, 0);
-    for (const r of toAlpha)
+    }
+    for (const r of toAlpha) {
       upsertBase.run(r, bHashStmt.get(r)?.hash ?? null, 0);
-    for (const r of delInBeta) upsertBase.run(r, null, 1);
-    for (const r of delInAlpha) upsertBase.run(r, null, 1);
+    }
+    for (const r of delInBeta) {
+      upsertBase.run(r, null, 1);
+    }
+    for (const r of delInAlpha) {
+      upsertBase.run(r, null, 1);
+    }
   });
+  console.log("commit transaction");
   tx();
 
+  console.log("database updated!");
   console.log("Merge complete.");
 }
 
