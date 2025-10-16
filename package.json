@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
     "prepare": "pnpm run build"
   },
   "engines": { "node": ">=24" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "DESIGN.md", "LICENSE"],
   "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "ISC",
   "packageManager": "pnpm@10.15.0",
@@ -40,5 +40,10 @@
     "typescript": "^5.9.3"
   },
   "author": "William Stein (wstein@sagemath.com)",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sagemathinc/ccsync"
+  },
+  "homepage": "https://github.com/sagemathinc/ccsync"
 }
