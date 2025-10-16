@@ -13,7 +13,8 @@
   "packageManager": "pnpm@10.15.0",
   "dependencies": {
     "@nodelib/fs.walk": "^3.0.1",
-    "better-sqlite3": "^12.4.1"
+    "better-sqlite3": "^12.4.1",
+    "chokidar": "^4.0.3"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
