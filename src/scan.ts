@@ -1,7 +1,12 @@
+// scan.ts
 import Database from "better-sqlite3";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
+
+// use --emit-delta to have this output json to stdout when it updates
+// so that it can be used remotely over ssh.
+const emitDelta = process.argv.includes("--emit-delta");
 
 type Row = {
   path: string;
@@ -47,7 +52,6 @@ const insTouch = db.prepare(
   `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
 );
 
-// and whenever you flush your DB batch, also flush touches:
 const touchTx = db.transaction((rows: [string, number][]) => {
   for (const [p, t] of rows) insTouch.run(p, t);
 });
@@ -104,7 +108,7 @@ type Result =
 
 const workers = Array.from(
   { length: CPU_COUNT },
-  () => new Worker(new URL("./hash-worker.ts", import.meta.url)),
+  () => new Worker(new URL("./hash-worker", import.meta.url)),
 );
 const freeWorkers: Worker[] = [...workers];
 const waiters: Array<() => void> = [];
@@ -121,6 +125,25 @@ function nextWorker(): Promise<Worker> {
 const hashResults: { path: string; hash: string; ctime: number }[] = [];
 const touchBatch: [string, number][] = [];
 
+// Emit buffering (fewer stdout writes)
+const deltaBuf: string[] = [];
+const emitObj = (o: any) => {
+  if (!emitDelta) return;
+  deltaBuf.push(JSON.stringify(o));
+  if (deltaBuf.length >= 1000) flushDeltaBuf();
+};
+function flushDeltaBuf() {
+  if (!emitDelta || deltaBuf.length === 0) return;
+  process.stdout.write(deltaBuf.join("\n") + "\n");
+  deltaBuf.length = 0;
+}
+
+// Keep minimal metadata for paths that will be hashed so we can emit a full row
+const pendingMeta = new Map<
+  string,
+  { size: number; ctime: number; mtime: number }
+>();
+
 let dispatched = 0;
 let received = 0;
 
@@ -133,18 +156,31 @@ for (const w of workers) {
     const arr = msg.done || [];
     received += arr.length;
 
-    // Collect successful ones for batched DB write
+    // Collect successful ones for batched DB write and emit deltas
     for (const r of arr) {
       if ("error" in r) {
-        // Log and continue
-        // console.error("hash error:", r.path, r.error);
+        // ignore per-file hash errors in this pass
       } else {
         hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
         touchBatch.push([r.path, Date.now()]);
+        // Emit delta line with full metadata if we have it
+        const meta = pendingMeta.get(r.path);
+        if (meta) {
+          emitObj({
+            path: r.path,
+            size: meta.size,
+            ctime: meta.ctime,
+            mtime: meta.mtime,
+            hash: r.hash,
+            deleted: 0,
+          });
+          pendingMeta.delete(r.path);
+        }
         if (hashResults.length >= DB_BATCH_SIZE) {
           applyHashBatch(hashResults);
           hashResults.length = 0;
           flushTouchBatch(touchBatch);
+          flushDeltaBuf();
         }
       }
     }
@@ -172,6 +208,7 @@ async function scan(root: string) {
       hashResults.length = 0;
       flushTouchBatch(touchBatch);
     }
+    flushDeltaBuf();
   }, 500).unref();
 
   // Mini-buffers
@@ -210,17 +247,20 @@ async function scan(root: string) {
       last_seen: scan_id,
       hashed_ctime: null,
     });
+
     if (metaBuf.length >= DB_BATCH_SIZE) {
       applyMetaBatch(metaBuf);
       metaBuf.length = 0;
     }
 
-    // Decide if we need to hash: only when ctime changed since last time
+    // Decide if we need to hash: only when ctime changed since last time (or brand new)
     const row = getExisting.get(full);
     const needsHash = !row || row.hashed_ctime !== ctime;
 
     if (needsHash) {
-      //console.log(full, !row, row?.hashed_ctime, ctime);
+      // remember minimal meta so we can emit a full delta row when the hash arrives
+      pendingMeta.set(full, { size, ctime, mtime });
+
       jobBuf.push({ path: full, size, ctime, mtime });
       // Dispatch in batches to minimize IPC
       if (jobBuf.length >= DISPATCH_BATCH) {
@@ -251,14 +291,28 @@ async function scan(root: string) {
     await new Promise((r) => setTimeout(r, 20));
   }
 
-  // Final flush of hash results and meta
+  // Final flush of hash results and touches
   if (hashResults.length) {
     applyHashBatch(hashResults);
     hashResults.length = 0;
     flushTouchBatch(touchBatch);
   }
-  // Mark deletions (anything not seen this pass)
-  db.prepare(`UPDATE files SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
+  flushDeltaBuf();
+
+  // Compute deletions (anything not seen this pass and not already deleted)
+  // Select first so we know which paths to emit as deletions.
+  const toDelete = db
+    .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
+    .all(scan_id) as { path: string }[];
+
+  // Mark deletions
+  db.prepare(`UPDATE files SET deleted = 1 WHERE last_seen <> ?`).run(scan_id);
+
+  // Emit deletions
+  if (emitDelta && toDelete.length) {
+    for (const r of toDelete) emitObj({ path: r.path, deleted: 1 });
+    flushDeltaBuf();
+  }
 
   clearInterval(periodicFlush);
   await Promise.all(workers.map((w) => w.terminate()));
