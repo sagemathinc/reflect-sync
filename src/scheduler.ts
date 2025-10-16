@@ -1,25 +1,12 @@
-// Minimal orchestrator:
-// - Runs scan(alpha), scan(beta), then merge-rsync
-// - Dynamic interval: next = clamp(2x lastCycleMs, min=3s, max=120s)
-// - chokidar watches both roots; any change debounces a "run soon"
-// - Logs events to base.db (table 'events')
-// - Simple backoff on rsync failures (up to MAX_BACKOFF_MS)
-//
-// Usage example:
-//   tsx src/scheduler.ts \
-//     --alpha-root /srv/alpha \
-//     --beta-root  /srv/beta  \
-//     --alpha-db   alpha.db   \
-//     --beta-db    beta.db    \
-//     --base-db    base.db    \
-//     --prefer     alpha      \
-//     --verbose    true
-//
-// Optional env to pass scan tuning (you already support DB_PATH):
-//   SCAN_CONCURRENCY=128 SCAN_DISPATCH_BATCH=256 SCAN_DB_BATCH=2000
+// Minimal orchestrator with adaptive watching:
+// - Shallow root watchers (depth-limited) to discover candidate subtrees
+// - Bounded HotWatchManager adds depth-limited watchers on hot subtrees
+// - Escalates deeper on activity at the depth frontier
+// - Seeds hot subtrees from recent_touch after each scan
+// - Reuses your microSync + full cycle merge-rsync flow
 
 import { spawn } from "node:child_process";
-import chokidar from "chokidar";
+import chokidar, { FSWatcher } from "chokidar";
 import Database from "better-sqlite3";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -71,6 +58,12 @@ if (!alphaRoot || !betaRoot) {
   console.error("Need --alpha-root and --beta-root");
   process.exit(1);
 }
+
+// ---------- adaptive watcher config ----------
+const MAX_HOT_WATCHERS = Number(process.env.MAX_HOT_WATCHERS ?? 256);
+const HOT_TTL_MS = Number(process.env.HOT_TTL_MS ?? 3 * 60_000);
+const SHALLOW_DEPTH = Number(process.env.SHALLOW_DEPTH ?? 1); // 0 or 1 recommended
+const HOT_DEPTH = Number(process.env.HOT_DEPTH ?? 2); // depth under hot anchor
 
 // ---------- logging ----------
 const db = new Database(baseDb);
@@ -159,6 +152,35 @@ async function fileNonEmpty(p: string) {
 const join0 = (items: string[]) =>
   Buffer.from(items.filter(Boolean).join("\0") + (items.length ? "\0" : ""));
 
+const norm = (p: string) =>
+  path.sep === "/" ? p : p.split(path.sep).join("/");
+function rel(root: string, full: string): string {
+  let r = path.relative(root, full);
+  if (r === "" || r === ".") return "";
+  if (path.sep !== "/") r = r.split(path.sep).join("/");
+  return r;
+}
+const parentDir = (r: string) => norm(path.posix.dirname(r || ".")); // "" -> "."
+
+function relDepth(rootAbs: string, absPath: string): number {
+  const r = norm(path.relative(rootAbs, absPath));
+  if (!r || r === ".") return 0;
+  return r.split("/").length - 1;
+}
+
+// collapse many siblings under a parent if possible
+function minimalCover(dirs: string[]): string[] {
+  const sorted = Array.from(new Set(dirs)).sort((a, b) => a.length - b.length);
+  const out: string[] = [];
+  for (const d of sorted) {
+    if (
+      !out.some((p) => d === p || d.startsWith(p.endsWith("/") ? p : p + "/"))
+    )
+      out.push(d);
+  }
+  return out;
+}
+
 // ---------- scheduler state ----------
 let running = false,
   pending = false,
@@ -184,12 +206,7 @@ function requestSoon(reason: string) {
 const hotAlpha = new Set<string>(); // rpaths relative to alphaRoot
 const hotBeta = new Set<string>(); // rpaths relative to betaRoot
 let hotTimer: NodeJS.Timeout | null = null;
-function rel(root: string, full: string): string {
-  let r = path.relative(root, full);
-  if (r === "" || r === ".") return "";
-  if (path.sep !== "/") r = r.split(path.sep).join("/");
-  return r;
-}
+
 function scheduleHotFlush() {
   if (hotTimer) return;
   hotTimer = setTimeout(async () => {
@@ -206,44 +223,16 @@ function scheduleHotFlush() {
         err: String(e?.message || e),
       });
     } finally {
-      // If more events landed while we were syncing, run another micro batch right away.
       if (hotAlpha.size || hotBeta.size) {
-        scheduleHotFlush(); // run another micro pass
+        scheduleHotFlush(); // run another micro pass if more landed
       }
-      // ask main loop to run soon to verify and update base
       requestSoon("micro-sync complete");
     }
   }, 200); // short debounce
 }
 
-// ---------- chokidar ----------
-const watcher = chokidar.watch([alphaRoot, betaRoot], {
-  persistent: true,
-  ignoreInitial: true,
-  depth: 2,
-  awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
-});
-["add", "change", "unlink"].forEach((evt) => {
-  watcher.on(evt as any, (p) => {
-    if (p.startsWith(alphaRoot)) {
-      const r = rel(alphaRoot, p);
-      if (r) {
-        hotAlpha.add(r);
-        scheduleHotFlush();
-      }
-    } else if (p.startsWith(betaRoot)) {
-      const r = rel(betaRoot, p);
-      if (r) {
-        hotBeta.add(r);
-        scheduleHotFlush();
-      }
-    }
-  });
-});
-
 const cooldownMs = 300;
 const lastPush = new Map<string, number>(); // rpath -> ts
-
 function keepFresh(rpaths: string[]) {
   const now = Date.now();
   const out: string[] = [];
@@ -257,6 +246,188 @@ function keepFresh(rpaths: string[]) {
   return out;
 }
 
+// ---------- HotWatchManager (bounded, depth-limited, with escalation) ----------
+class HotWatchManager {
+  private map = new Map<string, { watcher: FSWatcher; expiresAt: number }>();
+  private lru: string[] = []; // oldest first
+
+  constructor(
+    private side: "alpha" | "beta",
+    private root: string,
+    private onHotEvent: (abs: string, ev: string) => void,
+  ) {
+    console.log("created hot watch manager", this.side);
+  }
+
+  size() {
+    return this.map.size;
+  }
+
+  async add(rdir: string) {
+    rdir = rdir === "" ? "." : rdir;
+    const anchorAbs = norm(path.join(this.root, rdir));
+    const now = Date.now();
+
+    if (this.map.has(anchorAbs)) {
+      this.bump(anchorAbs);
+      this.map.get(anchorAbs)!.expiresAt = now + HOT_TTL_MS;
+      return;
+    }
+
+    const watcher = chokidar.watch(anchorAbs, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: HOT_DEPTH, // limit depth under this anchor
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    });
+
+    const handler = async (ev: string, abs: string) => {
+      // realtime push for the concrete file/dir
+      this.onHotEvent(abs, ev);
+
+      // escalate deeper when event is at frontier depth
+      const d = relDepth(anchorAbs, abs);
+      if (d >= HOT_DEPTH && this.map.size < MAX_HOT_WATCHERS) {
+        const deeperDir = norm(path.dirname(abs));
+        const r = norm(path.relative(this.root, deeperDir));
+        if (r && r !== ".") await this.add(r);
+      }
+
+      // refresh TTL & LRU
+      const st = this.map.get(anchorAbs);
+      if (st) st.expiresAt = Date.now() + HOT_TTL_MS;
+      this.bump(anchorAbs);
+    };
+
+    ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+      watcher.on(evt as any, (p: string) => handler(evt, p));
+    });
+
+    this.map.set(anchorAbs, { watcher, expiresAt: now + HOT_TTL_MS });
+    this.lru.push(anchorAbs);
+    await this.evictIfNeeded();
+  }
+
+  private bump(abs: string) {
+    const i = this.lru.indexOf(abs);
+    if (i >= 0) {
+      this.lru.splice(i, 1);
+      this.lru.push(abs);
+    }
+  }
+
+  private async evictIfNeeded() {
+    const now = Date.now();
+    for (const [abs, st] of Array.from(this.map)) {
+      if (st.expiresAt <= now) await this.drop(abs);
+    }
+    while (this.map.size > MAX_HOT_WATCHERS) {
+      const victim = this.lru.shift();
+      if (!victim) break;
+      if (this.map.has(victim)) await this.drop(victim);
+    }
+  }
+
+  private async drop(abs: string) {
+    const st = this.map.get(abs);
+    if (!st) return;
+    await st.watcher.close().catch(() => {});
+    this.map.delete(abs);
+    const i = this.lru.indexOf(abs);
+    if (i >= 0) this.lru.splice(i, 1);
+  }
+
+  async closeAll() {
+    await Promise.all(
+      Array.from(this.map.values()).map((s) =>
+        s.watcher.close().catch(() => {}),
+      ),
+    );
+    this.map.clear();
+    this.lru = [];
+  }
+}
+
+// ---------- shallow root watchers + hot managers ----------
+function onAlphaHot(abs: string, evt: string) {
+  const r = rel(alphaRoot, abs);
+  if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
+    hotAlpha.add(r);
+    scheduleHotFlush();
+  }
+}
+function onBetaHot(abs: string, evt: string) {
+  const r = rel(betaRoot, abs);
+  if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
+    hotBeta.add(r);
+    scheduleHotFlush();
+  }
+}
+
+const hotAlphaMgr = new HotWatchManager("alpha", alphaRoot, onAlphaHot);
+const hotBetaMgr = new HotWatchManager("beta", betaRoot, onBetaHot);
+
+// very cheap root watchers
+const shallowAlpha = chokidar.watch(alphaRoot, {
+  persistent: true,
+  ignoreInitial: true,
+  depth: SHALLOW_DEPTH,
+  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+});
+const shallowBeta = chokidar.watch(betaRoot, {
+  persistent: true,
+  ignoreInitial: true,
+  depth: SHALLOW_DEPTH,
+  awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+});
+
+// any shallow signal -> start (or refresh) a hot subtree watcher on its parent
+["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+  shallowAlpha.on(evt as any, async (p: string) => {
+    const rdir = parentDir(rel(alphaRoot, p));
+    if (rdir) await hotAlphaMgr.add(rdir);
+  });
+  shallowBeta.on(evt as any, async (p: string) => {
+    const rdir = parentDir(rel(betaRoot, p));
+    if (rdir) await hotBetaMgr.add(rdir);
+  });
+});
+
+// ---------- seed hot watchers from DB recent_touch ----------
+function seedHotFromDb(
+  dbPath: string,
+  root: string,
+  mgr: HotWatchManager,
+  sinceTs: number | null,
+  maxDirs = 256,
+) {
+  const sdb = new Database(dbPath);
+  try {
+    const rows = sinceTs
+      ? sdb
+          .prepare(
+            `SELECT path FROM recent_touch WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+          )
+          .all(sinceTs, maxDirs * 8)
+      : sdb
+          .prepare(`SELECT path FROM recent_touch ORDER BY ts DESC LIMIT ?`)
+          .all(maxDirs * 8);
+
+    const dirs = rows
+      .map((r: any) => parentDir(norm(path.relative(root, r.path))))
+      .filter(Boolean);
+    const covered = minimalCover(dirs).slice(0, maxDirs);
+    covered.forEach((d) => mgr.add(d));
+    if (verbose)
+      log("info", "watch", `seeded ${covered.length} hot dirs from ${dbPath}`);
+  } catch {
+    // table may not exist yet; ignore
+  } finally {
+    sdb.close();
+  }
+}
+
+// ---------- realtime micro-sync (unchanged from your version) ----------
 async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
   // Decide direction per rpath using just the event sets
   const setA = new Set(rpathsAlpha);
@@ -270,7 +441,6 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
     const aTouched = setA.has(r);
     const bTouched = setB.has(r);
     if (aTouched && bTouched) {
-      // conflict right now: push prefer side
       if (prefer === "alpha") toBeta.push(r);
       else toAlpha.push(r);
     } else if (aTouched) {
@@ -347,8 +517,7 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
       [0, 23, 24],
     );
   }
-
-  // No base updates here — the normal full cycle will verify and finalize.
+  // No base updates here — the full cycle will verify and finalize.
 }
 
 // ---------- full cycle ----------
@@ -356,15 +525,20 @@ async function oneCycle(): Promise<void> {
   running = true;
   const t0 = Date.now();
 
-  // Scan alpha & beta
+  // Scan alpha & beta (record start times so we can seed recent touches since each scan)
+  const tAlphaStart = Date.now();
   log("info", "scan", `alpha: ${alphaRoot}`);
   const a = await spawnTask("tsx", ["src/scan.ts", alphaRoot], {
     DB_PATH: alphaDb,
   });
+  seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
+
+  const tBetaStart = Date.now();
   log("info", "scan", `beta: ${betaRoot}`);
   const b = await spawnTask("tsx", ["src/scan.ts", betaRoot], {
     DB_PATH: betaDb,
   });
+  seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
 
   // Merge/rsync (full)
   log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
@@ -449,7 +623,13 @@ log("info", "scheduler", "starting", {
   prefer,
   dryRun,
   verbose,
+  MAX_HOT_WATCHERS,
+  HOT_TTL_MS,
+  SHALLOW_DEPTH,
+  HOT_DEPTH,
 });
+
+// cheap root watchers start immediately; hot managers add anchors on demand
 loop().catch((e) => {
   log("error", "scheduler", "fatal", { err: String(e?.stack || e) });
   process.exit(1);

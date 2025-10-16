@@ -36,6 +36,27 @@ CREATE TABLE IF NOT EXISTS files (
 );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS recent_touch (
+    path TEXT PRIMARY KEY,
+    ts   INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_recent_touch_ts ON recent_touch(ts);
+`);
+const insTouch = db.prepare(
+  `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
+);
+
+// and whenever you flush your DB batch, also flush touches:
+const touchTx = db.transaction((rows: [string, number][]) => {
+  for (const [p, t] of rows) insTouch.run(p, t);
+});
+function flushTouchBatch(touchBatch: [string, number][]) {
+  if (!touchBatch.length) return;
+  touchTx(touchBatch);
+  touchBatch.length = 0;
+}
+
 function ensureColumn(col: string, def: string) {
   try {
     db.prepare(`ALTER TABLE files ADD COLUMN ${col} ${def}`).run();
@@ -98,6 +119,7 @@ function nextWorker(): Promise<Worker> {
 
 // Buffer for hash results (to batch DB writes)
 const hashResults: { path: string; hash: string; ctime: number }[] = [];
+const touchBatch: [string, number][] = [];
 
 let dispatched = 0;
 let received = 0;
@@ -118,9 +140,11 @@ for (const w of workers) {
         // console.error("hash error:", r.path, r.error);
       } else {
         hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
+        touchBatch.push([r.path, Date.now()]);
         if (hashResults.length >= DB_BATCH_SIZE) {
           applyHashBatch(hashResults);
           hashResults.length = 0;
+          flushTouchBatch(touchBatch);
         }
       }
     }
@@ -146,6 +170,7 @@ async function scan(root: string) {
     if (hashResults.length) {
       applyHashBatch(hashResults);
       hashResults.length = 0;
+      flushTouchBatch(touchBatch);
     }
   }, 500).unref();
 
@@ -227,9 +252,11 @@ async function scan(root: string) {
   }
 
   // Final flush of hash results and meta
-  if (hashResults.length) applyHashBatch(hashResults);
-  hashResults.length = 0;
-
+  if (hashResults.length) {
+    applyHashBatch(hashResults);
+    hashResults.length = 0;
+    flushTouchBatch(touchBatch);
+  }
   // Mark deletions (anything not seen this pass)
   db.prepare(`UPDATE files SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
 
