@@ -25,7 +25,6 @@
 import { spawn } from "node:child_process";
 import chokidar from "chokidar";
 import Database from "better-sqlite3";
-import path from "node:path";
 
 type Args = Record<string, string | boolean>;
 function parseArgs(): Args {
@@ -168,7 +167,7 @@ const watcher = chokidar.watch([alphaRoot, betaRoot], {
   depth: undefined, // full depth
 });
 ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-  watcher.on(evt, (p) => {
+  watcher.on(evt as any, (p: string) => {
     // Only react to likely file changes (add/change/unlink)
     if (evt === "change" || evt === "add" || evt === "unlink") {
       requestSoon(`${evt}:${p}`);
