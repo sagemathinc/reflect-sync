@@ -8,6 +8,13 @@ import * as walk from "@nodelib/fs.walk";
 // use --emit-delta to have this output json to stdout when it updates
 // so that it can be used remotely over ssh.
 const emitDelta = process.argv.includes("--emit-delta");
+let DB_PATH: string;
+const i = process.argv.indexOf("--db");
+if (i == -1) {
+  DB_PATH = "alpha.db";
+} else {
+  DB_PATH = process.argv[i + 1];
+}
 
 type Row = {
   path: string;
@@ -19,7 +26,7 @@ type Row = {
   hashed_ctime: number | null;
 };
 
-const DB_PATH = process.env.DB_PATH ?? "alpha.db";
+console.log("running scan with database = ", DB_PATH);
 const CPU_COUNT = Math.min(os.cpus().length, 8);
 const DB_BATCH_SIZE = 2000;
 const DISPATCH_BATCH = 256; // files per worker message
@@ -49,6 +56,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_recent_touch_ts ON recent_touch(ts);
 `);
+
 const insTouch = db.prepare(
   `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
 );
@@ -56,6 +64,7 @@ const insTouch = db.prepare(
 const touchTx = db.transaction((rows: [string, number][]) => {
   for (const [p, t] of rows) insTouch.run(p, t);
 });
+
 function flushTouchBatch(touchBatch: [string, number][]) {
   if (!touchBatch.length) return;
   touchTx(touchBatch);

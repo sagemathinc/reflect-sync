@@ -130,7 +130,6 @@ function log(
 function spawnTask(
   cmd: string,
   args: string[],
-  envExtra: Record<string, string> = {},
   okCodes: number[] = [0],
   opts: SpawnOptions = {},
 ): Promise<{
@@ -147,7 +146,6 @@ function spawnTask(
     let lastZero = false;
     const p = spawn(cmd, args, {
       stdio: verbose ? "inherit" : "ignore",
-      env: { ...process.env, ...envExtra },
       ...opts,
     });
     p.on("exit", (code) => {
@@ -618,7 +616,6 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
         from,
         to,
       ],
-      {},
       [0, 23, 24],
     );
   }
@@ -644,7 +641,6 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
         from,
         to,
       ],
-      {},
       [0, 23, 24],
     );
   }
@@ -671,7 +667,7 @@ async function oneCycle(): Promise<void> {
         root: alphaRoot,
         localDb: alphaDb,
       })
-    : await spawnTask("ccsync", ["scan", alphaRoot], { DB_PATH: alphaDb });
+    : await spawnTask("ccsync", ["scan", alphaRoot, "--db", alphaDb]);
 
   seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
 
@@ -686,7 +682,7 @@ async function oneCycle(): Promise<void> {
         root: betaRoot,
         localDb: betaDb,
       })
-    : await spawnTask("ccsync", ["scan", betaRoot], { DB_PATH: betaDb });
+    : await spawnTask("ccsync", ["scan", betaRoot, "--db", betaDb]);
 
   seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
 
@@ -710,8 +706,8 @@ async function oneCycle(): Promise<void> {
   ];
   if (alphaHost) mArgs.push("--alpha-host", alphaHost);
   if (betaHost) mArgs.push("--beta-host", betaHost);
-  if (dryRun) mArgs.push("--dry-run", "true");
-  if (verbose) mArgs.push("--verbose", "true");
+  if (dryRun) mArgs.push("--dry-run");
+  if (verbose) mArgs.push("--verbose");
 
   const m = await spawnTask("ccsync", mArgs);
 

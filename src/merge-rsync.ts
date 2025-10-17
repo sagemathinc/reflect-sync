@@ -265,8 +265,8 @@ async function main() {
   const listDelInBeta = path.join(tmp, "delInBeta.list");
   const listDelInAlpha = path.join(tmp, "delInAlpha.list");
 
-  await writeFile(listToBeta, join0(toBeta));
-  await writeFile(listToAlpha, join0(toAlpha));
+  await writeFile(listToBeta, join0(makeRelative(toBeta, betaRoot)));
+  await writeFile(listToAlpha, join0(makeRelative(toAlpha, alphaRoot)));
   await writeFile(listDelInBeta, join0(delInBeta));
   await writeFile(listDelInAlpha, join0(delInAlpha));
 
@@ -436,6 +436,17 @@ async function main() {
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
 
   console.log("Merge complete.");
+}
+
+// files = absolute paths
+// root = they should all be in root
+function makeRelative(files: string[], root: string) {
+  return (
+    files
+      // safety filter
+      .filter((file) => file.startsWith(root))
+      .map((file) => file.slice(root.length+1))
+  );
 }
 
 main();
