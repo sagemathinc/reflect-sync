@@ -19,6 +19,8 @@ const betaRoot = args.get("beta-root")!;
 const alphaDb = args.get("alpha-db") ?? "alpha.db";
 const betaDb = args.get("beta-db") ?? "beta.db";
 const baseDb = args.get("base-db") ?? "base.db";
+const alphaHost = args.get("alpha-host")?.trim();
+const betaHost = args.get("beta-host")?.trim();
 const prefer = (args.get("prefer") ?? "alpha").toLowerCase();
 const dryRun = /^t|1|y/i.test(args.get("dry-run") ?? "");
 const verbose = /^t|1|y/i.test(args.get("verbose") ?? "");
@@ -30,12 +32,14 @@ function join0(items: string[]) {
     ? Buffer.from(filtered.join("\0") + "\0")
     : Buffer.alloc(0);
 }
+
 function rsyncArgsBase() {
   const a = ["-a", "--inplace", "--relative"];
   if (dryRun) a.unshift("-n");
   if (verbose) a.push("-v");
   return a;
 }
+
 function rsyncArgsDelete() {
   const a = [
     "-a",
@@ -48,6 +52,7 @@ function rsyncArgsDelete() {
   if (verbose) a.push("-v");
   return a;
 }
+
 async function fileNonEmpty(p: string) {
   try {
     return (await fsStat(p)).size > 0;
@@ -55,6 +60,7 @@ async function fileNonEmpty(p: string) {
     return false;
   }
 }
+
 function run(
   cmd: string,
   args: string[],
@@ -75,6 +81,10 @@ function run(
       resolve({ code: 1, ok: okCodes.includes(1), zero: false }),
     );
   });
+}
+
+function ensureTrailingSlash(root: string): string {
+  return root.endsWith("/") ? root : root + "/";
 }
 
 async function main() {
@@ -284,16 +294,20 @@ async function main() {
       if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
       return { zero: false };
     }
-    if (verbose) console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+    if (verbose) {
+      console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+    }
     const args = [
       ...rsyncArgsBase(),
       "--from0",
       `--files-from=${listFile}`,
-      fromRoot.endsWith("/") ? fromRoot : fromRoot + "/",
-      toRoot.endsWith("/") ? toRoot : toRoot + "/",
+      ensureTrailingSlash(fromRoot),
+      ensureTrailingSlash(toRoot),
     ];
     const res = await run("rsync", args, [0, 23, 24]); // accept partials but only advance base on exit 0
-    if (verbose) console.log(`>>> rsync ${label}: done (code ${res.code})`);
+    if (verbose) {
+      console.log(`>>> rsync ${label}: done (code ${res.code})`);
+    }
     return { zero: res.zero };
   }
 
@@ -304,7 +318,9 @@ async function main() {
     label: string,
   ) {
     if (!(await fileNonEmpty(listFile))) {
-      if (verbose) console.log(`>>> rsync delete ${label}: nothing to do`);
+      if (verbose) {
+        console.log(`>>> rsync delete ${label}: nothing to do`);
+      }
       return;
     }
     console.log(
@@ -313,20 +329,20 @@ async function main() {
     const args = [
       ...rsyncArgsDelete(),
       `--files-from=${listFile}`,
-      fromRoot.endsWith("/") ? fromRoot : fromRoot + "/",
-      toRoot.endsWith("/") ? toRoot : toRoot + "/",
+      ensureTrailingSlash(fromRoot),
+      ensureTrailingSlash(toRoot),
     ];
     await run("rsync", args, [0, 24]); // 24=vanished is fine for delete-missing-args
   }
 
-  copyAlphaBetaZero = (
-    await rsyncCopy(alphaRoot, betaRoot, listToBeta, "alpha→beta")
-  ).zero;
-  copyBetaAlphaZero = (
-    await rsyncCopy(betaRoot, alphaRoot, listToAlpha, "beta→alpha")
-  ).zero;
-  await rsyncDelete(alphaRoot, betaRoot, listDelInBeta, "alpha deleted");
-  await rsyncDelete(betaRoot, alphaRoot, listDelInAlpha, "beta deleted");
+  const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
+  const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
+  copyAlphaBetaZero = (await rsyncCopy(alpha, beta, listToBeta, "alpha→beta"))
+    .zero;
+  copyBetaAlphaZero = (await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha"))
+    .zero;
+  await rsyncDelete(alpha, beta, listDelInBeta, "alpha deleted");
+  await rsyncDelete(beta, alpha, listDelInAlpha, "beta deleted");
 
   console.log("rsync's all done, now updating database");
 

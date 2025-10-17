@@ -58,7 +58,6 @@ const prefer = String(args["prefer"] ?? "alpha").toLowerCase();
 const verbose = Boolean(args["verbose"] ?? false);
 const dryRun = Boolean(args["dry-run"] ?? false);
 
-// NEW: remote knobs
 const alphaHost =
   (args["alpha-host"] ? String(args["alpha-host"]) : "").trim() || undefined;
 const betaHost =

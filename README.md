@@ -86,7 +86,7 @@ Two ways to do it:
 ```bash
 ccsync scheduler \
   --alpha-root /srv/alpha --alpha-host user@alpha.example.com \
-  --beta-root  /srv/beta  \
+  --beta-root  /srv/beta \
   --alpha-db   alpha.db   --beta-db beta.db --base-db base.db \
   --prefer alpha --verbose true
 ```
@@ -227,3 +227,4 @@ TypeScript compiler outputs to `dist/` mirroring `src/` (see `tsconfig.json`).
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global` to get `ccsync` on your PATH.
 - For SSH use, ensure the remote has Node 24\+ and `ccsync` on PATH \(installed or included in your SEA image\). Then `ccsync scan … --emit-delta | ccsync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
+

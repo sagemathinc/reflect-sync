@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,7 +25,7 @@
     "prepare": "pnpm run build"
   },
   "engines": { "node": ">=24" },
-  "files": ["dist", "README.md", "DESIGN.md", "LICENSE"],
+  "files": ["dist", "README.md", "LICENSE"],
   "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "ISC",
   "packageManager": "pnpm@10.15.0",
