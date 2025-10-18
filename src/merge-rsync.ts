@@ -34,14 +34,14 @@ function join0(items: string[]) {
 }
 
 function rsyncArgsBase() {
-  // the -I is to NOT do rsync’s “quick check” optimization: by default rsync
-  // skips a file if size and mtime match between source and dest, but we always
-  // know based on our own rules (hashes, ctime) that we definitely do want to
-  // copy the files we explicitly list.
   const a = ["-a", "-I", "--inplace", "--relative"];
   if (dryRun) a.unshift("-n");
   if (verbose) a.push("-v");
   return a;
+  // NOTE: the -I is to NOT do rsync’s “quick check” optimization: by default rsync
+  // skips a file if size and mtime match between source and dest, but we always
+  // know based on our own rules (hashes, ctime) that we definitely do want to
+  // copy the files we explicitly list.
 }
 
 function rsyncArgsDelete() {
@@ -91,6 +91,12 @@ function run(
 function ensureTrailingSlash(root: string): string {
   return root.endsWith("/") ? root : root + "/";
 }
+
+// small helpers used by safety rails
+const asSet = (xs: string[]) => new Set(xs);
+const uniq = (xs: string[]) => Array.from(asSet(xs));
+const setMinus = (xs: string[], bad: Set<string>) =>
+  xs.filter((x) => !bad.has(x));
 
 async function main() {
   // ---------- DB ----------
@@ -199,9 +205,26 @@ async function main() {
       WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
   `);
 
+  // Index the tmp_* tables too (helps joins/NOT IN on large sets)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tmp_changedA_rpath ON tmp_changedA(rpath);
+    CREATE INDEX IF NOT EXISTS idx_tmp_changedB_rpath ON tmp_changedB(rpath);
+    CREATE INDEX IF NOT EXISTS idx_tmp_deletedA_rpath ON tmp_deletedA(rpath);
+    CREATE INDEX IF NOT EXISTS idx_tmp_deletedB_rpath ON tmp_deletedB(rpath);
+  `);
+
+  // Verbose counts to aid debugging/traceability
+  const count = (tbl: string) =>
+    (db.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).get() as any).n as number;
+  if (verbose) {
+    console.log(
+      `Planner input counts: changedA=${count("tmp_changedA")} changedB=${count("tmp_changedB")} deletedA=${count("tmp_deletedA")} deletedB=${count("tmp_deletedB")}`,
+    );
+  }
+
   // toBeta: A changed and not B changed; and if prefer=beta, exclude items
   // deleted in B. Also include A&B both changed when prefer=alpha.
-  const toBeta = db
+  let toBeta = db
     .prepare(
       `
   SELECT rpath FROM tmp_changedA
@@ -218,7 +241,7 @@ async function main() {
 
   // toAlpha: B changed and not A changed; and if prefer=alpha, exclude items
   // deleted in A.   Also include A&B both changed when prefer=beta.
-  const toAlpha = db
+  let toAlpha = db
     .prepare(
       `
   SELECT rpath FROM tmp_changedB
@@ -233,7 +256,7 @@ async function main() {
     .all(prefer, prefer)
     .map((r) => r.rpath as string);
 
-  const delInBeta = db
+  let delInBeta = db
     .prepare(
       `
     SELECT dA.rpath
@@ -251,7 +274,7 @@ async function main() {
     .all(prefer)
     .map((r) => r.rpath as string);
 
-  const delInAlpha = db
+  let delInAlpha = db
     .prepare(
       `
     SELECT dB.rpath
@@ -268,6 +291,38 @@ async function main() {
     )
     .all(prefer)
     .map((r) => r.rpath as string);
+
+  // ---------- SAFETY RAILS: de-dupe & resolve copy/delete overlaps ----------
+  toBeta = uniq(toBeta);
+  toAlpha = uniq(toAlpha);
+  delInBeta = uniq(delInBeta);
+  delInAlpha = uniq(delInAlpha);
+
+  const delInBetaSet = asSet(delInBeta);
+  const delInAlphaSet = asSet(delInAlpha);
+
+  const overlapBeta = toBeta.filter((r) => delInBetaSet.has(r));
+  const overlapAlpha = toAlpha.filter((r) => delInAlphaSet.has(r));
+
+  if (overlapBeta.length || overlapAlpha.length) {
+    console.warn(
+      `planner safety: copy/delete overlap detected (alpha→beta overlap=${overlapBeta.length}, beta→alpha overlap=${overlapAlpha.length}); dropping deletions for overlapped paths`,
+    );
+    // Favor copy over delete to avoid data loss
+    delInBeta = setMinus(delInBeta, asSet(overlapBeta));
+    delInAlpha = setMinus(delInAlpha, asSet(overlapAlpha));
+  }
+  // Assert invariant (in verbose mode) after clamping
+  if (verbose) {
+    const againBeta = toBeta.filter((r) => delInBetaSet.has(r)).length;
+    const againAlpha = toAlpha.filter((r) => delInAlphaSet.has(r)).length;
+    if (againBeta || againAlpha) {
+      console.error(
+        "planner invariant failed: copy/delete not disjoint after clamp",
+      );
+      console.error({ againBeta, againAlpha });
+    }
+  }
 
   const tmp = await mkdtemp(path.join(tmpdir(), "sync-plan-"));
   try {
@@ -373,6 +428,7 @@ async function main() {
 
     // ---------- set-based base updates (fast) ----------
     // Build plan tables from arrays
+
     db.exec(`
     DROP TABLE IF EXISTS plan_to_beta;
     DROP TABLE IF EXISTS plan_to_alpha;
@@ -412,6 +468,13 @@ async function main() {
     CREATE INDEX IF NOT EXISTS idx_plan_del_beta_rpath  ON plan_del_beta(rpath);
     CREATE INDEX IF NOT EXISTS idx_plan_del_alpha_rpath ON plan_del_alpha(rpath);
   `);
+
+    // Show plan table sizes in verbose mode
+    if (verbose) {
+      console.log(
+        `Plan table counts: to_beta=${count("plan_to_beta")} to_alpha=${count("plan_to_alpha")} del_beta=${count("plan_del_beta")} del_alpha=${count("plan_del_alpha")}`,
+      );
+    }
 
     // Now set-based updates in a single transaction (no UPSERT; use OR REPLACE)
     db.transaction(() => {

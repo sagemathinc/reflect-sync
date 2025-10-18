@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
-describe("ccsync: scan → merge-rsync happy paths and conflicts", () => {
+describe("ccsync: scan → merge-rsync simple tests and conflicts", () => {
   let tmp: string;
 
   beforeAll(async () => {
