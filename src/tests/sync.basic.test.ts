@@ -1,6 +1,4 @@
-/*
-pnpm test -- tests/sync.basic.test.ts
-*/
+// tests/sync.basic.test.ts
 
 import { sync, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
