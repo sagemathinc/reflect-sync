@@ -356,9 +356,18 @@ async function main() {
   let toBeta = db
     .prepare(
       `
-      SELECT rpath FROM tmp_changedA
-      WHERE rpath NOT IN (SELECT rpath FROM tmp_changedB)
-        AND ( ? <> 'beta' OR rpath NOT IN (SELECT rpath FROM tmp_deletedB))
+      SELECT a.rpath
+      FROM tmp_changedA a
+      WHERE a.rpath NOT IN (SELECT rpath FROM tmp_changedB)
+        AND ( ? <> 'beta'
+            OR (
+                 a.rpath NOT IN (SELECT rpath FROM tmp_deletedB)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM tmp_dirs_deletedB d
+                   WHERE a.rpath = d.rpath OR a.rpath LIKE d.rpath || '/%'
+                 )
+               )
+          )
       UNION ALL
       SELECT cA.rpath FROM tmp_changedA cA
       INNER JOIN tmp_changedB cB USING (rpath)
@@ -372,9 +381,20 @@ async function main() {
   let toAlpha = db
     .prepare(
       `
-      SELECT rpath FROM tmp_changedB
-      WHERE rpath NOT IN (SELECT rpath FROM tmp_changedA)
-        AND ( ? <> 'alpha' OR rpath NOT IN (SELECT rpath FROM tmp_deletedA))
+      SELECT b.rpath
+      FROM tmp_changedB b
+      WHERE b.rpath NOT IN (SELECT rpath FROM tmp_changedA)
+        AND ( ? <> 'alpha'
+              OR (
+                   -- exclude exact matches
+                   b.rpath NOT IN (SELECT rpath FROM tmp_deletedA)
+                   -- exclude descendants of deleted dirs in alpha
+                   AND NOT EXISTS (
+                     SELECT 1 FROM tmp_dirs_deletedA d
+                     WHERE b.rpath = d.rpath OR b.rpath LIKE d.rpath || '/%'
+                   )
+                 )
+            )
       UNION ALL
       SELECT cB.rpath FROM tmp_changedB cB
       INNER JOIN tmp_changedA cA USING (rpath)

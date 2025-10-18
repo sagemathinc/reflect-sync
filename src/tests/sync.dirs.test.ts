@@ -105,9 +105,8 @@ describe("ccsync: directory semantics", () => {
     await fsp.mkdir(aDir, { recursive: true });
     await sync(r, "alpha");
 
-    // alpha deletes dir; beta adds child file (recreates dir if needed)
+    // alpha deletes dir; beta adds child file
     await fsp.rm(aDir, { recursive: true, force: true });
-    await fsp.mkdir(bDir, { recursive: true });
     await fsp.writeFile(bFile, "beta-has-this");
 
     await sync(r, "alpha"); // prefer alpha
