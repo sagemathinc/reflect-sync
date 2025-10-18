@@ -2,10 +2,8 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-// Toggle for noisy child output while debugging
+// Toggle for noisy child output while debugging, by default.
 const VERBOSE = false;
-const verboseArg = VERBOSE ? ["--verbose", "true"] : [];
-
 
 const DIST = resolve(__dirname, "../../dist");
 
@@ -56,7 +54,13 @@ export async function mkCase(tmpBase: string, name: string): Promise<Roots> {
   return { aRoot, bRoot, aDb, bDb, baseDb };
 }
 
-export async function sync(r: Roots, prefer: "alpha" | "beta" = "alpha") {
+export async function sync(
+  r: Roots,
+  prefer: "alpha" | "beta" = "alpha",
+  verbose: boolean | undefined = undefined,
+) {
+  const verboseArg = verbose || VERBOSE ? ["--verbose"] : [];
+
   await runDist("scan.js", [r.aRoot, "--db", r.aDb, ...verboseArg]);
   await runDist("scan.js", [r.bRoot, "--db", r.bDb, ...verboseArg]);
   await runDist("merge-rsync.js", [

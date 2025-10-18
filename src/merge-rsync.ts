@@ -199,32 +199,38 @@ async function main() {
       WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
   `);
 
+  // toBeta: A changed and not B changed; and if prefer=beta, exclude items
+  // deleted in B. Also include A&B both changed when prefer=alpha.
   const toBeta = db
     .prepare(
       `
-    SELECT rpath FROM tmp_changedA
-    WHERE rpath NOT IN (SELECT rpath FROM tmp_changedB)
-    UNION ALL
-    SELECT cA.rpath FROM tmp_changedA cA
-    INNER JOIN tmp_changedB cB USING(rpath)
-    WHERE ? = 'alpha'
-  `,
+  SELECT rpath FROM tmp_changedA
+  WHERE rpath NOT IN (SELECT rpath FROM tmp_changedB)
+    AND ( ? <> 'beta' OR rpath NOT IN (SELECT rpath FROM tmp_deletedB))
+  UNION ALL
+  SELECT cA.rpath FROM tmp_changedA cA
+  INNER JOIN tmp_changedB cB USING (rpath)
+  WHERE ? = 'alpha'
+`,
     )
-    .all(prefer)
+    .all(prefer, prefer)
     .map((r) => r.rpath as string);
 
+  // toAlpha: B changed and not A changed; and if prefer=alpha, exclude items
+  // deleted in A.   Also include A&B both changed when prefer=beta.
   const toAlpha = db
     .prepare(
       `
-    SELECT rpath FROM tmp_changedB
-    WHERE rpath NOT IN (SELECT rpath FROM tmp_changedA)
-    UNION ALL
-    SELECT cB.rpath FROM tmp_changedB cB
-    INNER JOIN tmp_changedA cA USING(rpath)
-    WHERE ? = 'beta'
-  `,
+  SELECT rpath FROM tmp_changedB
+  WHERE rpath NOT IN (SELECT rpath FROM tmp_changedA)
+    AND ( ? <> 'alpha' OR rpath NOT IN (SELECT rpath FROM tmp_deletedA))
+  UNION ALL
+  SELECT cB.rpath FROM tmp_changedB cB
+  INNER JOIN tmp_changedA cA USING (rpath)
+  WHERE ? = 'beta'
+`,
     )
-    .all(prefer)
+    .all(prefer, prefer)
     .map((r) => r.rpath as string);
 
   const delInBeta = db
