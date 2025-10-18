@@ -22,8 +22,8 @@
     "dev:merge": "tsx src/merge-rsync.ts",
     "dev:scheduler": "tsx src/scheduler.ts",
     "prepare": "pnpm run build",
-    "test": "pnpm build && jest --runInBand",
-    "test:watch": "pnpm build && jest --watch --runInBand"
+    "test": "pnpm build && jest",
+    "test:watch": "pnpm build && jest --watch"
   },
   "engines": {
     "node": ">=24"
