@@ -142,9 +142,8 @@ describe("ccsync: directory semantics", () => {
     await expect(fsp.readFile(aFile, "utf8")).resolves.toBe("keep-me");
   });
 
-  // Current limitation doc-test: we don't auto delete a directory to allow a file at same path.
-  // Leaving this skipped as a living spec until we choose a policy.
-  test.skip("dir→file conflict (prefer beta): currently conservative, dir on alpha remains", async () => {
+  // We auto delete a directory to allow a file at same path.
+  test("dir→file conflict (prefer beta): currently conservative, dir on alpha remains", async () => {
     const r = await mkCase(tmp, "t-dir-to-file-limit");
     const aDir = join(r.aRoot, "clash");
     const bFile = join(r.bRoot, "clash");
@@ -154,18 +153,14 @@ describe("ccsync: directory semantics", () => {
     await sync(r, "alpha");
 
     // beta replaces with a file at same path
-    await fsp
-      .rm(join(r.bRoot, "clash"), { recursive: true, force: true })
-      .catch(() => {});
+    await fsp.rm(bFile, { recursive: true, force: true }).catch(() => {});
     await fsp.writeFile(bFile, "beta-file");
 
-    // prefer beta — but rsync file→alpha will fail since alpha has a dir there;
-    // we do not recursively delete dirs automatically (safety).
+    // prefer beta; this recursively delete dirs automatically (less safe, but
+    // the only reasonable automatic thing to do).
     await sync(r, "beta");
 
-    // Expected current behavior: divergence remains (dir in alpha, file in beta).
-    await expect(dirExists(join(r.aRoot, "clash"))).resolves.toBe(true);
-    await expect(fileExists(join(r.aRoot, "clash"))).resolves.toBe(false);
-    await expect(fileExists(join(r.bRoot, "clash"))).resolves.toBe(true);
+    await expect(fileExists(aDir)).resolves.toBe(true);
+    await expect(fileExists(bFile)).resolves.toBe(true);
   });
 });

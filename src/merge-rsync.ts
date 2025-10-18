@@ -693,25 +693,39 @@ async function main() {
       toRoot: string,
       listFile: string,
       label: string,
+      opts: { forceEmptySource?: boolean } = {},
     ) {
       if (!(await fileNonEmpty(listFile))) {
-        if (verbose) {
-          console.log(`>>> rsync delete ${label}: nothing to do`);
-        }
+        if (verbose) console.log(`>>> rsync delete ${label}: nothing to do`);
         return;
       }
-      if (verbose) {
-        console.log(
-          `>>> rsync delete ${label} (missing in ${fromRoot} => delete in ${toRoot})`,
-        );
+
+      // Force all listed paths to be "missing" by using an empty temp source dir
+      let sourceRoot = ensureTrailingSlash(fromRoot);
+      let tmpEmptyDir: string | null = null;
+      try {
+        if (opts.forceEmptySource) {
+          tmpEmptyDir = await mkdtemp(path.join(tmpdir(), "rsync-empty-"));
+          sourceRoot = ensureTrailingSlash(tmpEmptyDir);
+        }
+
+        if (verbose) {
+          console.log(
+            `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
+          );
+        }
+        const args = [
+          ...rsyncArgsDelete(), // includes --delete-missing-args --force
+          `--files-from=${listFile}`,
+          sourceRoot,
+          ensureTrailingSlash(toRoot),
+        ];
+        await run("rsync", args, [0, 24]);
+      } finally {
+        if (tmpEmptyDir) {
+          await rm(tmpEmptyDir, { recursive: true, force: true });
+        }
       }
-      const args = [
-        ...rsyncArgsDelete(),
-        `--files-from=${listFile}`,
-        ensureTrailingSlash(fromRoot),
-        ensureTrailingSlash(toRoot),
-      ];
-      await run("rsync", args, [0, 24]); // 24=vanished is fine
     }
 
     const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
