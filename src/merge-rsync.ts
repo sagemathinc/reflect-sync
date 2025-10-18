@@ -111,15 +111,10 @@ async function main() {
       hash TEXT,
       deleted INTEGER DEFAULT 0
     );
-    CREATE INDEX IF NOT EXISTS idx_base_path ON base(path);
   `);
 
   db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
   db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
-
-  // indexes on attached DBs (schema lives there)
-  db.exec(`CREATE INDEX IF NOT EXISTS alpha.idx_files_path ON files(path);`);
-  db.exec(`CREATE INDEX IF NOT EXISTS beta.idx_files_path  ON files(path);`);
 
   // ---------- Build relative-path temp tables ----------
   db.exec(

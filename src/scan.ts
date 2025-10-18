@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // scan.ts
-import Database from "better-sqlite3";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
+import { getDb } from "./db.js";
 
 // use --emit-delta to have this output json to stdout when it updates
 // so that it can be used remotely over ssh.
@@ -36,30 +36,7 @@ const DB_BATCH_SIZE = 2000;
 const DISPATCH_BATCH = 256; // files per worker message
 
 // ----------------- SQLite setup -----------------
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS files (
-  path TEXT PRIMARY KEY,
-  size INTEGER,
-  ctime INTEGER,
-  mtime INTEGER,
-  hash TEXT,
-  deleted INTEGER DEFAULT 0,
-  last_seen INTEGER,
-  hashed_ctime INTEGER
-);
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS recent_touch (
-    path TEXT PRIMARY KEY,
-    ts   INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_recent_touch_ts ON recent_touch(ts);
-`);
+const db = getDb(DB_PATH);
 
 const insTouch = db.prepare(
   `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
@@ -75,16 +52,27 @@ function flushTouchBatch(touchBatch: [string, number][]) {
   touchBatch.length = 0;
 }
 
-function ensureColumn(col: string, def: string) {
-  try {
-    db.prepare(`ALTER TABLE files ADD COLUMN ${col} ${def}`).run();
-  } catch {
-    // ignore if it already exists
-  }
-}
-// For existing DBs that predate these:
-ensureColumn("last_seen", "INTEGER");
-ensureColumn("hashed_ctime", "INTEGER");
+// for directory metadata
+const upsertDir = db.prepare(`
+INSERT INTO dirs(path, ctime, mtime, deleted, last_seen)
+VALUES (@path, @ctime, @mtime, 0, @scan_id)
+ON CONFLICT(path) DO UPDATE SET
+  ctime=excluded.ctime,
+  mtime=excluded.mtime,
+  deleted=0,
+  last_seen=excluded.last_seen
+`);
+
+type DirRow = {
+  path: string;
+  ctime: number;
+  mtime: number;
+  scan_id: number;
+};
+
+const applyDirBatch = db.transaction((rows: DirRow[]) => {
+  for (const r of rows) upsertDir.run(r);
+});
 
 const upsertMeta = db.prepare(`
 INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen,hashed_ctime)
@@ -211,7 +199,7 @@ async function scan(root: string) {
     stats: true,
     followSymbolicLinks: false,
     concurrency: 128,
-    entryFilter: (e) => e.dirent.isFile(),
+    entryFilter: (e) => e.dirent.isFile() || e.dirent.isDirectory(),
     errorFilter: () => true,
   });
 
@@ -227,6 +215,7 @@ async function scan(root: string) {
 
   // Mini-buffers
   const metaBuf: Row[] = [];
+  const dirMetaBuf: DirRow[] = [];
   let jobBuf: Job[] = [];
 
   // Prepare a fast fetch of existing meta to check ctime change
@@ -242,46 +231,62 @@ async function scan(root: string) {
   >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
 
   for await (const entry of stream as AsyncIterable<{
+    dirent;
     path: string;
     stats: import("fs").Stats;
   }>) {
     const full = entry.path; // already full path
     const st = entry.stats!;
-    const size = st.size;
     const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
     const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
 
-    // Upsert *metadata only* (no hash/hashed_ctime change here)
-    metaBuf.push({
-      path: full,
-      size,
-      ctime,
-      mtime,
-      hash: null,
-      last_seen: scan_id,
-      hashed_ctime: null,
-    });
+    if (entry.dirent.isDirectory()) {
+      dirMetaBuf.push({ path: full, ctime, mtime, scan_id });
 
-    if (metaBuf.length >= DB_BATCH_SIZE) {
-      applyMetaBatch(metaBuf);
-      metaBuf.length = 0;
-    }
+      // emit-delta: dir create/update (we don’t care which;
+      // downstream treats as “ensure exists”)
+      if (emitDelta) {
+        emitObj({ kind: "dir", path: full, ctime, mtime, deleted: 0 });
+      }
 
-    // Decide if we need to hash: only when ctime changed since last time (or brand new)
-    const row = getExisting.get(full);
-    const needsHash = !row || row.hashed_ctime !== ctime;
+      if (dirMetaBuf.length >= DB_BATCH_SIZE) {
+        applyDirBatch(dirMetaBuf);
+        dirMetaBuf.length = 0;
+      }
+    } else if (entry.dirent.isFile()) {
+      const size = st.size;
+      // Upsert *metadata only* (no hash/hashed_ctime change here)
+      metaBuf.push({
+        path: full,
+        size,
+        ctime,
+        mtime,
+        hash: null,
+        last_seen: scan_id,
+        hashed_ctime: null,
+      });
 
-    if (needsHash) {
-      // remember minimal meta so we can emit a full delta row when the hash arrives
-      pendingMeta.set(full, { size, ctime, mtime });
+      if (metaBuf.length >= DB_BATCH_SIZE) {
+        applyMetaBatch(metaBuf);
+        metaBuf.length = 0;
+      }
 
-      jobBuf.push({ path: full, size, ctime, mtime });
-      // Dispatch in batches to minimize IPC
-      if (jobBuf.length >= DISPATCH_BATCH) {
-        const w = await nextWorker();
-        (w as any).postMessage({ jobs: jobBuf } as JobBatch);
-        dispatched += jobBuf.length;
-        jobBuf = [];
+      // Decide if we need to hash: only when ctime changed since last time (or brand new)
+      const row = getExisting.get(full);
+      const needsHash = !row || row.hashed_ctime !== ctime;
+
+      if (needsHash) {
+        // remember minimal meta so we can emit a full delta row when the hash arrives
+        pendingMeta.set(full, { size, ctime, mtime });
+
+        jobBuf.push({ path: full, size, ctime, mtime });
+        // Dispatch in batches to minimize IPC
+        if (jobBuf.length >= DISPATCH_BATCH) {
+          const w = await nextWorker();
+          (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+          dispatched += jobBuf.length;
+          jobBuf = [];
+        }
       }
     }
   }
@@ -290,6 +295,12 @@ async function scan(root: string) {
   if (metaBuf.length) {
     applyMetaBatch(metaBuf);
     metaBuf.length = 0;
+  }
+
+  // Flush remaining directories
+  if (dirMetaBuf.length) {
+    applyDirBatch(dirMetaBuf);
+    dirMetaBuf.length = 0;
   }
 
   // Flush remaining job batch
@@ -319,12 +330,28 @@ async function scan(root: string) {
     .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
     .all(scan_id) as { path: string }[];
 
-  // Mark deletions
+  // Mark deletions: files
   db.prepare(`UPDATE files SET deleted = 1 WHERE last_seen <> ?`).run(scan_id);
 
-  // Emit deletions
+  // emit-delta: Emit deletions
   if (emitDelta && toDelete.length) {
-    for (const r of toDelete) emitObj({ path: r.path, deleted: 1 });
+    for (const r of toDelete) {
+      emitObj({ path: r.path, deleted: 1 });
+    }
+    flushDeltaBuf();
+  }
+
+  // Mark deletions: dirs
+  db.prepare(`UPDATE dirs SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
+
+  // emit-delta: Emit dir deletions
+  if (emitDelta) {
+    const gone = db
+      .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
+      .all(scan_id);
+    for (const r of gone) {
+      emitObj({ kind: "dir", path: r.path, deleted: 1 });
+    }
     flushDeltaBuf();
   }
 
