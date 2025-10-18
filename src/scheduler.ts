@@ -82,10 +82,29 @@ if (alphaHost && betaHost) {
 }
 
 // ---------- adaptive watcher config ----------
-const MAX_HOT_WATCHERS = Number(process.env.MAX_HOT_WATCHERS ?? 256);
-const HOT_TTL_MS = Number(process.env.HOT_TTL_MS ?? 3 * 60_000);
-const SHALLOW_DEPTH = Number(process.env.SHALLOW_DEPTH ?? 1); // 0 or 1 recommended
-const HOT_DEPTH = Number(process.env.HOT_DEPTH ?? 2); // depth under hot anchor
+const envNum = (k: string, def: number) =>
+  process.env[k] ? Number(process.env[k]) : def;
+
+const MAX_HOT_WATCHERS = envNum("MAX_HOT_WATCHERS", 256);
+const HOT_TTL_MS = envNum("HOT_TTL_MS", 30 * 60_000);
+const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1); // 0 or 1 recommended
+const HOT_DEPTH = envNum("HOT_DEPTH", 2); // depth under hot anchor
+
+// Optional knobs for tests:
+const MICRO_DEBOUNCE_MS = envNum("MICRO_DEBOUNCE_MS", 200); // debounce in scheduleHotFlush()
+const COOLDOWN_MS = envNum("COOLDOWN_MS", 300); // per-path micro push cooldown
+
+// ---------- scheduler state ----------
+let running = false,
+  pending = false,
+  lastCycleMs = 0,
+  nextDelayMs = 7_500,
+  backoffMs = 0;
+
+const MIN_INTERVAL_MS = envNum("SCHED_MIN_MS", 7_500);
+const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
+const MAX_BACKOFF_MS = envNum("SCHED_MAX_BACKOFF_MS", 600_000);
+const JITTER_MS = envNum("SCHED_JITTER_MS", 500);
 
 // ---------- logging ----------
 const db = new Database(baseDb);
@@ -282,17 +301,6 @@ function rsyncRoots(
   return { from, to, transport };
 }
 
-// ---------- scheduler state ----------
-let running = false,
-  pending = false,
-  lastCycleMs = 0,
-  nextDelayMs = 10_000,
-  backoffMs = 0;
-const MIN_INTERVAL_MS = 7_500,
-  MAX_INTERVAL_MS = 60_000,
-  MAX_BACKOFF_MS = 600_000,
-  JITTER_MS = 500;
-
 function requestSoon(reason: string) {
   pending = true;
   nextDelayMs = clamp(
@@ -329,17 +337,16 @@ function scheduleHotFlush() {
       }
       requestSoon("micro-sync complete");
     }
-  }, 200); // short debounce
+  }, MICRO_DEBOUNCE_MS); // short debounce
 }
 
-const cooldownMs = 300;
 const lastPush = new Map<string, number>(); // rpath -> ts
 function keepFresh(rpaths: string[]) {
   const now = Date.now();
   const out: string[] = [];
   for (const r of rpaths) {
     const t = lastPush.get(r) || 0;
-    if (now - t >= cooldownMs) {
+    if (now - t >= COOLDOWN_MS) {
       out.push(r);
       lastPush.set(r, now);
     }
@@ -474,6 +481,7 @@ const hotBetaMgr = betaIsRemote
   ? null
   : new HotWatchManager("beta", betaRoot, onBetaHot);
 
+// very cheap shallow root watchers (locals only)
 const shallowAlpha = alphaIsRemote
   ? null
   : chokidar.watch(alphaRoot, {
@@ -482,6 +490,7 @@ const shallowAlpha = alphaIsRemote
       depth: SHALLOW_DEPTH,
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
     });
+
 const shallowBeta = betaIsRemote
   ? null
   : chokidar.watch(betaRoot, {
@@ -491,22 +500,52 @@ const shallowBeta = betaIsRemote
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
     });
 
-if (shallowAlpha && hotAlphaMgr) {
-  ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+// any shallow signal -> start (or refresh) a hot subtree watcher on its parent
+// IMPORTANT: also forward the shallow event into realtime immediately
+["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+  if (shallowAlpha && hotAlphaMgr) {
     shallowAlpha.on(evt as any, async (p: string) => {
       const rdir = parentDir(rel(alphaRoot, p));
       if (rdir) await hotAlphaMgr.add(rdir);
+      // NEW: bootstrap realtime on first event
+      if (evt === "add" || evt === "change" || evt === "unlink") {
+        onAlphaHot(p, evt);
+      }
     });
-  });
-}
-if (shallowBeta && hotBetaMgr) {
-  ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+  }
+  if (shallowBeta && hotBetaMgr) {
     shallowBeta.on(evt as any, async (p: string) => {
       const rdir = parentDir(rel(betaRoot, p));
       if (rdir) await hotBetaMgr.add(rdir);
+      // NEW: bootstrap realtime on first event
+      if (evt === "add" || evt === "change" || evt === "unlink") {
+        onBetaHot(p, evt);
+      }
     });
-  });
+  }
+});
+
+// OPTIONAL: eager root hot watchers so we’re fully armed day one
+(async () => {
+  try {
+    if (hotAlphaMgr) await hotAlphaMgr.add(""); // watch alpha root at HOT_DEPTH
+    if (hotBetaMgr) await hotBetaMgr.add(""); // watch beta root at HOT_DEPTH
+  } catch {}
+})();
+
+async function gracefulShutdown() {
+  try {
+    await shallowAlpha?.close().catch(() => {});
+    await shallowBeta?.close().catch(() => {});
+    await hotAlphaMgr?.closeAll().catch(() => {});
+    await hotBetaMgr?.closeAll().catch(() => {});
+    db.close();
+  } finally {
+    process.exit(0);
+  }
 }
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
 
 // ---------- seed hot watchers from DB recent_touch (locals only) ----------
 function seedHotFromDb(

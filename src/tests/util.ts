@@ -79,3 +79,19 @@ export async function sync(
     ...verboseArg,
   ]);
 }
+
+export async function waitFor<T>(
+  fn: () => Promise<T> | T,
+  predicate: ((v: T) => Promise<boolean>) | ((v: T) => boolean),
+  timeoutMs = 10_000,
+  intervalMs = 50,
+): Promise<T> {
+  const t0 = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const v = await fn();
+    if (await predicate(v)) return v;
+    if (Date.now() - t0 > timeoutMs) throw new Error("waitFor: timeout");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}

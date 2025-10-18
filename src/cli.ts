@@ -10,10 +10,7 @@ const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
 // --- tiny helper to run our compiled sub-scripts ---
-function run(
-  scriptRel: string,
-  args: string[],
-) {
+function run(scriptRel: string, args: string[]) {
   const here = fileURLToPath(import.meta.url); // dist/cli.js at runtime
   const script = path.resolve(path.dirname(here), scriptRel);
   if (true || args.includes("--verbose")) {
@@ -22,7 +19,8 @@ function run(
     );
   }
   const p = spawn(process.execPath, [script, ...args], {
-    stdio: "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
+    detached: true, // group leader
   });
   p.on("exit", (code) => process.exit(code ?? 1));
 }
@@ -135,7 +133,6 @@ program
   )
   .option("--dry-run", "rsync -n dry run")
   .action((opts, command) => {
-    console.log(opts);
     const { verbose, dryRun } = command.optsWithGlobals();
     const args = [
       "--alpha-root",
