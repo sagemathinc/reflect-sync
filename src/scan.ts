@@ -8,6 +8,8 @@ import * as walk from "@nodelib/fs.walk";
 // use --emit-delta to have this output json to stdout when it updates
 // so that it can be used remotely over ssh.
 const emitDelta = process.argv.includes("--emit-delta");
+const verbose = process.argv.includes("--verbose");
+
 let DB_PATH: string;
 const i = process.argv.indexOf("--db");
 if (i == -1) {
@@ -26,7 +28,9 @@ type Row = {
   hashed_ctime: number | null;
 };
 
-console.log("running scan with database = ", DB_PATH);
+if (verbose) {
+  console.log("running scan with database = ", DB_PATH);
+}
 const CPU_COUNT = Math.min(os.cpus().length, 8);
 const DB_BATCH_SIZE = 2000;
 const DISPATCH_BATCH = 256; // files per worker message
@@ -327,9 +331,11 @@ async function scan(root: string) {
   clearInterval(periodicFlush);
   await Promise.all(workers.map((w) => w.terminate()));
 
-  console.log(
-    `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
-  );
+  if (verbose) {
+    console.log(
+      `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
+    );
+  }
 }
 
 await scan(process.argv[2] ?? ".");

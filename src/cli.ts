@@ -101,8 +101,8 @@ program
       "--prefer",
       opts.prefer,
     ];
-    if (verbose) args.push("--verbose", "true");
-    if (dryRun) args.push("--dry-run", "true");
+    if (verbose) args.push("--verbose");
+    if (dryRun) args.push("--dry-run");
     run("./merge-rsync.js", args);
   });
 
@@ -154,8 +154,8 @@ program
     if (opts.alphaHost) args.push("--alpha-host", opts.alphaHost);
     if (opts.betaHost) args.push("--beta-host", opts.betaHost);
     if (opts.remoteScanCmd) args.push("--remote-scan-cmd", opts.remoteScanCmd);
-    if (verbose) args.push("--verbose", "true");
-    if (dryRun) args.push("--dry-run", "true");
+    if (verbose) args.push("--verbose");
+    if (dryRun) args.push("--dry-run");
     run("./scheduler.js", args);
   });
 

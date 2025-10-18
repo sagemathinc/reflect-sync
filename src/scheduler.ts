@@ -15,6 +15,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import {
   mkdtemp,
+  rm,
   writeFile,
   stat as fsStat,
   lstat as fsLstat,
@@ -588,63 +589,69 @@ async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
   if (toBetaFiles.length === 0 && toAlphaFiles.length === 0) return;
 
   const tmp = await mkdtemp(path.join(tmpdir(), "micro-plan-"));
-  const listToBeta = path.join(tmp, "toBeta.list");
-  const listToAlpha = path.join(tmp, "toAlpha.list");
+  try {
+    const listToBeta = path.join(tmp, "toBeta.list");
+    const listToAlpha = path.join(tmp, "toAlpha.list");
 
-  await writeFile(listToBeta, join0(toBetaFiles));
-  await writeFile(listToAlpha, join0(toAlphaFiles));
+    await writeFile(listToBeta, join0(toBetaFiles));
+    await writeFile(listToAlpha, join0(toAlphaFiles));
 
-  // Run small rsyncs now. Accept partial codes (23/24) so we don't blow up on edits-in-flight.
-  if (await fileNonEmpty(listToBeta)) {
-    log("info", "realtime", `alpha→beta ${toBetaFiles.length} paths`);
-    const { from, to, transport } = rsyncRoots(
-      alphaRoot,
-      alphaHost,
-      betaRoot,
-      betaHost,
-    );
-    await spawnTask(
-      "rsync",
-      [
-        ...(dryRun ? ["-n"] : []),
-        ...transport,
-        "-a",
-        "--inplace",
-        "--relative",
-        "--from0",
-        `--files-from=${listToBeta}`,
-        from,
-        to,
-      ],
-      [0, 23, 24],
-    );
+    // Run small rsyncs now. Accept partial codes (23/24) so we don't blow up on edits-in-flight.
+    if (await fileNonEmpty(listToBeta)) {
+      log("info", "realtime", `alpha→beta ${toBetaFiles.length} paths`);
+      const { from, to, transport } = rsyncRoots(
+        alphaRoot,
+        alphaHost,
+        betaRoot,
+        betaHost,
+      );
+      await spawnTask(
+        "rsync",
+        [
+          ...(dryRun ? ["-n"] : []),
+          ...transport,
+          "-a",
+          "-I",
+          "--inplace",
+          "--relative",
+          "--from0",
+          `--files-from=${listToBeta}`,
+          from,
+          to,
+        ],
+        [0, 23, 24],
+      );
+    }
+
+    if (await fileNonEmpty(listToAlpha)) {
+      log("info", "realtime", `beta→alpha ${toAlphaFiles.length} paths`);
+      const { from, to, transport } = rsyncRoots(
+        betaRoot,
+        betaHost,
+        alphaRoot,
+        alphaHost,
+      );
+      await spawnTask(
+        "rsync",
+        [
+          ...(dryRun ? ["-n"] : []),
+          ...transport,
+          "-a",
+          "-I",
+          "--inplace",
+          "--relative",
+          "--from0",
+          `--files-from=${listToAlpha}`,
+          from,
+          to,
+        ],
+        [0, 23, 24],
+      );
+    }
+    // No base updates here — the full cycle will verify and finalize.
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
-
-  if (await fileNonEmpty(listToAlpha)) {
-    log("info", "realtime", `beta→alpha ${toAlphaFiles.length} paths`);
-    const { from, to, transport } = rsyncRoots(
-      betaRoot,
-      betaHost,
-      alphaRoot,
-      alphaHost,
-    );
-    await spawnTask(
-      "rsync",
-      [
-        ...(dryRun ? ["-n"] : []),
-        ...transport,
-        "-a",
-        "--inplace",
-        "--relative",
-        "--from0",
-        `--files-from=${listToAlpha}`,
-        from,
-        to,
-      ],
-      [0, 23, 24],
-    );
-  }
-  // No base updates here — the full cycle will verify and finalize.
 }
 
 // ---------- full cycle ----------

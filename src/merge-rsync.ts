@@ -3,7 +3,7 @@
 import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { mkdtemp, writeFile, stat as fsStat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, stat as fsStat } from "node:fs/promises";
 import path from "node:path";
 
 // ---------- tiny CLI ----------
@@ -22,8 +22,8 @@ const baseDb = args.get("base-db") ?? "base.db";
 const alphaHost = args.get("alpha-host")?.trim();
 const betaHost = args.get("beta-host")?.trim();
 const prefer = (args.get("prefer") ?? "alpha").toLowerCase();
-const dryRun = /^t|1|y/i.test(args.get("dry-run") ?? "");
-const verbose = /^t|1|y/i.test(args.get("verbose") ?? "");
+const dryRun = process.argv.includes("--dry-run");
+const verbose = process.argv.includes("--verbose");
 
 // ---------- helpers ----------
 function join0(items: string[]) {
@@ -34,7 +34,11 @@ function join0(items: string[]) {
 }
 
 function rsyncArgsBase() {
-  const a = ["-a", "--inplace", "--relative"];
+  // the -I is to NOT do rsync’s “quick check” optimization: by default rsync
+  // skips a file if size and mtime match between source and dest, but we always
+  // know based on our own rules (hashes, ctime) that we definitely do want to
+  // copy the files we explicitly list.
+  const a = ["-a", "-I", "--inplace", "--relative"];
   if (dryRun) a.unshift("-n");
   if (verbose) a.push("-v");
   return a;
@@ -56,7 +60,8 @@ function rsyncArgsDelete() {
 async function fileNonEmpty(p: string) {
   try {
     return (await fsStat(p)).size > 0;
-  } catch {
+  } catch (err) {
+    console.warn("fileNonEmpty ", p, err);
     return false;
   }
 }
@@ -258,19 +263,21 @@ async function main() {
     .all(prefer)
     .map((r) => r.rpath as string);
 
-  // ---------- files-from (NUL-separated) ----------
   const tmp = await mkdtemp(path.join(tmpdir(), "sync-plan-"));
-  const listToBeta = path.join(tmp, "toBeta.list");
-  const listToAlpha = path.join(tmp, "toAlpha.list");
-  const listDelInBeta = path.join(tmp, "delInBeta.list");
-  const listDelInAlpha = path.join(tmp, "delInAlpha.list");
+  try {
+    // ---------- files-from (NUL-separated) ----------
+    const listToBeta = path.join(tmp, "toBeta.list");
+    const listToAlpha = path.join(tmp, "toAlpha.list");
+    const listDelInBeta = path.join(tmp, "delInBeta.list");
+    const listDelInAlpha = path.join(tmp, "delInAlpha.list");
 
-  await writeFile(listToBeta, join0(makeRelative(toBeta, betaRoot)));
-  await writeFile(listToAlpha, join0(makeRelative(toAlpha, alphaRoot)));
-  await writeFile(listDelInBeta, join0(delInBeta));
-  await writeFile(listDelInAlpha, join0(delInAlpha));
+    await writeFile(listToBeta, join0(makeRelative(toBeta, betaRoot)));
+    await writeFile(listToAlpha, join0(makeRelative(toAlpha, alphaRoot)));
+    await writeFile(listDelInBeta, join0(delInBeta));
+    await writeFile(listDelInAlpha, join0(delInAlpha));
 
-  console.log(`Plan:
+    if (verbose) {
+      console.log(`Plan:
   alpha→beta copies : ${toBeta.length}
   beta→alpha copies : ${toAlpha.length}
   deletions in beta : ${delInBeta.length}
@@ -279,82 +286,88 @@ async function main() {
   dry-run           : ${dryRun}
   verbose           : ${verbose}
 `);
-
-  // ---------- rsync ----------
-  let copyAlphaBetaZero = false;
-  let copyBetaAlphaZero = false;
-
-  async function rsyncCopy(
-    fromRoot: string,
-    toRoot: string,
-    listFile: string,
-    label: string,
-  ) {
-    if (!(await fileNonEmpty(listFile))) {
-      if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
-      return { zero: false };
     }
-    if (verbose) {
-      console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
-    }
-    const args = [
-      ...rsyncArgsBase(),
-      "--from0",
-      `--files-from=${listFile}`,
-      ensureTrailingSlash(fromRoot),
-      ensureTrailingSlash(toRoot),
-    ];
-    const res = await run("rsync", args, [0, 23, 24]); // accept partials but only advance base on exit 0
-    if (verbose) {
-      console.log(`>>> rsync ${label}: done (code ${res.code})`);
-    }
-    return { zero: res.zero };
-  }
 
-  async function rsyncDelete(
-    fromRoot: string,
-    toRoot: string,
-    listFile: string,
-    label: string,
-  ) {
-    if (!(await fileNonEmpty(listFile))) {
-      if (verbose) {
-        console.log(`>>> rsync delete ${label}: nothing to do`);
+    // ---------- rsync ----------
+    let copyAlphaBetaZero = false;
+    let copyBetaAlphaZero = false;
+
+    async function rsyncCopy(
+      fromRoot: string,
+      toRoot: string,
+      listFile: string,
+      label: string,
+    ) {
+      if (!(await fileNonEmpty(listFile))) {
+        if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
+        return { zero: false };
       }
+      if (verbose) {
+        console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+      }
+      const args = [
+        ...rsyncArgsBase(),
+        "--from0",
+        `--files-from=${listFile}`,
+        ensureTrailingSlash(fromRoot),
+        ensureTrailingSlash(toRoot),
+      ];
+      const res = await run("rsync", args, [0, 23, 24]); // accept partials but only advance base on exit 0
+      if (verbose) {
+        console.log(`>>> rsync ${label}: done (code ${res.code})`);
+      }
+      return { zero: res.zero };
+    }
+
+    async function rsyncDelete(
+      fromRoot: string,
+      toRoot: string,
+      listFile: string,
+      label: string,
+    ) {
+      if (!(await fileNonEmpty(listFile))) {
+        if (verbose) {
+          console.log(`>>> rsync delete ${label}: nothing to do`);
+        }
+        return;
+      }
+      if (verbose) {
+        console.log(
+          `>>> rsync delete ${label} (missing in ${fromRoot} => delete in ${toRoot})`,
+        );
+      }
+      const args = [
+        ...rsyncArgsDelete(),
+        `--files-from=${listFile}`,
+        ensureTrailingSlash(fromRoot),
+        ensureTrailingSlash(toRoot),
+      ];
+      await run("rsync", args, [0, 24]); // 24=vanished is fine for delete-missing-args
+    }
+
+    const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
+    const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
+    copyAlphaBetaZero = (await rsyncCopy(alpha, beta, listToBeta, "alpha→beta"))
+      .zero;
+    copyBetaAlphaZero = (
+      await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha")
+    ).zero;
+    await rsyncDelete(alpha, beta, listDelInBeta, "alpha deleted");
+    await rsyncDelete(beta, alpha, listDelInAlpha, "beta deleted");
+
+    if (verbose) {
+      console.log("rsync's all done, now updating database");
+    }
+
+    if (dryRun) {
+      console.log("(dry-run) skipping base updates");
+      console.log("Merge complete.");
       return;
     }
-    console.log(
-      `>>> rsync delete ${label} (missing in ${fromRoot} => delete in ${toRoot})`,
-    );
-    const args = [
-      ...rsyncArgsDelete(),
-      `--files-from=${listFile}`,
-      ensureTrailingSlash(fromRoot),
-      ensureTrailingSlash(toRoot),
-    ];
-    await run("rsync", args, [0, 24]); // 24=vanished is fine for delete-missing-args
-  }
 
-  const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
-  const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
-  copyAlphaBetaZero = (await rsyncCopy(alpha, beta, listToBeta, "alpha→beta"))
-    .zero;
-  copyBetaAlphaZero = (await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha"))
-    .zero;
-  await rsyncDelete(alpha, beta, listDelInBeta, "alpha deleted");
-  await rsyncDelete(beta, alpha, listDelInAlpha, "beta deleted");
-
-  console.log("rsync's all done, now updating database");
-
-  if (dryRun) {
-    console.log("(dry-run) skipping base updates");
-    console.log("Merge complete.");
-    return;
-  }
-
-  // ---------- set-based base updates (fast) ----------
-  // Build plan tables from arrays
-  db.exec(`
+    // ---------- set-based base updates (fast) ----------
+    // Build plan tables from arrays
+    db.exec(`
     DROP TABLE IF EXISTS plan_to_beta;
     DROP TABLE IF EXISTS plan_to_alpha;
     DROP TABLE IF EXISTS plan_del_beta;
@@ -366,86 +379,88 @@ async function main() {
     CREATE TEMP TABLE plan_del_alpha(rpath TEXT PRIMARY KEY);
   `);
 
-  const insToBeta = db.prepare(
-    `INSERT OR IGNORE INTO plan_to_beta(rpath) VALUES (?)`,
-  );
-  const insToAlpha = db.prepare(
-    `INSERT OR IGNORE INTO plan_to_alpha(rpath) VALUES (?)`,
-  );
-  const insDelBeta = db.prepare(
-    `INSERT OR IGNORE INTO plan_del_beta(rpath) VALUES (?)`,
-  );
-  const insDelAlpha = db.prepare(
-    `INSERT OR IGNORE INTO plan_del_alpha(rpath) VALUES (?)`,
-  );
+    const insToBeta = db.prepare(
+      `INSERT OR IGNORE INTO plan_to_beta(rpath) VALUES (?)`,
+    );
+    const insToAlpha = db.prepare(
+      `INSERT OR IGNORE INTO plan_to_alpha(rpath) VALUES (?)`,
+    );
+    const insDelBeta = db.prepare(
+      `INSERT OR IGNORE INTO plan_del_beta(rpath) VALUES (?)`,
+    );
+    const insDelAlpha = db.prepare(
+      `INSERT OR IGNORE INTO plan_del_alpha(rpath) VALUES (?)`,
+    );
 
-  db.transaction(() => {
-    for (const r of toBeta) insToBeta.run(r);
-    for (const r of toAlpha) insToAlpha.run(r);
-    for (const r of delInBeta) insDelBeta.run(r);
-    for (const r of delInAlpha) insDelAlpha.run(r);
-  })();
+    db.transaction(() => {
+      for (const r of toBeta) insToBeta.run(r);
+      for (const r of toAlpha) insToAlpha.run(r);
+      for (const r of delInBeta) insDelBeta.run(r);
+      for (const r of delInAlpha) insDelAlpha.run(r);
+    })();
 
-  // Index plan tables for faster joins on big sets
-  db.exec(`
+    // Index plan tables for faster joins on big sets
+    db.exec(`
     CREATE INDEX IF NOT EXISTS idx_plan_to_beta_rpath   ON plan_to_beta(rpath);
     CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_rpath  ON plan_to_alpha(rpath);
     CREATE INDEX IF NOT EXISTS idx_plan_del_beta_rpath  ON plan_del_beta(rpath);
     CREATE INDEX IF NOT EXISTS idx_plan_del_alpha_rpath ON plan_del_alpha(rpath);
   `);
 
-  // Now set-based updates in a single transaction (no UPSERT; use OR REPLACE)
-  db.transaction(() => {
-    if (copyAlphaBetaZero && toBeta.length) {
-      db.exec(`
+    // Now set-based updates in a single transaction (no UPSERT; use OR REPLACE)
+    db.transaction(() => {
+      if (copyAlphaBetaZero && toBeta.length) {
+        db.exec(`
       INSERT OR REPLACE INTO base(path, hash, deleted)
       SELECT p.rpath, a.hash, 0
       FROM plan_to_beta p
       JOIN alpha_rel a ON a.rpath = p.rpath;
     `);
-    }
+      }
 
-    if (copyBetaAlphaZero && toAlpha.length) {
-      db.exec(`
+      if (copyBetaAlphaZero && toAlpha.length) {
+        db.exec(`
       INSERT OR REPLACE INTO base(path, hash, deleted)
       SELECT p.rpath, b.hash, 0
       FROM plan_to_alpha p
       JOIN beta_rel b ON b.rpath = p.rpath;
     `);
-    }
+      }
 
-    if (delInBeta.length) {
-      db.exec(`
+      if (delInBeta.length) {
+        db.exec(`
       INSERT OR REPLACE INTO base(path, hash, deleted)
       SELECT rpath, NULL, 1
       FROM plan_del_beta;
     `);
-    }
+      }
 
-    if (delInAlpha.length) {
-      db.exec(`
+      if (delInAlpha.length) {
+        db.exec(`
       INSERT OR REPLACE INTO base(path, hash, deleted)
       SELECT rpath, NULL, 1
       FROM plan_del_alpha;
     `);
+      }
+    })();
+
+    // Optional hygiene on big runs
+    db.exec("PRAGMA optimize");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+
+    if (verbose) {
+      console.log("Merge complete.");
     }
-  })();
-
-  // Optional hygiene on big runs
-  db.exec("PRAGMA optimize");
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-
-  console.log("Merge complete.");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 }
 
 // files = absolute paths
 // root = they should all be in root
 function makeRelative(files: string[], root: string) {
-  return (
-    files
-      // safety filter
-      .filter((file) => file.startsWith(root))
-      .map((file) => file.slice(root.length+1))
+  return files.map((file) =>
+    file.startsWith(root) ? file.slice(root.length + 1) : file,
   );
 }
 
