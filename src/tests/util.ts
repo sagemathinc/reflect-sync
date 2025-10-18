@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import { join, resolve } from "node:path";
 
-const DIST = path.resolve(__dirname, "../../dist");
+// Toggle for noisy child output while debugging
+const VERBOSE = false;
+const verboseArg = VERBOSE ? ["--verbose", "true"] : [];
+
+
+const DIST = resolve(__dirname, "../../dist");
 
 export function runDist(
   scriptRel: string,
@@ -10,7 +15,7 @@ export function runDist(
   envExtra: Record<string, string> = {},
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const script = path.join(DIST, scriptRel);
+    const script = join(DIST, scriptRel);
     const p = spawn(process.execPath, [script, ...args], {
       stdio: "inherit",
       env: { ...process.env, ...envExtra },
@@ -29,4 +34,44 @@ export async function fileExists(p: string) {
   } catch {
     return false;
   }
+}
+
+export type Roots = {
+  aRoot: string;
+  bRoot: string;
+  aDb: string;
+  bDb: string;
+  baseDb: string;
+};
+
+export async function mkCase(tmpBase: string, name: string): Promise<Roots> {
+  const base = join(tmpBase, name);
+  const aRoot = join(base, "alpha");
+  const bRoot = join(base, "beta");
+  const aDb = join(base, "alpha.db");
+  const bDb = join(base, "beta.db");
+  const baseDb = join(base, "base.db");
+  await fsp.mkdir(aRoot, { recursive: true });
+  await fsp.mkdir(bRoot, { recursive: true });
+  return { aRoot, bRoot, aDb, bDb, baseDb };
+}
+
+export async function sync(r: Roots, prefer: "alpha" | "beta" = "alpha") {
+  await runDist("scan.js", [r.aRoot, "--db", r.aDb, ...verboseArg]);
+  await runDist("scan.js", [r.bRoot, "--db", r.bDb, ...verboseArg]);
+  await runDist("merge-rsync.js", [
+    "--alpha-root",
+    r.aRoot,
+    "--beta-root",
+    r.bRoot,
+    "--alpha-db",
+    r.aDb,
+    "--beta-db",
+    r.bDb,
+    "--base-db",
+    r.baseDb,
+    "--prefer",
+    prefer,
+    ...verboseArg,
+  ]);
 }
