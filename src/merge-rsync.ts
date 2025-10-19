@@ -37,7 +37,7 @@ function join0(items: string[]) {
 }
 
 function rsyncArgsBase() {
-  const a = ["-a", "-I", "--inplace", "--relative"];
+  const a = ["-a", "-I", "--relative"];
   if (dryRun) a.unshift("-n");
   if (verbose) a.push("-v");
   return a;
