@@ -56,15 +56,11 @@ program
 program
   .command("ingest")
   .description("Ingest NDJSON deltas from stdin into a local files table")
-  .addOption(new Option("--db <path>", "sqlite db file").makeOptionMandatory())
-  .addOption(
-    new Option("--root <path>", "absolute root to accept (optional)").default(
-      "",
-    ),
-  )
-  .action((opts: { db: string; root: string }) => {
-    const args = ["--db", opts.db, "--root", opts.root];
-    run("./ingest-delta.js", args);
+  .requiredOption("--db <path>", "sqlite db file")
+  .option("--root <path>", "absolute root to accept")
+  .action(async (opts: { db: string; root: string }, command) => {
+    const { runIngestDelta } = await import("./ingest-delta");
+    await runIngestDelta({ ...command.optsWithGlobals(), ...opts });
   });
 
 // ---------- merge ----------
@@ -73,11 +69,9 @@ program
   .description("3-way plan + rsync between alpha/beta; updates base snapshot")
   .requiredOption("--alpha-root <path>", "alpha filesystem root")
   .requiredOption("--beta-root <path>", "beta filesystem root")
-  .addOption(
-    new Option("--alpha-db <path>", "alpha sqlite").default("alpha.db"),
-  )
-  .addOption(new Option("--beta-db <path>", "beta sqlite").default("beta.db"))
-  .addOption(new Option("--base-db <path>", "base sqlite").default("base.db"))
+  .option("--alpha-db <path>", "alpha sqlite", "alpha.db")
+  .option("--beta-db <path>", "beta sqlite", "beta.db")
+  .option("--base-db <path>", "base sqlite", "base.db")
   .addOption(
     new Option("--prefer <side>", "conflict winner")
       .choices(["alpha", "beta"])
