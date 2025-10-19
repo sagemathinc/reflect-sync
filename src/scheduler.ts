@@ -7,7 +7,7 @@
 // - microSync supports rsync -e ssh if a side is remote
 // - Full merge still uses merge-rsync.ts (local planning);
 //   pass-through works if you later add host support there.
-
+import { Command, Option } from "commander";
 import { spawn, SpawnOptions } from "node:child_process";
 import chokidar, { FSWatcher } from "chokidar";
 import Database from "better-sqlite3";
@@ -21,66 +21,71 @@ import {
   lstat as fsLstat,
 } from "node:fs/promises";
 
-// ---------- args ----------
-type Args = Record<string, string | boolean>;
-function parseArgs(): Args {
-  const out: Args = {};
-  const argv = process.argv.slice(2);
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith("--")) {
-      const [k, maybeV] = a.slice(2).split("=");
-      if (maybeV !== undefined) out[k] = parseBool(maybeV);
-      else {
-        const v = argv[i + 1];
-        if (!v || v.startsWith("--")) out[k] = true;
-        else {
-          out[k] = parseBool(v);
-          i++;
-        }
-      }
-    }
-  }
-  return out;
-}
-function parseBool(v: string): any {
-  if (/^(true|false)$/i.test(v)) return /^true$/i.test(v);
-  if (/^(y|n)$/i.test(v)) return /^y$/i.test(v);
-  if (/^(1|0)$/i.test(v)) return v === "1";
-  return v;
-}
-const args = parseArgs();
-const alphaRoot = String(args["alpha-root"] ?? "");
-const betaRoot = String(args["beta-root"] ?? "");
-const alphaDb = String(args["alpha-db"] ?? "alpha.db");
-const betaDb = String(args["beta-db"] ?? "beta.db");
-const baseDb = String(args["base-db"] ?? "base.db");
-const prefer = String(args["prefer"] ?? "alpha").toLowerCase();
-const verbose = Boolean(args["verbose"] ?? false);
-const dryRun = Boolean(args["dry-run"] ?? false);
+const program = new Command()
+  .name("ccsync-scheduler")
+  .description("Orchestration of scanning, watching, syncing");
 
-const alphaHost =
-  (args["alpha-host"] ? String(args["alpha-host"]) : "").trim() || undefined;
-const betaHost =
-  (args["beta-host"] ? String(args["beta-host"]) : "").trim() || undefined;
-const alphaRemoteDb = String(
-  args["alpha-remote-db"] ?? "~/.cache/cocalc-sync/alpha.db",
-);
-const betaRemoteDb = String(
-  args["beta-remote-db"] ?? "~/.cache/cocalc-sync/beta.db",
-);
-// on remote host
-const remoteScanCmd = String(args["remote-scan-cmd"] ?? "ccsync scan");
+program
+  .requiredOption("--alpha-root <path>", "path to root of alpha sync tree")
+  .requiredOption("--beta-root <path>", "path to root of beta sync tree")
+  .option("--alpha-db <file>", "path to alpha sqlite database", "alpha.db")
+  .option("--beta-db <file>", "path to beta sqlite database", "beta.db")
+  .option("--base-db <file>", "path to base sqlite database", "base.db")
+  .addOption(
+    new Option("--prefer <side>", "conflict preference: all conflicts are resolved in favor of this side")
+      .choices(["alpha", "beta"])
+      .default("alpha"),
+  )
+  .option("--verbose", "enable verbose logging", false)
+  .option("--dry-run", "simulate without changing files", false)
+  // optional SSH endpoints (only one side may be remote)
+  .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+  .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+  .option(
+    "--alpha-remote-db <file>",
+    "remote path to alpha sqlite db (on the SSH host)",
+    `${process.env.HOME ?? ""}/.cache/cocalc-sync/alpha.db`,
+  )
+  .option(
+    "--beta-remote-db <file>",
+    "remote path to beta sqlite db (on the SSH host)",
+    `${process.env.HOME ?? ""}/.cache/cocalc-sync/beta.db`,
+  )
+  // commands to run on remote for scan/micro-watch
+  .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")
+  .option(
+    "--remote-watch-cmd <cmd>",
+    "remote watch command for micro-sync (emits NDJSON lines)",
+    "ccsync watch",
+  );
 
-if (!alphaRoot || !betaRoot) {
-  console.error("Need --alpha-root and --beta-root");
-  process.exit(1);
-}
+const opts = program.parse(process.argv).opts();
+
+const alphaRoot: string = opts.alphaRoot;
+const betaRoot: string = opts.betaRoot;
+
+const alphaDb: string = opts.alphaDb;
+const betaDb: string = opts.betaDb;
+const baseDb: string = opts.baseDb;
+
+const prefer: "alpha" | "beta" = opts.prefer.toLowerCase();
+const verbose: boolean = !!opts.verbose;
+const dryRun: boolean = !!opts.dryRun;
+
+const alphaHost: string | undefined = opts.alphaHost?.trim();
+const betaHost: string | undefined = opts.betaHost?.trim();
+
+const alphaRemoteDb: string = opts.alphaRemoteDb;
+const betaRemoteDb: string = opts.betaRemoteDb;
+
+const remoteScanCmd: string = opts.remoteScanCmd;
+//const remoteWatchCmd: string = opts.remoteWatchCmd;
+
+// basic validation (roots are already required by Commander)
 if (alphaHost && betaHost) {
   console.error("Both sides remote is not supported yet (rsync two-remote).");
   process.exit(1);
 }
-
 // ---------- adaptive watcher config ----------
 const envNum = (k: string, def: number) =>
   process.env[k] ? Number(process.env[k]) : def;

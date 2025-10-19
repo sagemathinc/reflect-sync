@@ -28,7 +28,6 @@ function startScheduler(opts: {
 }): ChildProcess {
   const args = [
     SCHED,
-    "scheduler",
     "--alpha-root",
     opts.alphaRoot,
     "--beta-root",
