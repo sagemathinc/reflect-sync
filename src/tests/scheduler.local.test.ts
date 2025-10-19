@@ -159,8 +159,6 @@ describe("scheduler (local watchers + microSync)", () => {
         100,
       );
 
-      //      await new Promise((resolve) => setTimeout(resolve, 3000));
-
       // Create a file under alpha
       const aFile = path.join(alphaRoot, "hello.txt");
       await fsp.mkdir(path.dirname(aFile), { recursive: true });

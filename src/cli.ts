@@ -104,56 +104,50 @@ program
     run("./merge-rsync.js", args);
   });
 
-// ---------- scheduler ----------
 program
   .command("scheduler")
-  .description("Watch/scan/merge loop; supports SSH on either side")
-  .option("--verbose")
-  .requiredOption("--alpha-root <path>")
-  .requiredOption("--beta-root <path>")
-  .addOption(new Option("--alpha-db <path>").default("alpha.db"))
-  .addOption(new Option("--beta-db <path>").default("beta.db"))
-  .addOption(new Option("--base-db <path>").default("base.db"))
+  .description("Orchestration of scanning, watching, and syncing")
+  .requiredOption("--alpha-root <path>", "path to alpha root")
+  .requiredOption("--beta-root <path>", "path to beta root")
+  .option("--alpha-db <file>", "alpha sqlite database", "alpha.db")
+  .option("--beta-db <file>", "beta sqlite database", "beta.db")
+  .option("--base-db <file>", "base sqlite database", "base.db")
   .addOption(
-    new Option("--prefer <side>").choices(["alpha", "beta"]).default("alpha"),
+    new Option("--prefer <side>", "conflict preference")
+      .choices(["alpha", "beta"])
+      .default("alpha"),
   )
-  .addOption(
-    new Option(
-      "--alpha-host <target>",
-      "ssh target for alpha (e.g. user@host)",
-    ).default(""),
+  // optional SSH endpoints (only one side may be remote)
+  .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+  .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+  .option(
+    "--alpha-remote-db <file>",
+    "remote alpha sqlite DB path (on SSH host)",
+    `${process.env.HOME ?? ""}/.cache/cocalc-sync/alpha.db`,
   )
-  .addOption(
-    new Option("--beta-host <target>", "ssh target for beta").default(""),
+  .option(
+    "--beta-remote-db <file>",
+    "remote beta sqlite DB path (on SSH host)",
+    `${process.env.HOME ?? ""}/.cache/cocalc-sync/beta.db`,
   )
-  .addOption(
-    new Option("--remote-scan-cmd <cmd>", "remote scan command").default(
-      "ccsync scan",
-    ),
+  // commands to run remotely
+  .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")
+  .option(
+    "--remote-watch-cmd <cmd>",
+    "remote watch command for micro-sync (emits NDJSON)",
+    "ccsync watch",
   )
-  .option("--dry-run", "rsync -n dry run")
-  .action((opts, command) => {
-    const { verbose, dryRun } = command.optsWithGlobals();
-    const args = [
-      "--alpha-root",
-      opts.alphaRoot,
-      "--beta-root",
-      opts.betaRoot,
-      "--alpha-db",
-      opts.alphaDb,
-      "--beta-db",
-      opts.betaDb,
-      "--base-db",
-      opts.baseDb,
-      "--prefer",
-      opts.prefer,
-    ];
-    if (opts.alphaHost) args.push("--alpha-host", opts.alphaHost);
-    if (opts.betaHost) args.push("--beta-host", opts.betaHost);
-    if (opts.remoteScanCmd) args.push("--remote-scan-cmd", opts.remoteScanCmd);
-    if (verbose) args.push("--verbose");
-    if (dryRun) args.push("--dry-run");
-    run("./scheduler.js", args);
+  .action(async (opts, command) => {
+    // Safety: disallow both sides remote (two-remote rsync not yet supported)
+    if (opts.alphaHost && opts.betaHost) {
+      console.error(
+        "Both sides remote is not supported yet (rsync two-remote).",
+      );
+      process.exit(1);
+    }
+    // Import and run in-process so we can manage lifecycle cleanly
+    const { runScheduler } = await import("./scheduler.js");
+    await runScheduler({ ...command.optsWithGlobals(), ...opts });
   });
 
 // Default help when no subcommand given
