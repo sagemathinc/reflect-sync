@@ -136,7 +136,7 @@ describe("scheduler (local watchers + microSync)", () => {
   });
 
   afterAll(async () => {
-    //await fsp.rm(tmp, { recursive: true, force: true });
+    await fsp.rm(tmp, { recursive: true, force: true });
   });
 
   test("realtime: new file in alpha appears in beta before next full cycle", async () => {
@@ -151,14 +151,16 @@ describe("scheduler (local watchers + microSync)", () => {
     });
 
     try {
-      // Wait for first full cycle to complete so we know watchers are armed.
+      // make sure we're right after a sync cycle, so microsync has to pick up our change.
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 1,
         10_000,
         100,
       );
-
+      // wait for chokdir to actually be watching (this 500ms is hopefully
+      // way more than enough)
+      await new Promise((resolve) => setTimeout(resolve, 500));
       // Create a file under alpha
       const aFile = path.join(alphaRoot, "hello.txt");
       await fsp.mkdir(path.dirname(aFile), { recursive: true });
@@ -191,15 +193,18 @@ describe("scheduler (local watchers + microSync)", () => {
       baseDb,
       prefer: "alpha",
     });
+    // make sure we're right after a sync cycle, so microsync has to pick up our change.
+    await waitFor(
+      () => countSchedulerCycles(baseDb),
+      (n) => n >= 1,
+      10_000,
+      100,
+    );
+    // wait for chokdir to actually be watching (this 500ms is hopefully
+    // way more than enough)
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     try {
-      await waitFor(
-        () => countSchedulerCycles(baseDb),
-        (n) => n >= 1,
-        10_000,
-        100,
-      );
-
       const bFile = path.join(betaRoot, "note.txt");
       await fsp.writeFile(bFile, "from beta\n", "utf8");
 

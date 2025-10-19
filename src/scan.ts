@@ -4,56 +4,70 @@ import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
 import { getDb } from "./db.js";
+import { Command } from "commander";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
-// use --emit-delta to have this output json to stdout when it updates
-// so that it can be used remotely over ssh.
-const emitDelta = process.argv.includes("--emit-delta");
-const verbose = process.argv.includes("--verbose");
+function buildProgram(): Command {
+  const program = new Command()
+    .name("ccsync-scan")
+    .description("Run a local scan writing to sqlite database");
 
-let DB_PATH: string;
-const i = process.argv.indexOf("--db");
-if (i == -1) {
-  DB_PATH = "alpha.db";
-} else {
-  DB_PATH = process.argv[i + 1];
+  program
+    .argument("<root>", "directory to scan")
+    .option("--db <file>", "path to sqlite database", "alpha.db")
+    .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
+    .option("--verbose", "enable verbose logging", false);
+
+  return program;
 }
 
-type Row = {
-  path: string;
-  size: number;
-  ctime: number;
-  mtime: number;
-  hash: string | null;
-  last_seen: number;
-  hashed_ctime: number | null;
+type ScanOptions = {
+  db: string;
+  emitDelta: boolean;
+  verbose: boolean;
+  root: string;
 };
 
-if (verbose) {
-  console.log("running scan with database = ", DB_PATH);
-}
-const CPU_COUNT = Math.min(os.cpus().length, 8);
-const DB_BATCH_SIZE = 2000;
-const DISPATCH_BATCH = 256; // files per worker message
+export async function runScan(opts: ScanOptions): Promise<void> {
+  const { root, db: DB_PATH, emitDelta, verbose } = opts;
 
-// ----------------- SQLite setup -----------------
-const db = getDb(DB_PATH);
+  type Row = {
+    path: string;
+    size: number;
+    ctime: number;
+    mtime: number;
+    hash: string | null;
+    last_seen: number;
+    hashed_ctime: number | null;
+  };
 
-const insTouch = db.prepare(
-  `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
-);
+  if (verbose) {
+    console.log("running scan with database = ", DB_PATH);
+  }
+  const CPU_COUNT = Math.min(os.cpus().length, 8);
+  const DB_BATCH_SIZE = 2000;
+  const DISPATCH_BATCH = 256; // files per worker message
 
-const touchTx = db.transaction((rows: [string, number][]) => {
-  for (const [p, t] of rows) insTouch.run(p, t);
-});
+  // ----------------- SQLite setup -----------------
+  const db = getDb(DB_PATH);
 
-function flushTouchBatch(touchBatch: [string, number][]) {
-  if (!touchBatch.length) return;
-  touchTx(touchBatch);
-  touchBatch.length = 0;
-}
+  const insTouch = db.prepare(
+    `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
+  );
 
-// for directory metadata
-const upsertDir = db.prepare(`
+  const touchTx = db.transaction((rows: [string, number][]) => {
+    for (const [p, t] of rows) insTouch.run(p, t);
+  });
+
+  function flushTouchBatch(touchBatch: [string, number][]) {
+    if (!touchBatch.length) return;
+    touchTx(touchBatch);
+    touchBatch.length = 0;
+  }
+
+  // for directory metadata
+  const upsertDir = db.prepare(`
 INSERT INTO dirs(path, ctime, mtime, deleted, last_seen)
 VALUES (@path, @ctime, @mtime, 0, @scan_id)
 ON CONFLICT(path) DO UPDATE SET
@@ -63,18 +77,18 @@ ON CONFLICT(path) DO UPDATE SET
   last_seen=excluded.last_seen
 `);
 
-type DirRow = {
-  path: string;
-  ctime: number;
-  mtime: number;
-  scan_id: number;
-};
+  type DirRow = {
+    path: string;
+    ctime: number;
+    mtime: number;
+    scan_id: number;
+  };
 
-const applyDirBatch = db.transaction((rows: DirRow[]) => {
-  for (const r of rows) upsertDir.run(r);
-});
+  const applyDirBatch = db.transaction((rows: DirRow[]) => {
+    for (const r of rows) upsertDir.run(r);
+  });
 
-const upsertMeta = db.prepare(`
+  const upsertMeta = db.prepare(`
 INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen,hashed_ctime)
 VALUES (@path,@size,@ctime,@mtime,@hash,0,@last_seen,@hashed_ctime)
 ON CONFLICT(path) DO UPDATE SET
@@ -86,283 +100,312 @@ ON CONFLICT(path) DO UPDATE SET
 -- NOTE: we intentionally DO NOT overwrite hash or hashed_ctime here.
 `);
 
-const applyMetaBatch = db.transaction((rows: Row[]) => {
-  for (const r of rows) upsertMeta.run(r);
-});
+  const applyMetaBatch = db.transaction((rows: Row[]) => {
+    for (const r of rows) upsertMeta.run(r);
+  });
 
-const applyHashBatch = db.transaction(
-  (rows: { path: string; hash: string; ctime: number }[]) => {
-    const stmt = db.prepare(
-      `UPDATE files
+  const applyHashBatch = db.transaction(
+    (rows: { path: string; hash: string; ctime: number }[]) => {
+      const stmt = db.prepare(
+        `UPDATE files
        SET hash = ?, hashed_ctime = ?, deleted = 0
        WHERE path = ?`,
-    );
-    for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
-  },
-);
+      );
+      for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
+    },
+  );
 
-// ----------------- Worker pool ------------------
-type Job = { path: string; size: number; ctime: number; mtime: number };
-type JobBatch = { jobs: Job[] };
-type Result =
-  | { path: string; hash: string; ctime: number }
-  | { path: string; error: string };
+  // ----------------- Worker pool ------------------
+  type Job = { path: string; size: number; ctime: number; mtime: number };
+  type JobBatch = { jobs: Job[] };
+  type Result =
+    | { path: string; hash: string; ctime: number }
+    | { path: string; error: string };
 
-const workers = Array.from(
-  { length: CPU_COUNT },
-  () => new Worker(new URL("./hash-worker", import.meta.url)),
-);
-const freeWorkers: Worker[] = [...workers];
-const waiters: Array<() => void> = [];
+  const workers = Array.from(
+    { length: CPU_COUNT },
+    () => new Worker(new URL("./hash-worker", import.meta.url)),
+  );
+  const freeWorkers: Worker[] = [...workers];
+  const waiters: Array<() => void> = [];
 
-function nextWorker(): Promise<Worker> {
-  return new Promise((resolve) => {
-    const w = freeWorkers.pop();
-    if (w) return resolve(w);
-    waiters.push(() => resolve(freeWorkers.pop()!));
-  });
-}
+  function nextWorker(): Promise<Worker> {
+    return new Promise((resolve) => {
+      const w = freeWorkers.pop();
+      if (w) return resolve(w);
+      waiters.push(() => resolve(freeWorkers.pop()!));
+    });
+  }
 
-// Buffer for hash results (to batch DB writes)
-const hashResults: { path: string; hash: string; ctime: number }[] = [];
-const touchBatch: [string, number][] = [];
+  // Buffer for hash results (to batch DB writes)
+  const hashResults: { path: string; hash: string; ctime: number }[] = [];
+  const touchBatch: [string, number][] = [];
 
-// Emit buffering (fewer stdout writes)
-const deltaBuf: string[] = [];
-const emitObj = (o: any) => {
-  if (!emitDelta) return;
-  deltaBuf.push(JSON.stringify(o));
-  if (deltaBuf.length >= 1000) flushDeltaBuf();
-};
-function flushDeltaBuf() {
-  if (!emitDelta || deltaBuf.length === 0) return;
-  process.stdout.write(deltaBuf.join("\n") + "\n");
-  deltaBuf.length = 0;
-}
+  // Emit buffering (fewer stdout writes)
+  const deltaBuf: string[] = [];
+  const emitObj = (o: any) => {
+    if (!emitDelta) return;
+    deltaBuf.push(JSON.stringify(o));
+    if (deltaBuf.length >= 1000) flushDeltaBuf();
+  };
+  function flushDeltaBuf() {
+    if (!emitDelta || deltaBuf.length === 0) return;
+    process.stdout.write(deltaBuf.join("\n") + "\n");
+    deltaBuf.length = 0;
+  }
 
-// Keep minimal metadata for paths that will be hashed so we can emit a full row
-const pendingMeta = new Map<
-  string,
-  { size: number; ctime: number; mtime: number }
->();
+  // Keep minimal metadata for paths that will be hashed so we can emit a full row
+  const pendingMeta = new Map<
+    string,
+    { size: number; ctime: number; mtime: number }
+  >();
 
-let dispatched = 0;
-let received = 0;
+  let dispatched = 0;
+  let received = 0;
 
-// Handle worker replies (batched)
-for (const w of workers) {
-  w.on("message", (msg: { done?: Result[] }) => {
-    freeWorkers.push(w);
-    waiters.shift()?.();
+  // Handle worker replies (batched)
+  for (const w of workers) {
+    w.on("message", (msg: { done?: Result[] }) => {
+      freeWorkers.push(w);
+      waiters.shift()?.();
 
-    const arr = msg.done || [];
-    received += arr.length;
+      const arr = msg.done || [];
+      received += arr.length;
 
-    // Collect successful ones for batched DB write and emit deltas
-    for (const r of arr) {
-      if ("error" in r) {
-        // ignore per-file hash errors in this pass
-      } else {
-        hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
-        touchBatch.push([r.path, Date.now()]);
-        // Emit delta line with full metadata if we have it
-        const meta = pendingMeta.get(r.path);
-        if (meta) {
-          emitObj({
-            path: r.path,
-            size: meta.size,
-            ctime: meta.ctime,
-            mtime: meta.mtime,
-            hash: r.hash,
-            deleted: 0,
-          });
-          pendingMeta.delete(r.path);
+      // Collect successful ones for batched DB write and emit deltas
+      for (const r of arr) {
+        if ("error" in r) {
+          // ignore per-file hash errors in this pass
+        } else {
+          hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
+          touchBatch.push([r.path, Date.now()]);
+          // Emit delta line with full metadata if we have it
+          const meta = pendingMeta.get(r.path);
+          if (meta) {
+            emitObj({
+              path: r.path,
+              size: meta.size,
+              ctime: meta.ctime,
+              mtime: meta.mtime,
+              hash: r.hash,
+              deleted: 0,
+            });
+            pendingMeta.delete(r.path);
+          }
+          if (hashResults.length >= DB_BATCH_SIZE) {
+            applyHashBatch(hashResults);
+            hashResults.length = 0;
+            flushTouchBatch(touchBatch);
+            flushDeltaBuf();
+          }
         }
-        if (hashResults.length >= DB_BATCH_SIZE) {
-          applyHashBatch(hashResults);
-          hashResults.length = 0;
-          flushTouchBatch(touchBatch);
-          flushDeltaBuf();
+      }
+    });
+  }
+
+  // --------------- Walk + incremental logic ---------------
+  async function scan(root: string) {
+    const t0 = Date.now();
+    const scan_id = Date.now();
+
+    // stream entries with stats so we avoid a second stat in main thread
+    const stream = walk.walkStream(root, {
+      stats: true,
+      followSymbolicLinks: false,
+      concurrency: 128,
+      entryFilter: (e) => e.dirent.isFile() || e.dirent.isDirectory(),
+      errorFilter: () => true,
+    });
+
+    // Periodic flush so we don't hold large arrays in RAM too long
+    const periodicFlush = setInterval(() => {
+      if (hashResults.length) {
+        applyHashBatch(hashResults);
+        hashResults.length = 0;
+        flushTouchBatch(touchBatch);
+      }
+      flushDeltaBuf();
+    }, 500).unref();
+
+    // Mini-buffers
+    const metaBuf: Row[] = [];
+    const dirMetaBuf: DirRow[] = [];
+    let jobBuf: Job[] = [];
+
+    // Prepare a fast fetch of existing meta to check ctime change
+    const getExisting = db.prepare<
+      [string],
+      | {
+          size: number;
+          ctime: number;
+          mtime: number;
+          hashed_ctime: number | null;
+        }
+      | undefined
+    >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
+
+    for await (const entry of stream as AsyncIterable<{
+      dirent;
+      path: string;
+      stats: import("fs").Stats;
+    }>) {
+      const full = entry.path; // already full path
+      const st = entry.stats!;
+      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
+      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+
+      if (entry.dirent.isDirectory()) {
+        dirMetaBuf.push({ path: full, ctime, mtime, scan_id });
+
+        // emit-delta: dir create/update (we don’t care which;
+        // downstream treats as “ensure exists”)
+        if (emitDelta) {
+          emitObj({ kind: "dir", path: full, ctime, mtime, deleted: 0 });
+        }
+
+        if (dirMetaBuf.length >= DB_BATCH_SIZE) {
+          applyDirBatch(dirMetaBuf);
+          dirMetaBuf.length = 0;
+        }
+      } else if (entry.dirent.isFile()) {
+        const size = st.size;
+        // Upsert *metadata only* (no hash/hashed_ctime change here)
+        metaBuf.push({
+          path: full,
+          size,
+          ctime,
+          mtime,
+          hash: null,
+          last_seen: scan_id,
+          hashed_ctime: null,
+        });
+
+        if (metaBuf.length >= DB_BATCH_SIZE) {
+          applyMetaBatch(metaBuf);
+          metaBuf.length = 0;
+        }
+
+        // Decide if we need to hash: only when ctime changed since last time (or brand new)
+        const row = getExisting.get(full);
+        const needsHash = !row || row.hashed_ctime !== ctime;
+
+        if (needsHash) {
+          // remember minimal meta so we can emit a full delta row when the hash arrives
+          pendingMeta.set(full, { size, ctime, mtime });
+
+          jobBuf.push({ path: full, size, ctime, mtime });
+          // Dispatch in batches to minimize IPC
+          if (jobBuf.length >= DISPATCH_BATCH) {
+            const w = await nextWorker();
+            (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+            dispatched += jobBuf.length;
+            jobBuf = [];
+          }
         }
       }
     }
-  });
-}
 
-// --------------- Walk + incremental logic ---------------
-async function scan(root: string) {
-  const t0 = Date.now();
-  const scan_id = Date.now();
+    // Flush remaining meta
+    if (metaBuf.length) {
+      applyMetaBatch(metaBuf);
+      metaBuf.length = 0;
+    }
 
-  // stream entries with stats so we avoid a second stat in main thread
-  const stream = walk.walkStream(root, {
-    stats: true,
-    followSymbolicLinks: false,
-    concurrency: 128,
-    entryFilter: (e) => e.dirent.isFile() || e.dirent.isDirectory(),
-    errorFilter: () => true,
-  });
+    // Flush remaining directories
+    if (dirMetaBuf.length) {
+      applyDirBatch(dirMetaBuf);
+      dirMetaBuf.length = 0;
+    }
 
-  // Periodic flush so we don't hold large arrays in RAM too long
-  const periodicFlush = setInterval(() => {
+    // Flush remaining job batch
+    if (jobBuf.length) {
+      const w = await nextWorker();
+      (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+      dispatched += jobBuf.length;
+      jobBuf = [];
+    }
+
+    // Wait for all hashes to finish
+    while (received < dispatched) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Final flush of hash results and touches
     if (hashResults.length) {
       applyHashBatch(hashResults);
       hashResults.length = 0;
       flushTouchBatch(touchBatch);
     }
     flushDeltaBuf();
-  }, 500).unref();
 
-  // Mini-buffers
-  const metaBuf: Row[] = [];
-  const dirMetaBuf: DirRow[] = [];
-  let jobBuf: Job[] = [];
+    // Compute deletions (anything not seen this pass and not already deleted)
+    // Select first so we know which paths to emit as deletions.
+    const toDelete = db
+      .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
+      .all(scan_id) as { path: string }[];
 
-  // Prepare a fast fetch of existing meta to check ctime change
-  const getExisting = db.prepare<
-    [string],
-    | {
-        size: number;
-        ctime: number;
-        mtime: number;
-        hashed_ctime: number | null;
-      }
-    | undefined
-  >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
-
-  for await (const entry of stream as AsyncIterable<{
-    dirent;
-    path: string;
-    stats: import("fs").Stats;
-  }>) {
-    const full = entry.path; // already full path
-    const st = entry.stats!;
-    const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
-    const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
-
-    if (entry.dirent.isDirectory()) {
-      dirMetaBuf.push({ path: full, ctime, mtime, scan_id });
-
-      // emit-delta: dir create/update (we don’t care which;
-      // downstream treats as “ensure exists”)
-      if (emitDelta) {
-        emitObj({ kind: "dir", path: full, ctime, mtime, deleted: 0 });
-      }
-
-      if (dirMetaBuf.length >= DB_BATCH_SIZE) {
-        applyDirBatch(dirMetaBuf);
-        dirMetaBuf.length = 0;
-      }
-    } else if (entry.dirent.isFile()) {
-      const size = st.size;
-      // Upsert *metadata only* (no hash/hashed_ctime change here)
-      metaBuf.push({
-        path: full,
-        size,
-        ctime,
-        mtime,
-        hash: null,
-        last_seen: scan_id,
-        hashed_ctime: null,
-      });
-
-      if (metaBuf.length >= DB_BATCH_SIZE) {
-        applyMetaBatch(metaBuf);
-        metaBuf.length = 0;
-      }
-
-      // Decide if we need to hash: only when ctime changed since last time (or brand new)
-      const row = getExisting.get(full);
-      const needsHash = !row || row.hashed_ctime !== ctime;
-
-      if (needsHash) {
-        // remember minimal meta so we can emit a full delta row when the hash arrives
-        pendingMeta.set(full, { size, ctime, mtime });
-
-        jobBuf.push({ path: full, size, ctime, mtime });
-        // Dispatch in batches to minimize IPC
-        if (jobBuf.length >= DISPATCH_BATCH) {
-          const w = await nextWorker();
-          (w as any).postMessage({ jobs: jobBuf } as JobBatch);
-          dispatched += jobBuf.length;
-          jobBuf = [];
-        }
-      }
-    }
-  }
-
-  // Flush remaining meta
-  if (metaBuf.length) {
-    applyMetaBatch(metaBuf);
-    metaBuf.length = 0;
-  }
-
-  // Flush remaining directories
-  if (dirMetaBuf.length) {
-    applyDirBatch(dirMetaBuf);
-    dirMetaBuf.length = 0;
-  }
-
-  // Flush remaining job batch
-  if (jobBuf.length) {
-    const w = await nextWorker();
-    (w as any).postMessage({ jobs: jobBuf } as JobBatch);
-    dispatched += jobBuf.length;
-    jobBuf = [];
-  }
-
-  // Wait for all hashes to finish
-  while (received < dispatched) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
-
-  // Final flush of hash results and touches
-  if (hashResults.length) {
-    applyHashBatch(hashResults);
-    hashResults.length = 0;
-    flushTouchBatch(touchBatch);
-  }
-  flushDeltaBuf();
-
-  // Compute deletions (anything not seen this pass and not already deleted)
-  // Select first so we know which paths to emit as deletions.
-  const toDelete = db
-    .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
-    .all(scan_id) as { path: string }[];
-
-  // Mark deletions: files
-  db.prepare(`UPDATE files SET deleted = 1 WHERE last_seen <> ?`).run(scan_id);
-
-  // emit-delta: Emit deletions
-  if (emitDelta && toDelete.length) {
-    for (const r of toDelete) {
-      emitObj({ path: r.path, deleted: 1 });
-    }
-    flushDeltaBuf();
-  }
-
-  // Mark deletions: dirs
-  db.prepare(`UPDATE dirs SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
-
-  // emit-delta: Emit dir deletions
-  if (emitDelta) {
-    const gone = db
-      .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
-      .all(scan_id);
-    for (const r of gone) {
-      emitObj({ kind: "dir", path: r.path, deleted: 1 });
-    }
-    flushDeltaBuf();
-  }
-
-  clearInterval(periodicFlush);
-  await Promise.all(workers.map((w) => w.terminate()));
-
-  if (verbose) {
-    console.log(
-      `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
+    // Mark deletions: files
+    db.prepare(`UPDATE files SET deleted = 1 WHERE last_seen <> ?`).run(
+      scan_id,
     );
+
+    // emit-delta: Emit deletions
+    if (emitDelta && toDelete.length) {
+      for (const r of toDelete) {
+        emitObj({ path: r.path, deleted: 1 });
+      }
+      flushDeltaBuf();
+    }
+
+    // Mark deletions: dirs
+    db.prepare(`UPDATE dirs SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
+
+    // emit-delta: Emit dir deletions
+    if (emitDelta) {
+      const gone = db
+        .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
+        .all(scan_id);
+      for (const r of gone) {
+        emitObj({ kind: "dir", path: r.path, deleted: 1 });
+      }
+      flushDeltaBuf();
+    }
+
+    clearInterval(periodicFlush);
+    await Promise.all(workers.map((w) => w.terminate()));
+
+    if (verbose) {
+      console.log(
+        `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
+      );
+    }
   }
+
+  await scan(root);
 }
 
-await scan(process.argv[2] ?? ".");
+// ---------- CLI entry (preserved) ----------
+async function mainFromCli() {
+  const program = buildProgram();
+  const opts = program.parse(process.argv).opts() as any;
+  const root = program.args[0];
+  await runScan({ root, ...opts });
+}
+
+// Run as CLI only if this file is the entrypoint
+const isDirect = (() => {
+  try {
+    const me = fileURLToPath(import.meta.url);
+    const invoked = process.argv[1] ? path.resolve(process.argv[1]) : "";
+    return me === invoked;
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirect) {
+  mainFromCli().catch((e) => {
+    console.error("Scan fatal:", e?.stack || e);
+    process.exit(1);
+  });
+}

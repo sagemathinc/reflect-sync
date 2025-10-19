@@ -40,17 +40,17 @@ program
 program
   .command("scan")
   .description(
-    "Run a local scan (writes to DB_PATH or --db); supports --emit-delta for SSH piping",
+    "Run a local scan writing to sqlite database and optionally stdout",
   )
   .argument("<root>", "directory to scan")
-  .addOption(new Option("--db <path>", "sqlite db file").default("alpha.db"))
+  .option("--db", "sqlite db file", "alpha.db")
   .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
-  .action((root: string, opts: { db: string; emitDelta: boolean }) => {
-    const args: string[] = [root];
-    if (opts.emitDelta) args.push("--emit-delta");
-    if (opts.db) args.push("--db", opts.db);
-    run("./scan.js", args);
-  });
+  .action(
+    async (root: string, opts: { db: string; emitDelta: boolean }, command) => {
+      const { runScan } = await import("./scan.js");
+      await runScan({ ...command.optsWithGlobals(), ...opts, root });
+    },
+  );
 
 // ---------- ingest ----------
 program
