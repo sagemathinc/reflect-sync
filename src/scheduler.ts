@@ -14,7 +14,6 @@ import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
 import chokidar, { FSWatcher } from "chokidar";
 import Database from "better-sqlite3";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   mkdtemp,
@@ -26,6 +25,7 @@ import {
 import { Command, Option } from "commander";
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
+import { cliEntrypoint } from "./cli-util.js";
 
 // ---------- types ----------
 export type SchedulerOptions = {
@@ -1004,28 +1004,11 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
   await loop();
 }
 
-// ---------- CLI entry (preserved) ----------
-async function mainFromCli() {
-  const program = buildProgram();
-  const opts = program.parse(process.argv).opts();
-  const cfg = cliOptsToSchedulerOptions(opts);
-  await runScheduler(cfg);
-}
-
-// Run as CLI only if this file is the entrypoint
-const isDirect = (() => {
-  try {
-    const me = fileURLToPath(import.meta.url);
-    const invoked = process.argv[1] ? path.resolve(process.argv[1]) : "";
-    return me === invoked;
-  } catch {
-    return false;
-  }
-})();
-
-if (isDirect) {
-  mainFromCli().catch((e) => {
-    console.error("Scheduler fatal:", e?.stack || e);
-    process.exit(1);
-  });
-}
+cliEntrypoint<SchedulerOptions>(
+  import.meta.url,
+  buildProgram,
+  async (opts) => await runScheduler(cliOptsToSchedulerOptions(opts)),
+  {
+    label: "scheduler",
+  },
+);
