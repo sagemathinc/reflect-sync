@@ -3,3 +3,4 @@ node_modules
 *.term
 *.db*
 tsconfig.tsbuildinfo
+.bash_history
