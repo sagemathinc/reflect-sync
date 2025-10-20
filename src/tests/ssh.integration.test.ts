@@ -43,6 +43,7 @@ async function runScanOverSshIntoIngest(opts: {
   const remoteCmd = [
     shQuote(nodeExe),
     shQuote(scanJs),
+    "--root",
     shQuote(remoteRoot),
     "--emit-delta",
     "--db",

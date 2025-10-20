@@ -316,7 +316,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       params.root,
       "--emit-delta",
     ];
-    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+    if (verbose) {
+      console.log("$ ssh", sshArgs.join(" "));
+    }
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
@@ -338,7 +340,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       ],
     });
 
-    if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
+    if (sshP.stdout && ingestP.stdin) {
+      sshP.stdout.pipe(ingestP.stdin);
+    }
 
     const wait = (p: ChildProcess) =>
       new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
@@ -842,7 +846,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
           root: alphaRoot,
           localDb: alphaDb,
         })
-      : await spawnTask("ccsync", ["scan", alphaRoot, "--db", alphaDb]);
+      : await spawnTask("ccsync", ["scan", "--root", alphaRoot, "--db", alphaDb]);
 
     seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
 
@@ -856,7 +860,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
           root: betaRoot,
           localDb: betaDb,
         })
-      : await spawnTask("ccsync", ["scan", betaRoot, "--db", betaDb]);
+      : await spawnTask("ccsync", ["scan", "--root", betaRoot, "--db", betaDb]);
 
     seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
 

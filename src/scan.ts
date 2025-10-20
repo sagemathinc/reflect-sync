@@ -5,21 +5,18 @@ import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
 import { getDb } from "./db.js";
 import { Command } from "commander";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { cliEntrypoint } from "./cli-util.js";
 
 function buildProgram(): Command {
-  const program = new Command()
-    .name("ccsync-scan")
-    .description("Run a local scan writing to sqlite database");
+  const program = new Command();
 
-  program
-    .argument("<root>", "directory to scan")
+  return program
+    .name("ccsync-scan")
+    .description("Run a local scan writing to sqlite database")
+    .requiredOption("--root <path>", "directory to scan")
     .option("--db <file>", "path to sqlite database", "alpha.db")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
     .option("--verbose", "enable verbose logging", false);
-
-  return program;
 }
 
 type ScanOptions = {
@@ -385,27 +382,7 @@ ON CONFLICT(path) DO UPDATE SET
 }
 
 // ---------- CLI entry (preserved) ----------
-async function mainFromCli() {
-  const program = buildProgram();
-  const opts = program.parse(process.argv).opts() as any;
-  const root = program.args[0];
-  await runScan({ root, ...opts });
-}
 
-// Run as CLI only if this file is the entrypoint
-const isDirect = (() => {
-  try {
-    const me = fileURLToPath(import.meta.url);
-    const invoked = process.argv[1] ? path.resolve(process.argv[1]) : "";
-    return me === invoked;
-  } catch {
-    return false;
-  }
-})();
-
-if (isDirect) {
-  mainFromCli().catch((e) => {
-    console.error("Scan fatal:", e?.stack || e);
-    process.exit(1);
-  });
-}
+cliEntrypoint<ScanOptions>(import.meta.url, buildProgram, runScan, {
+  label: "scan",
+});

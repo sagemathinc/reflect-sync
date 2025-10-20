@@ -245,8 +245,8 @@ describe("ccsync: future capabilities", () => {
     await fsp.writeFile(join(r.aRoot, "logs", "app.log"), "nope");
 
     // hypothetical args once implemented:
-    // await runDist("scan.js", [r.aRoot, "--db", r.aDb, "--include", "src/**", "--exclude", "**/*.log"]);
-    // await runDist("scan.js", [r.bRoot, "--db", r.bDb, "--include", "src/**", "--exclude", "**/*.log"]);
+    // await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, "--include", "src/**", "--exclude", "**/*.log"]);
+    // await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, "--include", "src/**", "--exclude", "**/*.log"]);
     // await runDist("merge-rsync.js", [..., "--include", "src/**", "--exclude", "**/*.log"]);
 
     await sync(r, "alpha"); // currently will copy both; future: only src/**

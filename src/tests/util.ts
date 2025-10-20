@@ -61,8 +61,8 @@ export async function sync(
 ) {
   const verboseArg = verbose || VERBOSE ? ["--verbose"] : [];
 
-  await runDist("scan.js", [r.aRoot, "--db", r.aDb, ...verboseArg]);
-  await runDist("scan.js", [r.bRoot, "--db", r.bDb, ...verboseArg]);
+  await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...verboseArg]);
+  await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...verboseArg]);
   await runDist("merge-rsync.js", [
     "--alpha-root",
     r.aRoot,
