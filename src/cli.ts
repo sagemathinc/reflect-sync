@@ -69,8 +69,6 @@ program
   .option("--alpha-db <file>", "alpha sqlite database", "alpha.db")
   .option("--beta-db <file>", "beta sqlite database", "beta.db")
   .option("--base-db <file>", "base sqlite database", "base.db")
-  .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-  .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
   .addOption(
     new Option("--prefer <side>", "conflict preference")
       .choices(["alpha", "beta"])
@@ -107,6 +105,30 @@ program
     // Import and run in-process so we can manage lifecycle cleanly
     const { runScheduler } = await import("./scheduler.js");
     await runScheduler({ ...command.optsWithGlobals(), ...opts });
+  });
+
+program
+  .command("watch")
+  .description("Watch a root and emit NDJSON events on stdout")
+  .requiredOption("--root <path>", "root directory to watch")
+  .option("--depth <n>", "limit recursion depth")
+  .option("--batch-ms <n>", "debounce flush", "100")
+  .option(
+    "--await-write-finish <ms>",
+    "ms stability threshold (0 disables)",
+    "200",
+  )
+  .option("--verbose", "log to stderr", false)
+  .action(async (opts, command) => {
+    const { runWatch } = await import("./watch.js");
+    await runWatch({
+      ...command.optsWithGlobals(),
+      root: opts.root,
+      depth: opts.depth ? Number(opts.depth) : undefined,
+      batchMs: Number(opts.batchMs),
+      awaitWriteFinish: Number(opts.awaitWriteFinish),
+      verbose: !!opts.verbose,
+    });
   });
 
 // Default help when no subcommand given
