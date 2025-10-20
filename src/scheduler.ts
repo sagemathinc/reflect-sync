@@ -11,7 +11,7 @@
 // * Test knobs are env-based: SCHED_MIN_MS, MICRO_DEBOUNCE_MS, etc.
 
 import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
-import chokidar, { FSWatcher } from "chokidar";
+import chokidar from "chokidar";
 import Database from "better-sqlite3";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -26,6 +26,7 @@ import { Command, Option } from "commander";
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
+import { HotWatchManager, minimalCover, norm, parentDir } from "./hotwatch.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -261,34 +262,11 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
   const join0 = (items: string[]) =>
     Buffer.from(items.filter(Boolean).join("\0") + (items.length ? "\0" : ""));
 
-  const norm = (p: string) =>
-    path.sep === "/" ? p : p.split(path.sep).join("/");
   function rel(root: string, full: string): string {
     let r = path.relative(root, full);
     if (r === "" || r === ".") return "";
     if (path.sep !== "/") r = r.split(path.sep).join("/");
     return r;
-  }
-  const parentDir = (r: string) => norm(path.posix.dirname(r || ".")); // "" -> "."
-
-  function relDepth(rootAbs: string, absPath: string): number {
-    const r = norm(path.relative(rootAbs, absPath));
-    if (!r || r === ".") return 0;
-    return r.split("/").length - 1;
-  }
-
-  function minimalCover(dirs: string[]): string[] {
-    const sorted = Array.from(new Set(dirs)).sort(
-      (a, b) => a.length - b.length,
-    );
-    const out: string[] = [];
-    for (const d of sorted) {
-      if (
-        !out.some((p) => d === p || d.startsWith(p.endsWith("/") ? p : p + "/"))
-      )
-        out.push(d);
-    }
-    return out;
   }
 
   // ---------- Remote watch (SSH) ----------
@@ -623,102 +601,6 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     return out;
   }
 
-  // ---------- HotWatchManager ----------
-  class HotWatchManager {
-    private map = new Map<string, { watcher: FSWatcher; expiresAt: number }>();
-    private lru: string[] = []; // oldest first
-
-    constructor(
-      // @ts-ignore
-      private side: "alpha" | "beta",
-      private root: string,
-      private onHotEvent: (abs: string, ev: string) => void,
-    ) {}
-
-    size() {
-      return this.map.size;
-    }
-
-    async add(rdir: string) {
-      rdir = rdir === "" ? "." : rdir;
-      const anchorAbs = norm(path.join(this.root, rdir));
-      const now = Date.now();
-
-      if (this.map.has(anchorAbs)) {
-        this.bump(anchorAbs);
-        this.map.get(anchorAbs)!.expiresAt = now + HOT_TTL_MS;
-        return;
-      }
-
-      const watcher = chokidar.watch(anchorAbs, {
-        persistent: true,
-        ignoreInitial: true,
-        depth: HOT_DEPTH,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-      });
-
-      const handler = async (ev: string, abs: string) => {
-        this.onHotEvent(abs, ev);
-        const d = relDepth(anchorAbs, abs);
-        if (d >= HOT_DEPTH && this.map.size < MAX_HOT_WATCHERS) {
-          const deeperDir = norm(path.dirname(abs));
-          const r = norm(path.relative(this.root, deeperDir));
-          if (r && r !== ".") await this.add(r);
-        }
-        const st = this.map.get(anchorAbs);
-        if (st) st.expiresAt = Date.now() + HOT_TTL_MS;
-        this.bump(anchorAbs);
-      };
-
-      ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-        watcher.on(evt as any, (p: string) => handler(evt, p));
-      });
-
-      this.map.set(anchorAbs, { watcher, expiresAt: now + HOT_TTL_MS });
-      this.lru.push(anchorAbs);
-      await this.evictIfNeeded();
-    }
-
-    private bump(abs: string) {
-      const i = this.lru.indexOf(abs);
-      if (i >= 0) {
-        this.lru.splice(i, 1);
-        this.lru.push(abs);
-      }
-    }
-
-    private async evictIfNeeded() {
-      const now = Date.now();
-      for (const [abs, st] of Array.from(this.map)) {
-        if (st.expiresAt <= now) await this.drop(abs);
-      }
-      while (this.map.size > MAX_HOT_WATCHERS) {
-        const victim = this.lru.shift();
-        if (!victim) break;
-        if (this.map.has(victim)) await this.drop(victim);
-      }
-    }
-
-    private async drop(abs: string) {
-      const st = this.map.get(abs);
-      if (!st) return;
-      await st.watcher.close().catch(() => {});
-      this.map.delete(abs);
-      const i = this.lru.indexOf(abs);
-      if (i >= 0) this.lru.splice(i, 1);
-    }
-
-    async closeAll() {
-      await Promise.all(
-        Array.from(this.map.values()).map((s) =>
-          s.watcher.close().catch(() => {}),
-        ),
-      );
-      this.map.clear();
-      this.lru = [];
-    }
-  }
-
   // ---------- root watchers (locals only) ----------
   function onAlphaHot(abs: string, evt: string) {
     const r = rel(alphaRoot, abs);
@@ -737,10 +619,21 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
 
   const hotAlphaMgr = alphaIsRemote
     ? null
-    : new HotWatchManager("alpha", alphaRoot, onAlphaHot);
+    : new HotWatchManager(alphaRoot, onAlphaHot, {
+        maxWatchers: MAX_HOT_WATCHERS,
+        ttlMs: HOT_TTL_MS,
+        hotDepth: HOT_DEPTH,
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+      });
+
   const hotBetaMgr = betaIsRemote
     ? null
-    : new HotWatchManager("beta", betaRoot, onBetaHot);
+    : new HotWatchManager(betaRoot, onBetaHot, {
+        maxWatchers: MAX_HOT_WATCHERS,
+        ttlMs: HOT_TTL_MS,
+        hotDepth: HOT_DEPTH,
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+      });
 
   const shallowAlpha = alphaIsRemote
     ? null
