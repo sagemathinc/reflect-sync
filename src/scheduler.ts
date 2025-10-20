@@ -473,7 +473,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     };
   }
 
-  // Remote delta stream (watch): ssh "<remoteWatchCmd> <root> --emit-delta"
+  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root> --emit-delta"
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
   function startRemoteDeltaStream(side: "alpha" | "beta") {
     const host = side === "alpha" ? alphaHost : betaHost;
@@ -485,6 +485,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       "-C",
       host,
       ...splitCmd(remoteWatchCmd),
+      "--root",
       root,
       "--emit-delta",
     ];

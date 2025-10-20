@@ -4,6 +4,7 @@ import chokidar from "chokidar";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
+// import readline from "node:readline";
 
 const norm = (p: string) =>
   path.sep === "/" ? p : p.split(path.sep).join("/");

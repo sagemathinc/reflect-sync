@@ -22,7 +22,7 @@ program
     "Run a local scan writing to sqlite database and optionally stdout",
   )
   .requiredOption("--root <path>", "directory to scan")
-  .option("--db", "sqlite db file", "alpha.db")
+  .option("--db <path>", "sqlite db file", "alpha.db")
   .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
   .action(
     async (opts: { root: string; db: string; emitDelta: boolean }, command) => {
