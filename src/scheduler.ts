@@ -26,6 +26,7 @@ import { Command, Option } from "commander";
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
+import { runIngestDelta } from "./ingest-delta.js";
 
 // ---------- types ----------
 export type SchedulerOptions = {
@@ -316,37 +317,32 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       params.root,
       "--emit-delta",
     ];
-    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+    if (verbose) {
+      console.log("$ ssh", sshArgs.join(" "));
+    }
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
     });
 
-    const ingestArgs = [
-      "ingest",
-      "--db",
-      params.localDb,
-      "--root",
-      params.root,
-    ];
-    if (verbose) console.log("ccsync", ingestArgs.join(" "));
-    const ingestP = spawn("ccsync", ingestArgs, {
-      stdio: [
-        "pipe",
-        verbose ? "inherit" : "ignore",
-        verbose ? "inherit" : "ignore",
-      ],
-    });
-
-    if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
+    const ingestP = async () => {
+      try {
+        await runIngestDelta({
+          db: params.localDb,
+          root: params.root,
+          verbose,
+        });
+      } catch (err) {
+        console.warn("ingest error", err);
+        return 1;
+      }
+      return 0;
+    };
 
     const wait = (p: ChildProcess) =>
       new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
 
-    const [sshCode, ingestCode] = await Promise.all([
-      wait(sshP),
-      wait(ingestP),
-    ]);
+    const [sshCode, ingestCode] = await Promise.all([wait(sshP), ingestP()]);
     const ok = sshCode === 0 && ingestCode === 0;
     return {
       code: ok ? 0 : (sshCode ?? ingestCode),
