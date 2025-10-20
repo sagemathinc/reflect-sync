@@ -37,7 +37,7 @@ program
   .requiredOption("--db <path>", "sqlite db file")
   .option("--root <path>", "absolute root to accept")
   .action(async (opts: { db: string; root: string }, command) => {
-    const { runIngestDelta } = await import("./ingest-delta");
+    const { runIngestDelta } = await import("./ingest-delta.js");
     await runIngestDelta({ ...command.optsWithGlobals(), ...opts });
   });
 

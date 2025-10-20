@@ -27,7 +27,6 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
 
-// ---------- types ----------
 export type SchedulerOptions = {
   alphaRoot: string;
   betaRoot: string;
@@ -292,11 +291,124 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     return out;
   }
 
+  // ---------- Remote watch (SSH) ----------
+  type WatchSide = "alpha" | "beta";
+
+  function parseWatchLine(line: string): { rpaths: string[] } | null {
+    const s = line.trim();
+    if (!s) return null;
+
+    // Prefer NDJSON { r: "...", e: "add|change|unlink" } or { path: "...", event: "..." }.
+    // Also accept arrays: [{r:...}, ...]
+    try {
+      const obj = JSON.parse(s);
+      const toR = (o: any): string | null =>
+        (o?.r as string) ??
+        (o?.path as string) ??
+        (typeof o === "string" ? o : null);
+
+      if (Array.isArray(obj)) {
+        const rpaths = obj.map((o) => toR(o)).filter(Boolean) as string[];
+        return rpaths.length ? { rpaths } : null;
+      } else {
+        const r = toR(obj);
+        return r ? { rpaths: [r] } : null;
+      }
+    } catch {
+      // Fallback: plain path per line
+      return { rpaths: [s] };
+    }
+  }
+
+  function startSshRemoteWatch(params: {
+    side: WatchSide;
+    host: string;
+    root: string;
+    remoteWatchCmd: string; // e.g. "ccsync watch"
+    verbose?: boolean;
+  }) {
+    const { side, host, root, remoteWatchCmd, verbose } = params;
+
+    // pick target set and logger tag
+    const targetSet = side === "alpha" ? hotAlpha : hotBeta;
+    const tag = side === "alpha" ? "remote-watch-alpha" : "remote-watch-beta";
+
+    // Split the configured command and append args
+    const parts = remoteWatchCmd.trim().split(/\s+/);
+    const cmd = parts.shift()!;
+    const cmdArgs = [...parts, "--root", root];
+
+    let restarting = false;
+    let proc: import("node:child_process").ChildProcess | null = null;
+
+    const launch = () => {
+      const sshArgs = [
+        "-o",
+        "BatchMode=yes",
+        host,
+        // exec remote program
+        cmd,
+        ...cmdArgs,
+      ];
+      if (verbose) console.log("$ ssh", sshArgs.join(" "));
+
+      proc = spawn("ssh", sshArgs, {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+
+      // Read NDJSON lines from stdout
+      if (proc.stdout) {
+        const rl = readline.createInterface({ input: proc.stdout });
+        rl.on("line", (line) => {
+          const parsed = parseWatchLine(line);
+          if (!parsed) return;
+          for (const r of parsed.rpaths) {
+            // Treat each rpath as "touched" on that side
+            targetSet.add(r);
+          }
+          // Run a micro pass soon
+          scheduleHotFlush();
+        });
+        rl.on("close", () => {
+          // no-op; exit handler will decide restart
+        });
+      }
+
+      proc.on("exit", (code, sig) => {
+        if (verbose) console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
+        if (!restarting) {
+          restarting = true;
+          setTimeout(() => {
+            restarting = false;
+            launch();
+          }, 1500);
+        }
+      });
+
+      proc.on("error", (err) => {
+        if (verbose) console.warn(`ssh ${tag} error:`, err?.message || err);
+      });
+    };
+
+    launch();
+
+    return {
+      stop: () => {
+        restarting = false;
+        if (proc?.pid) {
+          try {
+            proc.kill("SIGINT");
+          } catch {}
+        }
+      },
+    };
+  }
+
+  // Pipe: ssh scan --emit-delta  →  ccsync ingest --db <local.db>
   function splitCmd(s: string): string[] {
     return s.trim().split(/\s+/);
   }
 
-  // Pipe: ssh scan --emit-delta  →  ccsync ingest --db <local.db>
   async function sshScanIntoMirror(params: {
     host: string;
     remoteScanCmd: string;
@@ -313,6 +425,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       "-C",
       params.host,
       ...splitCmd(params.remoteScanCmd),
+      "--root",
       params.root,
       "--emit-delta",
     ];
@@ -681,6 +794,32 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     });
   }
 
+  // Start remote watch agent(s) over SSH (if any side is remote)
+  let stopRemoteAlphaWatch: null | (() => void) = null;
+  let stopRemoteBetaWatch: null | (() => void) = null;
+
+  if (alphaIsRemote && alphaHost) {
+    const h = startSshRemoteWatch({
+      side: "alpha",
+      host: alphaHost,
+      root: alphaRoot,
+      remoteWatchCmd, // from your parsed options, e.g. "ccsync watch"
+      verbose,
+    });
+    stopRemoteAlphaWatch = h.stop;
+  }
+
+  if (betaIsRemote && betaHost) {
+    const h = startSshRemoteWatch({
+      side: "beta",
+      host: betaHost,
+      root: betaRoot,
+      remoteWatchCmd, // from your parsed options, e.g. "ccsync watch"
+      verbose,
+    });
+    stopRemoteBetaWatch = h.stop;
+  }
+
   // ---------- seed hot watchers from DB recent_touch (locals only) ----------
   function seedHotFromDb(
     dbPath: string,
@@ -846,7 +985,13 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
           root: alphaRoot,
           localDb: alphaDb,
         })
-      : await spawnTask("ccsync", ["scan", "--root", alphaRoot, "--db", alphaDb]);
+      : await spawnTask("ccsync", [
+          "scan",
+          "--root",
+          alphaRoot,
+          "--db",
+          alphaDb,
+        ]);
 
     seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
 
@@ -996,6 +1141,12 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     }
     try {
       db.close();
+    } catch {}
+    try {
+      stopRemoteAlphaWatch?.();
+    } catch {}
+    try {
+      stopRemoteBetaWatch?.();
     } catch {}
   };
   const onSig = async () => {

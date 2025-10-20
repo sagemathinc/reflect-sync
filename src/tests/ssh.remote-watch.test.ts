@@ -75,7 +75,7 @@ async function stopScheduler(p: ChildProcess) {
   } catch {}
   await Promise.race([
     new Promise<void>((resolve) => p.once("exit", () => resolve())),
-    new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+    new Promise<void>((resolve) => setTimeout(resolve, 500)),
   ]);
   if (p.pid) {
     try {

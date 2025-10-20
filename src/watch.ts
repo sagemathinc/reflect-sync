@@ -28,7 +28,7 @@ export type WatchOpts = {
 
 export async function runWatch({
   root,
-  depth,
+  depth = 1,
   batchMs = 100,
   awaitWriteFinish = 200,
   verbose = false,
