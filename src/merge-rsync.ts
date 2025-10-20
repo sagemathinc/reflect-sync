@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // merge-rsync.ts
-import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile, stat as fsStat } from "node:fs/promises";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
+import { getDb } from "./db.js";
+import Database from "better-sqlite3";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -144,6 +145,9 @@ export async function runMergeRsync({
 
   async function main() {
     // ---------- DB ----------
+    // ensure that alppha/beta are setup
+    getDb(alphaDb);
+    getDb(betaDb);
     const db = new Database(baseDb);
     db.pragma("journal_mode = WAL");
     db.pragma("synchronous = NORMAL");
