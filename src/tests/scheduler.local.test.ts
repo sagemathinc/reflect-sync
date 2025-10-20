@@ -11,7 +11,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import Database from "better-sqlite3";
-import { fileExists, waitFor } from "./util";
+import { countSchedulerCycles, fileExists, waitFor } from "./util";
 
 // Resolve SCHED once (safer than relying on PATH)
 const SCHED = path.resolve(__dirname, "../../dist/scheduler.js");
@@ -80,30 +80,6 @@ async function stopScheduler(p: ChildProcess) {
     try {
       process.kill(p.pid!, "SIGKILL");
     } catch {}
-  }
-}
-
-function countSchedulerCycles(baseDb: string): number {
-  const db = new Database(baseDb);
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS events(
-        id INTEGER PRIMARY KEY,
-        ts INTEGER,
-        level TEXT,
-        source TEXT,
-        msg TEXT,
-        details TEXT
-      );
-    `);
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM events WHERE source='scheduler' AND msg LIKE 'cycle complete %'`,
-      )
-      .get() as { n?: number };
-    return row?.n ?? 0;
-  } finally {
-    db.close();
   }
 }
 

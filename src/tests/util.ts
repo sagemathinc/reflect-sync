@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
+import Database from "better-sqlite3";
 
 // Toggle for noisy child output while debugging, by default.
 const VERBOSE = false;
@@ -95,3 +96,28 @@ export async function waitFor<T>(
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
+
+export function countSchedulerCycles(baseDb: string): number {
+  const db = new Database(baseDb);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS events(
+        id INTEGER PRIMARY KEY,
+        ts INTEGER,
+        level TEXT,
+        source TEXT,
+        msg TEXT,
+        details TEXT
+      );
+    `);
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM events WHERE source='scheduler' AND msg LIKE 'cycle complete %'`,
+      )
+      .get() as { n?: number };
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
+}
+
