@@ -1,5 +1,1 @@
-- [ ] microsync is not directory aware
-
-- [ ] microsync breaks the test "dir→file conflict (prefer beta): currently conservative, dir on alpha remains" if you try it manually with the scheduler on
-
-- [ ] need to not spawn child processes but call functions in scripts, since otherwise control+c doesn't terminate sync, which is annoying
+- [ ] microsync remote doesn't work.  I think this is because in schedule requesting hot uses recent_touch, but that is ONLY updated in scan, so only remotely, not in the local mirror.  We maybe need to update recent_touch also in the local mirror

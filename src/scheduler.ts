@@ -226,7 +226,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     ok: boolean;
     lastZero: boolean;
   }> {
-    if (verbose) console.log(`${cmd} ${args.join(" ")}`);
+    if (verbose) {
+      console.log(`${cmd} ${args.join(" ")}`);
+    }
     return new Promise((resolve) => {
       const t0 = Date.now();
       let lastZero = false;
@@ -388,6 +390,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
         }
       },
       add: (dirs: string[]) => {
+        if (dirs.length == 0) {
+          return;
+        }
         proc?.stdin?.write(JSON.stringify({ op: "add", dirs }) + "\n");
       },
     };
@@ -433,7 +438,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       "--root",
       params.root,
     ];
-    if (verbose) console.log("ccsync", ingestArgs.join(" "));
+    if (verbose) {
+      console.log("ccsync", ingestArgs.join(" "));
+    }
     const ingestP = spawn("ccsync", ingestArgs, {
       stdio: [
         "pipe",
@@ -471,7 +478,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     const localDb = side === "alpha" ? alphaDb : betaDb;
 
     const sshArgs = ["-C", host, ...splitCmd(remoteWatchCmd), "--root", root];
-    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+    if (verbose) {
+      console.log("$ ssh", sshArgs.join(" "));
+    }
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "inherit"],
     });
@@ -695,7 +704,8 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
   // Start remote watch agent(s) over SSH (if any side is remote)
   let stopRemoteAlphaWatch: null | (() => void) = null;
   let stopRemoteBetaWatch: null | (() => void) = null;
-  let addHotRemoteDirs: null | ((dirs: string[]) => void) = null;
+  let addRemoteAlphaHotDirs: null | ((dirs: string[]) => void) = null;
+  let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
   if (alphaIsRemote && alphaHost) {
     const h = startSshRemoteWatch({
@@ -706,7 +716,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       verbose,
     });
     stopRemoteAlphaWatch = h.stop;
-    addHotRemoteDirs = h.add;
+    addRemoteAlphaHotDirs = h.add;
   }
 
   if (betaIsRemote && betaHost) {
@@ -718,7 +728,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       verbose,
     });
     stopRemoteBetaWatch = h.stop;
-    addHotRemoteDirs = h.add;
+    addRemoteBetaHotDirs = h.add;
   }
 
   // ---------- seed hot watchers from DB recent_touch ----------
@@ -726,6 +736,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     dbPath: string,
     root: string,
     mgr: HotWatchManager | null,
+    remoteAdd: null | ((dirs: string[]) => void),
     sinceTs: number | null,
     maxDirs = 256,
   ) {
@@ -749,7 +760,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
         .filter(Boolean);
       const covered = minimalCover(dirs).slice(0, maxDirs);
       covered.forEach((d) => mgr.add(d));
-      addHotRemoteDirs?.(covered);
+      remoteAdd?.(covered);
       if (verbose)
         log(
           "info",
@@ -897,7 +908,14 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
           alphaDb,
         ]);
 
-    seedHotFromDb(alphaDb, alphaRoot, hotAlphaMgr, tAlphaStart, 256);
+    seedHotFromDb(
+      alphaDb,
+      alphaRoot,
+      hotAlphaMgr,
+      addRemoteAlphaHotDirs,
+      tAlphaStart,
+      256,
+    );
 
     // Scan beta
     const tBetaStart = Date.now();
@@ -911,7 +929,14 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
         })
       : await spawnTask("ccsync", ["scan", "--root", betaRoot, "--db", betaDb]);
 
-    seedHotFromDb(betaDb, betaRoot, hotBetaMgr, tBetaStart, 256);
+    seedHotFromDb(
+      betaDb,
+      betaRoot,
+      hotBetaMgr,
+      addRemoteBetaHotDirs,
+      tBetaStart,
+      256,
+    );
 
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
