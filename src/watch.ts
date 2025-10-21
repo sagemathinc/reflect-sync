@@ -6,7 +6,7 @@ import { Command } from "commander";
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import readline from "node:readline";
-import { HotWatchManager, type HotWatchEvent } from "./hotwatch.js";
+import { HotWatchManager, HOT_EVENTS, type HotWatchEvent } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
 
 // ---------- types ----------
@@ -34,7 +34,9 @@ const isPlainRel = (r: string) =>
 
 // STDERR logging only when verbose
 function vlog(verbose: boolean | undefined, ...args: any[]) {
-  if (verbose) console.error(...args);
+  if (verbose) {
+    console.error(...args);
+  }
 }
 
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
@@ -62,7 +64,7 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
 
     const op = String(msg.op || "").toLowerCase();
     try {
-      if (op === "add" || op === "seed") {
+      if (op === "add") {
         const dirs: string[] = Array.isArray(msg.dirs) ? msg.dirs : [];
         for (const r of dirs) {
           const clean = String(r || "").replace(/^\.\/+/, "");
@@ -133,13 +135,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       }
     };
 
-    for (const evt of [
-      "add",
-      "change",
-      "unlink",
-      "addDir",
-      "unlinkDir",
-    ] as HotWatchEvent[]) {
+    for (const evt of HOT_EVENTS) {
       shallow.on(evt, (p) => handle(evt, p));
     }
     shallow.on("error", (err) => console.error("watch: shallow error", err));

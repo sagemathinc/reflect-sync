@@ -9,6 +9,14 @@ export type HotWatchEvent =
   | "addDir"
   | "unlinkDir";
 
+export const HOT_EVENTS: HotWatchEvent[] = [
+  "add",
+  "change",
+  "unlink",
+  "addDir",
+  "unlinkDir",
+];
+
 export interface HotWatchOptions {
   maxWatchers?: number; // default 256
   ttlMs?: number; // default 30 min
@@ -96,7 +104,9 @@ export class HotWatchManager {
       if (d >= this.opts.hotDepth && this.map.size < this.opts.maxWatchers) {
         const deeperDir = norm(path.dirname(absN));
         const r = norm(path.relative(this.root, deeperDir));
-        if (r && r !== ".") await this.add(r);
+        if (r && r !== ".") {
+          await this.add(r);
+        }
       }
 
       // refresh TTL & LRU
@@ -105,7 +115,7 @@ export class HotWatchManager {
       this.bump(anchorAbs);
     };
 
-    ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
+    HOT_EVENTS.forEach((evt) => {
       watcher.on(evt as any, (p: string) => handler(evt as HotWatchEvent, p));
     });
 
@@ -125,18 +135,26 @@ export class HotWatchManager {
   private async evictIfNeeded() {
     const now = Date.now();
     for (const [abs, st] of Array.from(this.map)) {
-      if (st.expiresAt <= now) await this.drop(abs);
+      if (st.expiresAt <= now) {
+        await this.drop(abs);
+      }
     }
     while (this.map.size > this.opts.maxWatchers) {
       const victim = this.lru.shift();
-      if (!victim) break;
-      if (this.map.has(victim)) await this.drop(victim);
+      if (!victim) {
+        break;
+      }
+      if (this.map.has(victim)) {
+        await this.drop(victim);
+      }
     }
   }
 
   private async drop(abs: string) {
     const st = this.map.get(abs);
-    if (!st) return;
+    if (!st) {
+      return;
+    }
     await st.watcher.close().catch(() => {});
     this.map.delete(abs);
     const i = this.lru.indexOf(abs);

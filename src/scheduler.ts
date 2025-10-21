@@ -298,15 +298,19 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     }
   }
 
-  function startSshRemoteWatch(params: {
+  function startSshRemoteWatch({
+    side,
+    host,
+    root,
+    remoteWatchCmd,
+    verbose,
+  }: {
     side: WatchSide;
     host: string;
     root: string;
     remoteWatchCmd: string; // e.g. "ccsync watch"
     verbose?: boolean;
   }) {
-    const { side, host, root, remoteWatchCmd, verbose } = params;
-
     // pick target set and logger tag
     const targetSet = side === "alpha" ? hotAlpha : hotBeta;
     const tag = side === "alpha" ? "remote-watch-alpha" : "remote-watch-beta";
@@ -328,10 +332,12 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
         cmd,
         ...cmdArgs,
       ];
-      if (verbose) console.log("$ ssh", sshArgs.join(" "));
+      if (verbose) {
+        console.log("$ ssh", sshArgs.join(" "));
+      }
 
       proc = spawn("ssh", sshArgs, {
-        stdio: ["ignore", "pipe", "inherit"],
+        stdio: ["pipe", "pipe", "inherit"],
       });
 
       // Read NDJSON lines from stdout
@@ -353,7 +359,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       }
 
       proc.on("exit", (code, sig) => {
-        if (verbose) console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
+        if (verbose) {
+          console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
+        }
         if (!restarting) {
           restarting = true;
           setTimeout(() => {
@@ -378,6 +386,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
             proc.kill("SIGINT");
           } catch {}
         }
+      },
+      add: (dirs: string[]) => {
+        proc?.stdin?.write(JSON.stringify({ op: "add", dirs }) + "\n");
       },
     };
   }
@@ -451,7 +462,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     };
   }
 
-  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root> --emit-delta"
+  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root>""
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
   function startRemoteDeltaStream(side: "alpha" | "beta") {
     const host = side === "alpha" ? alphaHost : betaHost;
@@ -459,14 +470,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     const root = side === "alpha" ? alphaRoot : betaRoot;
     const localDb = side === "alpha" ? alphaDb : betaDb;
 
-    const sshArgs = [
-      "-C",
-      host,
-      ...splitCmd(remoteWatchCmd),
-      "--root",
-      root,
-      "--emit-delta",
-    ];
+    const sshArgs = ["-C", host, ...splitCmd(remoteWatchCmd), "--root", root];
     if (verbose) console.log("$ ssh", sshArgs.join(" "));
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "inherit"],
@@ -691,6 +695,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
   // Start remote watch agent(s) over SSH (if any side is remote)
   let stopRemoteAlphaWatch: null | (() => void) = null;
   let stopRemoteBetaWatch: null | (() => void) = null;
+  let addHotRemoteDirs: null | ((dirs: string[]) => void) = null;
 
   if (alphaIsRemote && alphaHost) {
     const h = startSshRemoteWatch({
@@ -701,6 +706,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       verbose,
     });
     stopRemoteAlphaWatch = h.stop;
+    addHotRemoteDirs = h.add;
   }
 
   if (betaIsRemote && betaHost) {
@@ -712,9 +718,10 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
       verbose,
     });
     stopRemoteBetaWatch = h.stop;
+    addHotRemoteDirs = h.add;
   }
 
-  // ---------- seed hot watchers from DB recent_touch (locals only) ----------
+  // ---------- seed hot watchers from DB recent_touch ----------
   function seedHotFromDb(
     dbPath: string,
     root: string,
@@ -722,7 +729,9 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     sinceTs: number | null,
     maxDirs = 256,
   ) {
-    if (!mgr) return;
+    if (!mgr) {
+      return;
+    }
     const sdb = new Database(dbPath);
     try {
       const rows = sinceTs
@@ -740,6 +749,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
         .filter(Boolean);
       const covered = minimalCover(dirs).slice(0, maxDirs);
       covered.forEach((d) => mgr.add(d));
+      addHotRemoteDirs?.(covered);
       if (verbose)
         log(
           "info",

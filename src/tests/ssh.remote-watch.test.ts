@@ -121,7 +121,6 @@ describe("SSH remote watch → microSync", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      verbose: false,
     });
 
     try {
