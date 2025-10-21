@@ -111,23 +111,15 @@ program
   .command("watch")
   .description("Watch a root and emit NDJSON events on stdout")
   .requiredOption("--root <path>", "root directory to watch")
-  .option("--depth <n>", "limit recursion depth")
-  .option("--batch-ms <n>", "debounce flush", "100")
-  .option(
-    "--await-write-finish <ms>",
-    "ms stability threshold (0 disables)",
-    "200",
-  )
-  .option("--verbose", "log to stderr", false)
+  .option("--shallow-depth <n>", "root watcher depth", "1")
+  .option("--hot-depth <n>", "hot anchor depth", "2")
+  .option("--hot-ttl-ms <ms>", "TTL for hot anchors", String(30 * 60_000))
+  .option("--max-hot-watchers <n>", "max concurrent hot watchers", "256")
   .action(async (opts, command) => {
     const { runWatch } = await import("./watch.js");
     await runWatch({
       ...command.optsWithGlobals(),
-      root: opts.root,
-      depth: opts.depth ? Number(opts.depth) : undefined,
-      batchMs: Number(opts.batchMs),
-      awaitWriteFinish: Number(opts.awaitWriteFinish),
-      verbose: !!opts.verbose,
+      ...opts,
     });
   });
 
