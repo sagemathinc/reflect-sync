@@ -8,6 +8,10 @@
 // Example over SSH:
 //   ssh -C user@alpha 'env DB_PATH=~/.cache/cocalc-sync/alpha.db node /path/dist/scan.js /alpha/root --emit-delta' \
 //     | node dist/ingest-delta.js --db alpha.db --root /alpha/root
+//
+// NOTE: this looks like code duplication with scan.ts, but it's not, since
+// there's a number of things that are completely different about how
+// we're inserting data into the database here.
 
 import readline from "node:readline";
 import { getDb } from "./db.js";
@@ -65,6 +69,10 @@ ON CONFLICT(path) DO UPDATE SET
   last_seen=excluded.last_seen
 `);
 
+  const insTouch = db.prepare(
+    `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
+  );
+
   const tx = db.transaction((rows: any[]) => {
     if (verbose) {
       console.log(`ingest-delta: ${rows.length} rows`);
@@ -99,6 +107,8 @@ ON CONFLICT(path) DO UPDATE SET
           now,
           hashed_ctime: isDelete ? null : (r.ctime ?? null),
         });
+        // consider this path as active
+        insTouch.run(r.path, Date.now());
       }
     }
   });

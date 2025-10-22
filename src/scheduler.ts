@@ -272,32 +272,6 @@ export async function runScheduler({
   // ---------- Remote watch (SSH) ----------
   type WatchSide = "alpha" | "beta";
 
-  function parseWatchLine(line: string): { rpaths: string[] } | null {
-    const s = line.trim();
-    if (!s) return null;
-
-    // Prefer NDJSON { r: "...", e: "add|change|unlink" } or { path: "...", event: "..." }.
-    // Also accept arrays: [{r:...}, ...]
-    try {
-      const obj = JSON.parse(s);
-      const toR = (o: any): string | null =>
-        (o?.r as string) ??
-        (o?.path as string) ??
-        (typeof o === "string" ? o : null);
-
-      if (Array.isArray(obj)) {
-        const rpaths = obj.map((o) => toR(o)).filter(Boolean) as string[];
-        return rpaths.length ? { rpaths } : null;
-      } else {
-        const r = toR(obj);
-        return r ? { rpaths: [r] } : null;
-      }
-    } catch {
-      // Fallback: plain path per line
-      return { rpaths: [s] };
-    }
-  }
-
   function startSshRemoteWatch({
     side,
     host,
@@ -336,15 +310,16 @@ export async function runScheduler({
       // Read NDJSON lines from stdout
       if (proc.stdout) {
         const rl = readline.createInterface({ input: proc.stdout });
-        rl.on("line", (line) => {
-          const parsed = parseWatchLine(line);
-          if (!parsed) return;
-          for (const r of parsed.rpaths) {
-            // Treat each rpath as "touched" on that side
-            targetSet.add(r);
+        rl.on("line", (line: string) => {
+          line = line.trim();
+          if (!line) return;
+          const { ev, rpath } = JSON.parse(line);
+          const isDir = ev.endsWith("Dir");
+          if (!isDir) {
+            targetSet.add(rpath);
+            // Run a micro pass soon
+            scheduleHotFlush();
           }
-          // Run a micro pass soon
-          scheduleHotFlush();
         });
         rl.on("close", () => {
           // no-op; exit handler will decide restart
@@ -733,9 +708,6 @@ export async function runScheduler({
     sinceTs: number,
     maxDirs = 256,
   ) {
-    if (!mgr) {
-      return;
-    }
     const sdb = new Database(dbPath);
     try {
       // get recently touched paths (with some limit)
@@ -750,7 +722,9 @@ export async function runScheduler({
         .map((r: any) => parentDir(norm(path.relative(root, r.path))))
         .filter(Boolean);
       const covered = minimalCover(dirs).slice(0, maxDirs);
-      covered.forEach((d) => mgr.add(d));
+      if (mgr != null) {
+        covered.forEach((d) => mgr.add(d));
+      }
       remoteAdd?.(covered);
       if (verbose)
         log(

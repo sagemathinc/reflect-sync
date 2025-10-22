@@ -42,9 +42,9 @@ function vlog(verbose: boolean | undefined, ...args: any[]) {
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
   const rpath = relR(root, abs);
   if (!rpath) return;
-  const isDir = ev.endsWith("Dir");
-  const rec = { ev, rpath, kind: isDir ? "dir" : ("file" as const) };
+  const rec = { ev, rpath}
   process.stdout.write(JSON.stringify(rec) + "\n");
+  // vlog(true, rec);
 }
 
 // ---------- JSON control channel on STDIN ----------
@@ -52,15 +52,17 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
   const rl = readline.createInterface({ input: process.stdin });
 
   rl.on("line", async (line) => {
+    // vlog(true, { line });
     const s = line.trim();
     if (!s) return;
     let msg: any;
     try {
       msg = JSON.parse(s);
-    } catch {
-      console.error(`watch: ignoring invalid JSON: ${s}`);
+    } catch (err) {
+      console.error(`watch: ignoring invalid JSON: ${s}`, err);
       return;
     }
+    // vlog(true, { msg });
 
     const op = String(msg.op || "").toLowerCase();
     try {
@@ -72,9 +74,6 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
             await mgr.add(clean);
           }
         }
-      } else if (op === "ping") {
-        const id = msg.id ?? "";
-        console.error(JSON.stringify({ pong: String(id) }));
       } else if (op === "close") {
         await onClose();
       } else {
