@@ -137,24 +137,22 @@ const MAX_BACKOFF_MS = envNum("SCHED_MAX_BACKOFF_MS", 600_000);
 const JITTER_MS = envNum("SCHED_JITTER_MS", 500);
 
 // ---------- core (exported) ----------
-export async function runScheduler(opts: SchedulerOptions): Promise<void> {
-  const {
-    alphaRoot,
-    betaRoot,
-    alphaDb,
-    betaDb,
-    baseDb,
-    prefer,
-    verbose,
-    dryRun,
-    alphaHost,
-    betaHost,
-    alphaRemoteDb,
-    betaRemoteDb,
-    remoteScanCmd,
-    remoteWatchCmd,
-  } = opts;
-
+export async function runScheduler({
+  alphaRoot,
+  betaRoot,
+  alphaDb,
+  betaDb,
+  baseDb,
+  prefer,
+  verbose,
+  dryRun,
+  alphaHost,
+  betaHost,
+  alphaRemoteDb,
+  betaRemoteDb,
+  remoteScanCmd,
+  remoteWatchCmd,
+}: SchedulerOptions): Promise<void> {
   if (!alphaRoot || !betaRoot) {
     throw new Error("Need --alpha-root and --beta-root");
   }
@@ -323,17 +321,10 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     const cmdArgs = [...parts, "--root", root];
 
     let restarting = false;
-    let proc: import("node:child_process").ChildProcess | null = null;
+    let proc: ChildProcess | null = null;
 
     const launch = () => {
-      const sshArgs = [
-        "-o",
-        "BatchMode=yes",
-        host,
-        // exec remote program
-        cmd,
-        ...cmdArgs,
-      ];
+      const sshArgs = ["-o", "BatchMode=yes", host, cmd, ...cmdArgs];
       if (verbose) {
         console.log("$ ssh", sshArgs.join(" "));
       }
@@ -403,6 +394,8 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     return s.trim().split(/\s+/);
   }
 
+  // ssh to a remote, run a scan, and writing the resulting
+  // data into our local database.
   async function sshScanIntoMirror(params: {
     host: string;
     remoteScanCmd: string;
@@ -737,7 +730,7 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     root: string,
     mgr: HotWatchManager | null,
     remoteAdd: null | ((dirs: string[]) => void),
-    sinceTs: number | null,
+    sinceTs: number,
     maxDirs = 256,
   ) {
     if (!mgr) {
@@ -745,16 +738,14 @@ export async function runScheduler(opts: SchedulerOptions): Promise<void> {
     }
     const sdb = new Database(dbPath);
     try {
-      const rows = sinceTs
-        ? sdb
-            .prepare(
-              `SELECT path FROM recent_touch WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
-            )
-            .all(sinceTs, maxDirs * 8)
-        : sdb
-            .prepare(`SELECT path FROM recent_touch ORDER BY ts DESC LIMIT ?`)
-            .all(maxDirs * 8);
-
+      // get recently touched paths (with some limit)
+      const rows = sdb
+        .prepare(
+          `SELECT path FROM recent_touch WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
+        )
+        .all(sinceTs, maxDirs * 8);
+      // clear the recently touched table to save space
+      sdb.prepare("DELETE FROM recent_touch").run();
       const dirs = rows
         .map((r: any) => parentDir(norm(path.relative(root, r.path))))
         .filter(Boolean);
