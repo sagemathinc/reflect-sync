@@ -20,6 +20,7 @@ import {
   recordHeartbeat,
   deleteSessionById,
 } from "./session-db.js";
+import { registerSessionStatus } from "./session-status.js";
 
 // ---------- small utils ----------
 function expandHome(p: string): string {
@@ -363,4 +364,6 @@ export function registerSessionCommands(program: Command) {
         console.log(`terminated session ${id}`);
       });
     });
+
+  registerSessionStatus(session);
 }
