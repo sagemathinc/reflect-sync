@@ -2,6 +2,7 @@
 import { Command, Option } from "commander";
 import { ensureSessionDb, getSessionDbPath } from "./session-db.js";
 import type Database from "better-sqlite3";
+import { AsciiTable3 as Table, AlignmentEnum } from "ascii-table3";
 
 type AnyRow = Record<string, any>;
 
@@ -33,7 +34,6 @@ function tryGetLabels(
   sessionId: number,
 ): Record<string, string> {
   try {
-    // optional table; ignore if missing
     const rows = db
       .prepare(
         `SELECT k, v FROM session_labels WHERE session_id = ? ORDER BY k`,
@@ -42,8 +42,7 @@ function tryGetLabels(
     const out: Record<string, string> = {};
     for (const r of rows) out[r.k] = r.v;
     return out;
-  } catch (err) {
-    console.warn(err);
+  } catch {
     return {};
   }
 }
@@ -54,8 +53,7 @@ function getSession(db: Database.Database, sessionId: number): AnyRow | null {
       .prepare(`SELECT * FROM sessions WHERE id = ?`)
       .get(sessionId) as AnyRow | undefined;
     return row ?? null;
-  } catch (err) {
-    console.warn(err);
+  } catch {
     return null;
   }
 }
@@ -66,8 +64,7 @@ function getState(db: Database.Database, sessionId: number): AnyRow | null {
       .prepare(`SELECT * FROM session_state WHERE session_id = ?`)
       .get(sessionId) as AnyRow | undefined;
     return row ?? null;
-  } catch (err) {
-    console.warn(err);
+  } catch {
     return null;
   }
 }
@@ -83,8 +80,7 @@ function getLastHeartbeat(
       )
       .get(sessionId) as AnyRow | undefined;
     return row ?? null;
-  } catch (err) {
-    console.warn(err);
+  } catch {
     return null;
   }
 }
@@ -109,75 +105,88 @@ function computeHealth(
   return { health: "healthy" };
 }
 
-function textOutput(
+function tableOutput(
   sessionId: number,
   sess: AnyRow | null,
   labels: Record<string, string>,
   state: AnyRow | null,
   lastHb: AnyRow | null,
 ): string {
-  const lines: string[] = [];
-  lines.push(`Session ${sessionId}`);
-  if (sess?.name) lines.push(`  name:             ${sess.name}`);
+  const table = new Table({
+    title: `Session ${sessionId}`,
+  })
+    .setHeading("Field", "Value")
+    .setStyle("unicode-round");
+
+  let n = 0;
+  const add = (k: string, v?: any) => {
+    table.setAlign(n++, AlignmentEnum.LEFT);
+    const s =
+      v === undefined || v === null || v === ""
+        ? "-"
+        : typeof v === "string"
+          ? v
+          : String(v);
+    table.addRow(k, s);
+  };
+
+  // Name & labels
+  if (sess?.name) add("name", sess.name);
   if (Object.keys(labels).length) {
-    lines.push(
-      `  labels:           ${Object.entries(labels)
+    add(
+      "labels",
+      Object.entries(labels)
         .map(([k, v]) => `${k}=${v}`)
-        .join(", ")}`,
+        .join(", "),
     );
   }
 
-  // config (if present)
+  // Config
   if (sess) {
     if (sess.alpha_root || sess.alpha_host) {
-      lines.push(
-        `  alpha:            ${sess.alpha_host ? `${sess.alpha_host}:` : ""}${sess.alpha_root ?? ""}`,
+      add(
+        "alpha",
+        `${sess.alpha_host ? `${sess.alpha_host}:` : ""}${sess.alpha_root ?? ""}`,
       );
     }
     if (sess.beta_root || sess.beta_host) {
-      lines.push(
-        `  beta:             ${sess.beta_host ? `${sess.beta_host}:` : ""}${sess.beta_root ?? ""}`,
+      add(
+        "beta",
+        `${sess.beta_host ? `${sess.beta_host}:` : ""}${sess.beta_root ?? ""}`,
       );
     }
-    if (sess.prefer) lines.push(`  prefer:           ${sess.prefer}`);
-    if (sess.base_db) lines.push(`  base db:          ${sess.base_db}`);
-    if (sess.alpha_db) lines.push(`  alpha db:         ${sess.alpha_db}`);
-    if (sess.beta_db) lines.push(`  beta db:          ${sess.beta_db}`);
+    if (sess.prefer) add("prefer", sess.prefer);
+    if (sess.base_db) add("base db", sess.base_db);
+    if (sess.alpha_db) add("alpha db", sess.alpha_db);
+    if (sess.beta_db) add("beta db", sess.beta_db);
     if (sess.created_at)
-      lines.push(
-        `  created:          ${new Date(sess.created_at).toISOString()}`,
-      );
+      add("created", new Date(sess.created_at).toISOString());
   }
 
-  // runtime
+  // Runtime
   const hbAgo = state?.last_heartbeat ? fmtAgo(state.last_heartbeat) : "-";
-  lines.push(`  status:           ${state?.status ?? "-"}`);
-  if (state?.pid) lines.push(`  pid:              ${state.pid}`);
-  if (state?.host) lines.push(`  host:             ${state.host}`);
-  lines.push(`  running:          ${state?.running ? "yes" : "no"}`);
-  lines.push(`  pending:          ${state?.pending ? "yes" : "no"}`);
-  if (state?.cycles != null) lines.push(`  cycles:           ${state.cycles}`);
-  if (state?.errors != null) lines.push(`  errors:           ${state.errors}`);
-  lines.push(`  last heartbeat:   ${hbAgo}`);
+  add("status", state?.status ?? "-");
+  if (state?.pid) add("pid", state.pid);
+  if (state?.host) add("host", state.host);
+  add("running", state?.running ? "yes" : "no");
+  add("pending", state?.pending ? "yes" : "no");
+  if (state?.cycles != null) add("cycles", state.cycles);
+  if (state?.errors != null) add("errors", state.errors);
+  add("last heartbeat", hbAgo);
   if (state?.last_cycle_ms != null)
-    lines.push(`  last cycle:       ${fmtMs(state.last_cycle_ms)}`);
-  if (state?.backoff_ms != null)
-    lines.push(`  backoff:          ${fmtMs(state.backoff_ms)}`);
+    add("last cycle", fmtMs(state.last_cycle_ms));
+  if (state?.backoff_ms != null) add("backoff", fmtMs(state.backoff_ms));
   if (state?.started_at)
-    lines.push(
-      `  started:          ${new Date(state.started_at).toISOString()}`,
-    );
+    add("started", new Date(state.started_at).toISOString());
   if (state?.stopped_at)
-    lines.push(
-      `  stopped:          ${new Date(state.stopped_at).toISOString()}`,
-    );
-  if (state?.last_error) lines.push(`  last error:       ${state.last_error}`);
+    add("stopped", new Date(state.stopped_at).toISOString());
+  if (state?.last_error) add("last error", state.last_error);
 
-  // health
+  // Health
   const { health, reason } = computeHealth(state, lastHb);
-  lines.push(`  health:           ${health}${reason ? ` (${reason})` : ""}`);
+  add("health", reason ? `${health} (${reason})` : health);
 
-  return lines.join("\n");
+  return table.toString();
 }
 
 export function registerSessionStatus(sessionCmd: Command) {
@@ -237,7 +246,7 @@ export function registerSessionStatus(sessionCmd: Command) {
           };
           console.log(JSON.stringify(out, null, 2));
         } else {
-          console.log(textOutput(id, sess, labels, state, lastHb));
+          console.log(tableOutput(id, sess, labels, state, lastHb));
         }
       } finally {
         db.close();

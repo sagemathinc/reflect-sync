@@ -11,6 +11,9 @@ importers:
       '@nodelib/fs.walk':
         specifier: ^3.0.1
         version: 3.0.1
+      ascii-table3:
+        specifier: ^1.0.1
+        version: 1.0.1
       better-sqlite3:
         specifier: ^12.4.1
         version: 12.4.1
@@ -689,6 +692,10 @@ packages:
 
   argparse@1.0.10:
     resolution: {integrity: sha512-o5Roy6tNG4SL/FOkCAN6RzjiakZS25RLYFrcMttJqbdd8BWrnA+fGz57iN5Pb06pvBGvl5gQ0B48dJlslXvoTg==}
+
+  ascii-table3@1.0.1:
+    resolution: {integrity: sha512-xOCMZC8S375W4JajrAxFWPyI1VddfbscW9G5zMfhCySSt2Rvi/rs21jAjopzldTPOaFrOocjyGKibQiGExmLrg==}
+    engines: {node: '>=11.14.0'}
 
   babel-jest@30.2.0:
     resolution: {integrity: sha512-0YiBEOxWqKkSQWL9nNGGEgndoeL0ZpWrbLMNL5u/Kaxrli3Eaxlt3ZtIDktEvXt4L/R9r3ODr2zKwGM/2BjxVw==}
@@ -1394,6 +1401,9 @@ packages:
   pretty-format@30.2.0:
     resolution: {integrity: sha512-9uBdv/B4EefsuAL+pWqueZyZS2Ba+LxfFeQ9DN14HU4bN8bhaxKdkpjpB6fs9+pSjIBu+FXQHImEg8j/Lw0+vA==}
     engines: {node: ^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0}
+
+  printable-characters@1.0.42:
+    resolution: {integrity: sha512-dKp+C4iXWK4vVYZmYSd0KBH5F/h1HoZRsbJ82AVKRO3PEo8L4lBS/vLwhVtpwwuYcoIsVY+1JYKR268yn480uQ==}
 
   pump@3.0.3:
     resolution: {integrity: sha512-todwxLMY7/heScKmntwQG8CXVkWUOdYxIvY2s0VWAAMh/nd8SoYiRaKjlr7+iCs984f2P8zvrfWcDDYVb73NfA==}
@@ -2364,6 +2374,10 @@ snapshots:
     dependencies:
       sprintf-js: 1.0.3
 
+  ascii-table3@1.0.1:
+    dependencies:
+      printable-characters: 1.0.42
+
   babel-jest@30.2.0(@babel/core@7.28.4):
     dependencies:
       '@babel/core': 7.28.4
@@ -3244,6 +3258,8 @@ snapshots:
       '@jest/schemas': 30.0.5
       ansi-styles: 5.2.0
       react-is: 18.3.1
+
+  printable-characters@1.0.42: {}
 
   pump@3.0.3:
     dependencies:
