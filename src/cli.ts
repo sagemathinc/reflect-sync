@@ -2,6 +2,7 @@
 // src/cli.ts (ESM, TypeScript)
 import { Command, Option } from "commander";
 import { createRequire } from "node:module";
+import { registerSessionCommands } from "./session-cli.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -15,6 +16,8 @@ const program = new Command()
 program
   .option("--verbose", "verbose output", false)
   .option("--dry-run", "do not modify files", false);
+
+registerSessionCommands(program);
 
 program
   .command("scan")
