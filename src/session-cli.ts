@@ -74,7 +74,7 @@ function parseLabelPairs(pairs: string[]): Record<string, string> {
 const SCHED = fileURLToPath(new URL("./scheduler.js", import.meta.url));
 
 // Spawn scheduler for a session row
-function spawnSchedulerForSession(row: any): number {
+function spawnSchedulerForSession(sessionDb: string, row: any): number {
   // Ensure DB file paths exist (materialize if needed)
   const home = getCcsyncHome();
   const sessDir = deriveSessionPaths(row.id, home).dir;
@@ -96,14 +96,28 @@ function spawnSchedulerForSession(row: any): number {
     row.prefer,
   ];
 
-  if (row.alpha_host) args.push("--alpha-host", row.alpha_host);
-  if (row.beta_host) args.push("--beta-host", row.beta_host);
-  if (row.alpha_remote_db) args.push("--alpha-remote-db", row.alpha_remote_db);
-  if (row.beta_remote_db) args.push("--beta-remote-db", row.beta_remote_db);
-  if (row.remote_scan_cmd) args.push("--remote-scan-cmd", row.remote_scan_cmd);
-  if (row.remote_watch_cmd)
+  if (row.alpha_host) {
+    args.push("--alpha-host", row.alpha_host);
+  }
+  if (row.beta_host) {
+    args.push("--beta-host", row.beta_host);
+  }
+  if (row.alpha_remote_db) {
+    args.push("--alpha-remote-db", row.alpha_remote_db);
+  }
+  if (row.beta_remote_db) {
+    args.push("--beta-remote-db", row.beta_remote_db);
+  }
+  if (row.remote_scan_cmd) {
+    args.push("--remote-scan-cmd", row.remote_scan_cmd);
+  }
+  if (row.remote_watch_cmd) {
     args.push("--remote-watch-cmd", row.remote_watch_cmd);
+  }
+  args.push("--session-id", String(row.id));
+  args.push("--session-db", sessionDb);
 
+  console.log(`${process.execPath} ${args.join(" ")}`);
   // Important: keep stdio detached so it runs in background (daemon-esque)
   const child = spawn(process.execPath, args, {
     stdio: "ignore",
@@ -205,7 +219,7 @@ export function registerSessionCommands(program: Command) {
         row.base_db = paths.base_db;
         row.alpha_db = paths.alpha_db;
         row.beta_db = paths.beta_db;
-        const pid = spawnSchedulerForSession(row);
+        const pid = spawnSchedulerForSession(sessionDb, row);
         setDesiredState(sessionDb, id, "running");
         setActualState(sessionDb, id, pid ? "running" : "error");
         // Also persist PID
@@ -281,7 +295,7 @@ export function registerSessionCommands(program: Command) {
         // Ensure per-session DB paths are present
         materializeSessionPaths(sessionDb, id);
         const fresh = loadSessionById(sessionDb, id)!;
-        const pid = spawnSchedulerForSession(fresh);
+        const pid = spawnSchedulerForSession(sessionDb, fresh);
         setDesiredState(sessionDb, id, "running");
         setActualState(sessionDb, id, pid ? "running" : "error");
         if (pid) {

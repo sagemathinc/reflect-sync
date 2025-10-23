@@ -135,14 +135,13 @@ export interface SessionRow {
 
 // DB init
 
-export function ensureSessionDb(sessionDbPath = getSessionDbPath()): void {
+export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   const db = new Database(sessionDbPath);
-  try {
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    db.pragma("foreign_keys = ON");
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("foreign_keys = ON");
 
-    db.exec(`
+  db.exec(`
       CREATE TABLE IF NOT EXISTS sessions(
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at       INTEGER NOT NULL,
@@ -183,10 +182,38 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): void {
       );
 
       CREATE INDEX IF NOT EXISTS idx_labels_kv ON session_labels(k, v);
+
+      CREATE TABLE IF NOT EXISTS session_state(
+        session_id     INTEGER PRIMARY KEY,
+        pid            INTEGER,
+        status         TEXT,        -- starting|running|stopped|error
+        started_at     INTEGER,
+        stopped_at     INTEGER,
+        last_heartbeat INTEGER,
+        running        INTEGER,     -- boolean
+        pending        INTEGER,     -- boolean
+        last_cycle_ms  INTEGER,
+        backoff_ms     INTEGER,
+        cycles         INTEGER DEFAULT 0,
+        errors         INTEGER DEFAULT 0,
+        last_error     TEXT,
+        version        TEXT,
+        host           TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS session_heartbeats(
+        session_id     INTEGER,
+        ts             INTEGER,
+        running        INTEGER,
+        pending        INTEGER,
+        last_cycle_ms  INTEGER,
+        backoff_ms     INTEGER,
+        PRIMARY KEY(session_id, ts)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_heartbeats_sid_ts
+        ON session_heartbeats(session_id, ts);
     `);
-  } finally {
-    db.close();
-  }
+  return db;
 }
 
 // Core helpers (open/close per call to keep usage simple)
@@ -202,8 +229,7 @@ export function createSession(
   input: SessionCreateInput,
   labels?: Record<string, string>,
 ): number {
-  ensureSessionDb(sessionDbPath);
-  const db = open(sessionDbPath);
+  const db = ensureSessionDb(sessionDbPath);
   try {
     const now = Date.now();
     const stmt = db.prepare(`
@@ -494,4 +520,174 @@ export function materializeSessionPaths(
     beta_db: derived.beta_db,
     events_db: derived.events_db,
   };
+}
+
+// SessionWriter below is used by the scheduler to report
+// on its health periodically.
+
+export interface CycleMetrics {
+  lastCycleMs: number;
+  scanAlphaMs: number;
+  scanBetaMs: number;
+  mergeMs: number;
+  backoffMs: number;
+}
+
+export class SessionWriter {
+  private upsertState;
+  private updateHeartbeatStamp;
+  private insertHeartbeat;
+  private bumpCycles;
+  private setErrorStmt;
+  private stopStmt;
+
+  constructor(
+    private db: Database.Database,
+    private id: number,
+  ) {
+    this.upsertState = this.db.prepare(`
+    INSERT INTO session_state(session_id, pid, status, started_at, last_heartbeat, running, pending, version, host)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      pid=excluded.pid,
+      status=excluded.status,
+      last_heartbeat=excluded.last_heartbeat,
+      running=excluded.running,
+      pending=excluded.pending,
+      version=excluded.version,
+      host=excluded.host
+  `);
+
+    this.updateHeartbeatStamp = this.db.prepare(`
+    UPDATE session_state SET last_heartbeat=? WHERE session_id=?
+  `);
+
+    this.insertHeartbeat = this.db.prepare(`
+    INSERT OR REPLACE INTO session_heartbeats(session_id, ts, running, pending, last_cycle_ms, backoff_ms)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+    this.bumpCycles = this.db.prepare(`
+    UPDATE session_state SET
+      cycles       = COALESCE(cycles,0) + 1,
+      last_cycle_ms = ?,
+      backoff_ms    = ?
+    WHERE session_id = ?
+  `);
+
+    this.setErrorStmt = this.db.prepare(`
+    UPDATE session_state SET
+      errors = COALESCE(errors,0) + 1,
+      last_error = ?,
+      status     = 'error'
+    WHERE session_id = ?
+  `);
+
+    this.stopStmt = this.db.prepare(`
+    UPDATE session_state SET
+      status='stopped',
+      stopped_at=?,
+      last_heartbeat=?
+    WHERE session_id = ?
+  `);
+  }
+
+  static open(dbPath: string, sessionId: number) {
+    return new SessionWriter(ensureSessionDb(dbPath), sessionId);
+  }
+
+  start(version?: string) {
+    const now = Date.now();
+    this.upsertState.run(
+      this.id,
+      process.pid,
+      "running",
+      now,
+      now,
+      1,
+      0,
+      version ?? "",
+      os.hostname(),
+    );
+  }
+
+  heartbeat(
+    running: boolean,
+    pending: boolean,
+    lastCycleMs: number,
+    backoffMs: number,
+  ) {
+    const ts = Date.now();
+    this.insertHeartbeat.run(
+      this.id,
+      ts,
+      running ? 1 : 0,
+      pending ? 1 : 0,
+      Math.max(0, lastCycleMs | 0),
+      Math.max(0, backoffMs | 0),
+    );
+    this.updateHeartbeatStamp.run(ts, this.id);
+    this.pruneHeartbeats();
+  }
+
+  cycleDone(m: CycleMetrics) {
+    this.bumpCycles.run(
+      Math.max(0, m.lastCycleMs | 0),
+      Math.max(0, m.backoffMs | 0),
+      this.id,
+    );
+    // Clear last_error on success:
+    this.db
+      .prepare(`UPDATE session_state SET last_error=NULL WHERE session_id=?`)
+      .run(this.id);
+  }
+
+  error(msg: string) {
+    this.setErrorStmt.run(String(msg).slice(0, 4096), this.id);
+  }
+
+  stop() {
+    const ts = Date.now();
+    this.stopStmt.run(ts, ts, this.id);
+  }
+
+  /**
+   * Prune old heartbeats to keep the table bounded (don't waste disk).
+   * Controls:
+   *   HEARTBEAT_KEEP_MS    (default: 0 => disabled)
+   *   HEARTBEAT_KEEP_ROWS  (default: 7200 rows, ~4h if 2s interval)
+   */
+  private pruneHeartbeats() {
+    const keepMs = Number(process.env.HEARTBEAT_KEEP_MS ?? 0);
+    const keepRows = Number(process.env.HEARTBEAT_KEEP_ROWS ?? 7200);
+
+    if (keepMs > 0) {
+      const cutoff = Date.now() - keepMs;
+      this.db
+        .prepare(
+          `DELETE FROM session_heartbeats
+             WHERE session_id = ?
+               AND ts < ?`,
+        )
+        .run(this.id, cutoff);
+    }
+
+    if (keepRows > 0) {
+      // Delete anything older than the Nth newest row
+      this.db
+        .prepare(
+          `
+          DELETE FROM session_heartbeats
+           WHERE session_id = ?
+             AND ts < COALESCE((
+               SELECT ts FROM session_heartbeats
+                WHERE session_id = ?
+                ORDER BY ts DESC
+                LIMIT 1 OFFSET ?
+             ), -1)
+        `,
+        )
+        .run(this.id, this.id, keepRows);
+    }
+  }
 }

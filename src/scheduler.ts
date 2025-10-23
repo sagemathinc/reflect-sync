@@ -27,6 +27,7 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
 import { HotWatchManager, minimalCover, norm, parentDir } from "./hotwatch.js";
+import { SessionWriter } from "./session-db.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -45,6 +46,9 @@ export type SchedulerOptions = {
 
   remoteScanCmd: string; // e.g. "ccsync scan"
   remoteWatchCmd: string; // e.g. "ccsync watch"
+
+  sessionDb?: string;
+  sessionId?: number;
 };
 
 // ---------- CLI ----------
@@ -88,7 +92,9 @@ function buildProgram(): Command {
       "--remote-watch-cmd <cmd>",
       "remote watch command for micro-sync (emits NDJSON lines)",
       "ccsync watch",
-    );
+    )
+    .option("--session-id <id>", "optional session id to enable heartbeats")
+    .option("--session-db <path>", "path to session database");
 
   return program;
 }
@@ -109,6 +115,8 @@ function cliOptsToSchedulerOptions(opts: any): SchedulerOptions {
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteScanCmd: String(opts.remoteScanCmd),
     remoteWatchCmd: String(opts.remoteWatchCmd),
+    sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
+    sessionDb: opts.sessionDb,
   };
 
   if (out.alphaHost && out.betaHost) {
@@ -152,6 +160,8 @@ export async function runScheduler({
   betaRemoteDb,
   remoteScanCmd,
   remoteWatchCmd,
+  sessionDb,
+  sessionId,
 }: SchedulerOptions): Promise<void> {
   if (!alphaRoot || !betaRoot) {
     throw new Error("Need --alpha-root and --beta-root");
@@ -171,6 +181,18 @@ export async function runScheduler({
 
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
+
+  // heartbeat interval (ms); keep configurable:
+  const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
+  let sessionWriter: SessionWriter | null = null;
+  let hbTimer: NodeJS.Timeout | null = null;
+  if (sessionDb && Number.isFinite(sessionId)) {
+    sessionWriter = SessionWriter.open(sessionDb, sessionId!);
+    sessionWriter.start();
+    hbTimer = setInterval(() => {
+      sessionWriter!.heartbeat(running, pending, lastCycleMs, backoffMs);
+    }, HEARTBEAT_MS);
+  }
 
   // ---------- logging ----------
   const db = new Database(baseDb);
@@ -938,6 +960,7 @@ export async function runScheduler({
 
     // Backoff on merge errors
     if (m.code && m.code !== 0) {
+      sessionWriter?.error(`merge/rsync exit code ${m.code}`);
       const code = m.code ?? -1;
       const warn = code === 23 || code === 24;
       const enospc = code === 28;
@@ -960,6 +983,14 @@ export async function runScheduler({
     } else backoffMs = 0;
 
     running = false;
+
+    sessionWriter?.cycleDone({
+      lastCycleMs,
+      scanAlphaMs: a.ms ?? 0,
+      scanBetaMs: b.ms ?? 0,
+      mergeMs: m.ms ?? 0,
+      backoffMs,
+    });
   }
 
   let remoteStreams: Array<{ kill: () => void }> = [];
@@ -1041,6 +1072,13 @@ export async function runScheduler({
     } catch {}
     try {
       stopRemoteBetaWatch?.();
+    } catch {}
+    if (hbTimer) {
+      clearInterval(hbTimer);
+      hbTimer = null;
+    }
+    try {
+      sessionWriter?.stop();
     } catch {}
   };
   const onSig = async () => {
