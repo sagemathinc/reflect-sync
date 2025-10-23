@@ -2,7 +2,7 @@
 import { Command, Option } from "commander";
 import { ensureSessionDb, getSessionDbPath } from "./session-db.js";
 import type Database from "better-sqlite3";
-import { AsciiTable3 as Table, AlignmentEnum } from "ascii-table3";
+import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 
 type AnyRow = Record<string, any>;
 
@@ -112,9 +112,9 @@ function tableOutput(
   state: AnyRow | null,
   lastHb: AnyRow | null,
 ): string {
-  const table = new Table({
-    title: `Session ${sessionId}`,
-  })
+  const table = new AsciiTable3(
+    `Session ${sessionId}${sess?.name ? ": " + sess.name : ""}`,
+  )
     .setHeading("Field", "Value")
     .setStyle("unicode-round");
 
