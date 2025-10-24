@@ -1,1 +1,1 @@
-export const MAX_WATCHERS = 16;
+export const MAX_WATCHERS = Number(process.env.CCSYNC_MAX_WATCHERS ?? 32);
