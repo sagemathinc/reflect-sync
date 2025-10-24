@@ -19,12 +19,13 @@ Open source under the MIT License.
 
 **ccsync is NOT READY FOR PRODUCTION USE YET!** There is still a significant todo list of subtle edge cases to handle, features to implement, tests to put in place, etc. Do not use this. Our plan is to finish this quickly, then put this into major production on https://cocalc.com, and then I'll update this README when it is much safer to trust ccsync with your files.
 
-Some limitations compared to Mutagen, and todos:
+Some differences compared to Mutagen, and todos:
 
-- conflicts **always** resolved by one side always wins \(like two\-way\-resolved in mutagen\).  We do not implement the mode where when there is a conflict the user must manually resolve it.
-- we may change the hash from sha256 to something faster
-- when syncing over ssh, only the local side has watchers to support realtime file copies.
+- the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
+- conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins.  There is no manual resolution modes.
+- we will change the hash from sha256 to something faster
 - only supports macos and linux.
+- timestamps are preserved instead of being ignored/reset \(like with Mutagen\)
 
 For more details, see [Design Details](./DESIGN.md).
 

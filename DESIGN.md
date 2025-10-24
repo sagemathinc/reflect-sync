@@ -47,7 +47,7 @@ CREATE TABLE files (
   hash TEXT,
   deleted INTEGER DEFAULT 0,
   last_seen INTEGER,
-  hashed_ctime INTEGER
+  hashed_ctime INTEGER,
 );
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 ```
@@ -68,53 +68,19 @@ Workers add to `recent_touch` when a fresh hash completes, and scans can seed �
 
 ## Three-way merge planner (SQL)
 
-Three\-way merge is accomplished by simply doing SQL queries.   We attach alpha/beta DBs and build **temporary** relative\-path tables:
+Three\-way merge is accomplished by simply doing SQL queries.   For files, we attach alpha/beta DBs and build **temporary** relative\-path tables:
 
 - `alpha_rel(rpath, hash, deleted)`
 - `beta_rel(rpath, hash, deleted)`
 - `base_rel(rpath, hash, deleted)`
 
-Changed sets (vs base):
-
-```sql
--- Changed in A
-CREATE TEMP TABLE tmp_changedA AS
-  SELECT a.rpath, a.hash
-  FROM alpha_rel a
-  LEFT JOIN base_rel b ON b.rpath = a.rpath
-  WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
-
--- Changed in B
-CREATE TEMP TABLE tmp_changedB AS
-  SELECT b.rpath, b.hash
-  FROM beta_rel b
-  LEFT JOIN base_rel bb ON bb.rpath = b.rpath
-  WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
-```
-
-Deletions (missing vs base):
-
-```sql
-CREATE TEMP TABLE tmp_deletedA AS
-  SELECT b.rpath
-  FROM base_rel b
-  LEFT JOIN alpha_rel a ON a.rpath = b.rpath
-  WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
-
-CREATE TEMP TABLE tmp_deletedB AS
-  SELECT b.rpath
-  FROM base_rel b
-  LEFT JOIN beta_rel a ON a.rpath = b.rpath
-  WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
-```
-
-Then compute `toBeta`, `toAlpha`, `delInBeta`, `delInAlpha`, resolving same-rpath conflicts by `--prefer`.
+then do a bunch of indexed queries to obtain the merge plan.  This is nice because it's just declarative SQL, hence easy to read and understand.  The queries deal with merge conflicts using last write wins, with tie breaking via a preference.
 
 ---
 
 ## Rsync transport
 
-- Copies: `rsync -a --inplace --relative --from0 --files-from=/tmp/list …`
+- Copies: `rsync -a --relative --from0 --files-from=/tmp/list …`
 - Deletes: `rsync -a --relative --from0 --ignore-missing-args --delete-missing-args …`
 - NUL\-separated lists prevent path edge cases \(filenames with newlines in them\).
 - We **allow exit codes 23/24** in micro\-sync \(files vanishing while edited\) to avoid breaking the loop; the next full cycle settles consistency.
@@ -159,11 +125,9 @@ This yields “realtime-enough” behavior without OS watcher blowups.
 
 ---
 
-## SSH mode & star topologies
+## SSH mode
 
 - **Remote scans** run over SSH and print NDJSON \(`--emit-delta`\), which we pipe into **ingest** locally. The coordinator always plans locally \(it has `alpha.db`, `beta.db`, `base.db`\).
-- Both sides can be remote by running two scan pipes into the same coordinator; the **merge/rsync** still runs where you want the authoritative operation to happen.
-- This trivially supports star topologies \(many clients ↔ one server\) without extra overhead. The current implementation supports **prefer the server** when there are conflicts.
 
 ---
 
@@ -219,7 +183,6 @@ You can materialize helpers (e.g., a `path_norm` column with `/` separators, or 
 - **Dirs/links/attrs**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but we plan explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.
 - **Base updates & verification**: we update `base.db` after rsync; the next full cycle **verifies** the result end\-to\-end. In high\-churn cases you may see rsync 23/24 warnings—by design.
 - **ctime reliance**: ctime is an excellent gate for rehashing but can vary across FS types or be coarser than you like; you can switch to an `(mtime, size)` policy if desired \(configurable in future\).
-- **Watcher locality**: only the coordinator watches deeply. Remote sides rely on their periodic scans to report deltas.
 
 ---
 
