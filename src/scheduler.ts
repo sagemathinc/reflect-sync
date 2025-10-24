@@ -27,7 +27,7 @@ import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
 import { HotWatchManager, minimalCover, norm, parentDir } from "./hotwatch.js";
-import { SessionWriter } from "./session-db.js";
+import { ensureSessionDb, SessionWriter } from "./session-db.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -993,6 +993,166 @@ export async function runScheduler({
     });
   }
 
+  // --- Flush helpers (drain micro + force cycles) ---
+
+  async function microFlushOnce(): Promise<boolean> {
+    // snapshot current touch sets, clear them, run a one-off microSync
+    if (hotAlpha.size === 0 && hotBeta.size === 0) {
+      return false;
+    }
+    const a = Array.from(hotAlpha);
+    const b = Array.from(hotBeta);
+    hotAlpha.clear();
+    hotBeta.clear();
+    try {
+      await microSync(a, b);
+    } catch (err) {
+      log("warn", "flush", "microSync during flush failed", {
+        err: `${err}`,
+      });
+    }
+    return true;
+  }
+
+  async function drainMicro(timeoutMs = 1500): Promise<void> {
+    const t0 = Date.now();
+    // kick a scheduled flush if timer was pending
+    scheduleHotFlush();
+    while (Date.now() - t0 < timeoutMs) {
+      const did = await microFlushOnce();
+      if (!did) {
+        // allow a tiny window for in-flight events to land
+        await new Promise((r) => setTimeout(r, 50));
+        if (hotAlpha.size === 0 && hotBeta.size === 0) break;
+      }
+    }
+  }
+
+  /** Run a conservative 'flush' sequence: drain micro, full cycle, drain, full cycle. */
+  async function performFlush(): Promise<void> {
+    const startedAt = Date.now();
+    // mark state (if sessions are enabled)
+    try {
+      if (sessionDb && sessionId) {
+        ensureSessionDb(sessionDb)
+          .prepare(
+            `
+        UPDATE session_state
+           SET flushing=1,
+               last_flush_started_at=?,
+               last_flush_ok=0,
+               last_flush_error=NULL
+         WHERE session_id=?
+      `,
+          )
+          .run(startedAt, sessionId);
+      }
+    } catch {}
+
+    try {
+      await drainMicro(1500);
+      await oneCycle();
+      await drainMicro(500);
+      await oneCycle();
+
+      if (sessionDb && sessionId) {
+        ensureSessionDb(sessionDb)
+          .prepare(
+            `
+        UPDATE session_state
+           SET flushing=0,
+               last_flush_ok=1
+         WHERE session_id=?
+      `,
+          )
+          .run(sessionId);
+      }
+    } catch (e: any) {
+      if (sessionDb && sessionId) {
+        ensureSessionDb(sessionDb)
+          .prepare(
+            `
+        UPDATE session_state
+           SET flushing=0,
+               last_flush_ok=0,
+               last_flush_error=?
+         WHERE session_id=?
+      `,
+          )
+          .run(String(e?.stack || e), sessionId);
+      }
+      // rethrow so the caller can decide what to do
+      throw e;
+    }
+  }
+
+  async function processSessionCommands(): Promise<boolean> {
+    if (!sessionDb || !sessionId) return false;
+    let executed = false;
+    const db = ensureSessionDb(sessionDb);
+    try {
+      const rows = db
+        .prepare(
+          `
+      SELECT id, cmd, payload
+        FROM session_commands
+       WHERE session_id=? AND acked=0
+       ORDER BY ts ASC
+    `,
+        )
+        .all(sessionId) as { id: number; cmd: string; payload?: string }[];
+
+      for (const row of rows) {
+        if (row.cmd === "flush") {
+          executed = true;
+          log("info", "scheduler", "flush command received");
+          try {
+            await performFlush();
+            log("info", "scheduler", "flush ok");
+          } catch (e: any) {
+            log("error", "scheduler", "flush failed", {
+              err: String(e?.message || e),
+            });
+          }
+        }
+        db.prepare(
+          `
+        UPDATE session_commands
+           SET acked=1, acked_at=?
+         WHERE id=?
+      `,
+        ).run(Date.now(), row.id);
+
+        // delete old session commands
+        db.exec(`
+  DELETE FROM session_commands
+   WHERE acked = 1
+     AND ts < strftime('%s','now')*1000 - 7*24*60*60*1000
+`);
+      }
+    } catch (e: any) {
+      log("warn", "scheduler", "failed processing session commands", {
+        err: String(e?.message || e),
+      });
+    }
+    return executed;
+  }
+
+  const CMD_POLL_MS = envNum("SESSION_CMD_POLL_MS", 500);
+
+  async function idleWaitWithCommandPolling(totalMs: number) {
+    let remaining = totalMs;
+    while (remaining > 0) {
+      // poll commands; if we executed one (e.g., flush), stop idling to recompute schedule
+      const executed = await processSessionCommands();
+      if (executed) return;
+
+      const slice = Math.min(CMD_POLL_MS, remaining);
+      await new Promise((r) => setTimeout(r, slice));
+      remaining -= slice;
+    }
+  }
+
   let remoteStreams: Array<{ kill: () => void }> = [];
 
   async function loop() {
@@ -1026,7 +1186,7 @@ export async function runScheduler({
         "watching",
         `next full scan in ${nextDelayMs} ms`,
       );
-      await new Promise((r) => setTimeout(r, nextDelayMs));
+      await idleWaitWithCommandPolling(nextDelayMs);
     }
   }
 

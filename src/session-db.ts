@@ -198,7 +198,14 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         errors         INTEGER DEFAULT 0,
         last_error     TEXT,
         version        TEXT,
-        host           TEXT
+        host           TEXT,
+        flushing          INTEGER DEFAULT 0,     -- 1 while a flush is in progress
+        flush_started_at  INTEGER,               -- ms epoch
+        last_flush_started_at INTEGER,           -- ms epoch
+        flush_finished_at INTEGER,               -- ms epoch
+        last_flush_ok     INTEGER,               -- 1=success, 0=failure, NULL=never
+        last_flush_error  TEXT,                  -- error string if last_flush_ok=0
+        last_flush_ms     INTEGER                -- duration of last flush in ms
       );
 
       CREATE TABLE IF NOT EXISTS session_heartbeats(
@@ -212,6 +219,19 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
       );
       CREATE INDEX IF NOT EXISTS idx_session_heartbeats_sid_ts
         ON session_heartbeats(session_id, ts);
+
+      -- commands such as "flush":
+      CREATE TABLE IF NOT EXISTS session_commands (
+          id          INTEGER PRIMARY KEY,
+          session_id  INTEGER NOT NULL,
+          ts          INTEGER NOT NULL,     -- Date.now() when enqueued
+          cmd         TEXT NOT NULL,        -- e.g. 'flush'
+          payload     TEXT,                 -- JSON blob (optional)
+          acked       INTEGER NOT NULL DEFAULT 0,  -- 0=pending, 1=done (success or failure)
+          acked_at    INTEGER               -- when scheduler marked it handled
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_commands_pending
+          ON session_commands(session_id, acked, ts);
     `);
   return db;
 }

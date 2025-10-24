@@ -21,6 +21,7 @@ import {
   deleteSessionById,
 } from "./session-db.js";
 import { registerSessionStatus } from "./session-status.js";
+import { registerSessionFlush } from "./session-flush.js";
 
 // ---------- small utils ----------
 function expandHome(p: string): string {
@@ -366,4 +367,5 @@ export function registerSessionCommands(program: Command) {
     });
 
   registerSessionStatus(session);
+  registerSessionFlush(session);
 }
