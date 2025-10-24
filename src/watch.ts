@@ -8,6 +8,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { HotWatchManager, HOT_EVENTS, type HotWatchEvent } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
+import { MAX_WATCHERS } from "./defaults.js";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -187,7 +188,7 @@ function buildProgram() {
     .option("--shallow-depth <n>", "root watcher depth", "1")
     .option("--hot-depth <n>", "hot anchor depth", "2")
     .option("--hot-ttl-ms <ms>", "TTL for hot anchors", String(30 * 60_000))
-    .option("--max-hot-watchers <n>", "max concurrent hot watchers", "256")
+    .option("--max-hot-watchers <n>", "max concurrent hot watchers", String(MAX_WATCHERS))
     .option("--verbose", "log to stderr", false);
 
   return program;

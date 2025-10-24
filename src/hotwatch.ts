@@ -1,6 +1,7 @@
 // src/hotwatch.ts
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
+import { MAX_WATCHERS } from "./defaults.js";
 
 export type HotWatchEvent =
   | "add"
@@ -18,7 +19,7 @@ export const HOT_EVENTS: HotWatchEvent[] = [
 ];
 
 export interface HotWatchOptions {
-  maxWatchers?: number; // default 256
+  maxWatchers?: number;
   ttlMs?: number; // default 30 min
   hotDepth?: number; // default 2
   awaitWriteFinish?: { stabilityThreshold: number; pollInterval: number }; // default {200, 50}
@@ -63,7 +64,7 @@ export class HotWatchManager {
     opts: HotWatchOptions = {},
   ) {
     this.opts = {
-      maxWatchers: opts.maxWatchers ?? 256,
+      maxWatchers: opts.maxWatchers ?? MAX_WATCHERS,
       ttlMs: opts.ttlMs ?? 30 * 60_000,
       hotDepth: opts.hotDepth ?? 2,
       awaitWriteFinish: opts.awaitWriteFinish ?? {

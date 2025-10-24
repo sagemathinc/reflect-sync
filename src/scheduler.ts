@@ -28,6 +28,7 @@ import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
 import { HotWatchManager, minimalCover, norm, parentDir } from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
+import { MAX_WATCHERS } from "./defaults.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -131,7 +132,7 @@ function cliOptsToSchedulerOptions(opts: any): SchedulerOptions {
 const envNum = (k: string, def: number) =>
   process.env[k] ? Number(process.env[k]) : def;
 
-const MAX_HOT_WATCHERS = envNum("MAX_HOT_WATCHERS", 256);
+const MAX_HOT_WATCHERS = envNum("MAX_HOT_WATCHERS", 16);
 const HOT_TTL_MS = envNum("HOT_TTL_MS", 30 * 60_000);
 const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
@@ -728,7 +729,7 @@ export async function runScheduler({
     mgr: HotWatchManager | null,
     remoteAdd: null | ((dirs: string[]) => void),
     sinceTs: number,
-    maxDirs = 256,
+    maxDirs = MAX_WATCHERS,
   ) {
     const sdb = new Database(dbPath);
     try {
@@ -901,7 +902,7 @@ export async function runScheduler({
       hotAlphaMgr,
       addRemoteAlphaHotDirs,
       tAlphaStart,
-      256,
+      MAX_WATCHERS,
     );
 
     // Scan beta
@@ -922,7 +923,7 @@ export async function runScheduler({
       hotBetaMgr,
       addRemoteBetaHotDirs,
       tBetaStart,
-      256,
+      MAX_WATCHERS,
     );
 
     // Merge/rsync (full)

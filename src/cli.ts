@@ -3,6 +3,7 @@
 import { Command, Option } from "commander";
 import { createRequire } from "node:module";
 import { registerSessionCommands } from "./session-cli.js";
+import { MAX_WATCHERS } from "./defaults.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -117,7 +118,11 @@ program
   .option("--shallow-depth <n>", "root watcher depth", "1")
   .option("--hot-depth <n>", "hot anchor depth", "2")
   .option("--hot-ttl-ms <ms>", "TTL for hot anchors", String(30 * 60_000))
-  .option("--max-hot-watchers <n>", "max concurrent hot watchers", "256")
+  .option(
+    "--max-hot-watchers <n>",
+    "max concurrent hot watchers",
+    String(MAX_WATCHERS),
+  )
   .action(async (opts, command) => {
     const { runWatch } = await import("./watch.js");
     await runWatch({
