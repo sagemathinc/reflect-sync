@@ -2,11 +2,7 @@ import { mkCase, sync } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
-
-async function setMtimeMs(p: string, whenMs: number) {
-  const at = (await fsp.stat(p)).atimeMs;
-  await fsp.utimes(p, at / 1000, whenMs / 1000);
-}
+import { setMtimeMs } from "./util";
 
 describe("LWW: basic conflicting edits", () => {
   let tmp: string;

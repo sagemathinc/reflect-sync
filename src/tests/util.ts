@@ -121,3 +121,7 @@ export function countSchedulerCycles(baseDb: string): number {
   }
 }
 
+export async function setMtimeMs(p: string, whenMs: number) {
+  const st = await fsp.stat(p);
+  await fsp.utimes(p, st.atimeMs / 1000, whenMs / 1000);
+}
