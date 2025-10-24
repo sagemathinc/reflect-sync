@@ -664,7 +664,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         JOIN alpha_dirs_rel a ON a.rpath = cA.rpath
         JOIN beta_dirs_rel  b ON b.rpath = cB.rpath
-        WHERE COALESCE(a.op_ts,0) > COALESCE(b.op_ts,0) + ?
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
       `,
       )
       .all(EPS)
@@ -740,7 +740,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(b.op_ts,0) > COALESCE(a.op_ts,0) + ?
+        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, b.op_ts) + ?
       `,
       )
       .all(EPS)
@@ -754,7 +754,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(a.op_ts,0) > COALESCE(b.op_ts,0) + ?
+        WHERE COALESCE(a.op_ts, b.op_ts) > COALESCE(b.op_ts, 0) + ?
       `,
       )
       .all(EPS)
@@ -768,7 +768,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts,0)) <= ?
+        WHERE ABS(COALESCE(a.op_ts, b.op_ts) - COALESCE(b.op_ts,0)) <= ?
       `,
       )
       .all(EPS)
@@ -782,7 +782,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedA cA USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(a.op_ts,0) > COALESCE(b.op_ts,0) + ?
+        WHERE COALESCE(a.op_ts,0) > COALESCE(b.op_ts, a.op_ts) + ?
       `,
       )
       .all(EPS)
@@ -796,7 +796,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedA cA USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(b.op_ts,0) > COALESCE(a.op_ts,0) + ?
+        WHERE COALESCE(b.op_ts, a.op_ts) > COALESCE(a.op_ts,0) + ?
       `,
       )
       .all(EPS)
@@ -810,7 +810,7 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedA cA USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts,0)) <= ?
+        WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts, a.op_ts)) <= ?
       `,
       )
       .all(EPS)
