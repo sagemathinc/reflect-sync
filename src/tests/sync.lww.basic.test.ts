@@ -41,6 +41,17 @@ describe("LWW: basic conflicting edits", () => {
 
     expect(await fsp.readFile(a, "utf8")).toBe("beta-new");
     expect(await fsp.readFile(b, "utf8")).toBe("beta-new");
+
+    // do it the other way
+    // modify both; make alpha "newer"
+    await fsp.writeFile(a, "alpha-new-2");
+    await fsp.writeFile(b, "beta-old-2");
+
+    await setMtimeMs(a, now - 5_000); // alpha newer
+    await setMtimeMs(b, now - 20_000); // beta older
+    await sync(r, "beta");
+    expect(await fsp.readFile(a, "utf8")).toBe("alpha-new-2");
+    expect(await fsp.readFile(b, "utf8")).toBe("alpha-new-2");
   });
 
   test("equal mtimes -> falls back to prefer", async () => {
