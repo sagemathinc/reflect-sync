@@ -97,10 +97,7 @@ const sshEnabled = process.env.CCSYNC_SKIP_SSH_TEST === undefined;
 
     beforeAll(async () => {
       if (!(await canSshLocalhost())) {
-        console.warn("Skipping: sshd not reachable on localhost");
-        (global as any).testPathPattern = null; // nothing special, just note
-        // eslint-disable-next-line jest/no-focused-tests
-        pending("sshd is not reachable on localhost");
+        throw Error("Skipping: sshd not reachable on localhost");
       }
 
       // temp dirs

@@ -85,7 +85,7 @@ async function stopScheduler(p: ChildProcess) {
 }
 
 describe("SSH remote watch → microSync", () => {
-  let tmp: string;
+  let tmp: string = "";
   let alphaRoot: string, betaRootRemote: string;
   let alphaDb: string, betaDb: string, baseDb: string;
 
@@ -94,8 +94,7 @@ describe("SSH remote watch → microSync", () => {
     // remote watch agent, but we won't use ssh to mutate the filesystem.
     const ok = await canSshLocalhost();
     if (!ok) {
-      // @ts-ignore
-      pending("ssh localhost unavailable; skipping remote-watch test");
+      throw Error("ssh localhost unavailable; skipping remote-watch test");
     }
 
     tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ccsync-ssh-watch-"));
@@ -110,7 +109,9 @@ describe("SSH remote watch → microSync", () => {
   });
 
   afterAll(async () => {
-    await fsp.rm(tmp, { recursive: true, force: true });
+    if (tmp) {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
   });
 
   test("file created on remote (beta) appears locally on alpha via microSync", async () => {
