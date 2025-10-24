@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS files (
   size INTEGER,
   ctime INTEGER,
   mtime INTEGER,
+  -- op_ts = operation timestamp: adjusted timestamp in ms used for last
+  --         write wins = normalized mtime for creates/modifies; for deletes,
+  --         set to observed delete time
+  op_ts INTEGER,
   hash TEXT,
   deleted INTEGER DEFAULT 0,
   last_seen INTEGER,
@@ -25,6 +29,7 @@ CREATE TABLE IF NOT EXISTS dirs (
   path       TEXT PRIMARY KEY,
   ctime      INTEGER,
   mtime      INTEGER,
+  op_ts      INTEGER,  -- operation timestamp for last write wins
   deleted    INTEGER DEFAULT 0,
   last_seen  INTEGER
 );

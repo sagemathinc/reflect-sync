@@ -45,12 +45,13 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 
   // used to update data about files
   const upsertFile = db.prepare(`
-INSERT INTO files(path,size,ctime,mtime,hash,deleted,last_seen,hashed_ctime)
-VALUES (@path,@size,@ctime,@mtime,@hash,@deleted,@now,@hashed_ctime)
+INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
+VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, @deleted, @now, @hashed_ctime)
 ON CONFLICT(path) DO UPDATE SET
   size=COALESCE(excluded.size, files.size),
   ctime=COALESCE(excluded.ctime, files.ctime),
   mtime=COALESCE(excluded.mtime, files.mtime),
+  op_ts=COALESCE(excluded.op_ts, files.op_ts),
   -- Only update hash/hashed_ctime when a hash is provided
   hash=COALESCE(excluded.hash, files.hash),
   hashed_ctime=COALESCE(excluded.hashed_ctime, files.hashed_ctime),
@@ -60,11 +61,12 @@ ON CONFLICT(path) DO UPDATE SET
 
   // used to update data about directories
   const upsertDir = db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, deleted, last_seen)
-VALUES (@path, @ctime, @mtime, @deleted, @now)
+INSERT INTO dirs(path, ctime, mtime, op_ts, deleted, last_seen)
+VALUES (@path, @ctime, @mtime, @op_ts, @deleted, @now)
 ON CONFLICT(path) DO UPDATE SET
   ctime=COALESCE(excluded.ctime, dirs.ctime),
   mtime=COALESCE(excluded.mtime, dirs.mtime),
+  op_ts=COALESCE(excluded.op_ts, dirs.op_ts),
   deleted=excluded.deleted,
   last_seen=excluded.last_seen
 `);
@@ -86,11 +88,15 @@ ON CONFLICT(path) DO UPDATE SET
       }
       const isDelete = r.deleted === 1;
 
+      // [ ] TODO: need to adjust op_ts by clock skew:
+      const op_ts = r.op_ts;
+
       if (r.kind === "dir") {
         upsertDir.run({
           path: r.path,
           ctime: isDelete ? null : (r.ctime ?? null),
           mtime: isDelete ? null : (r.mtime ?? null),
+          op_ts,
           deleted: isDelete ? 1 : 0,
           now,
         });
@@ -102,6 +108,7 @@ ON CONFLICT(path) DO UPDATE SET
           size: isDelete ? null : (r.size ?? null),
           ctime: isDelete ? null : (r.ctime ?? null),
           mtime: isDelete ? null : (r.mtime ?? null),
+          op_ts,
           hash: isDelete ? null : (r.hash ?? null),
           deleted: isDelete ? 1 : 0,
           now,

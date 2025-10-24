@@ -34,6 +34,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     size: number;
     ctime: number;
     mtime: number;
+    op_ts: number;
     hash: string | null;
     last_seen: number;
     hashed_ctime: number | null;
@@ -65,11 +66,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // for directory metadata
   const upsertDir = db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, deleted, last_seen)
-VALUES (@path, @ctime, @mtime, 0, @scan_id)
+INSERT INTO dirs(path, ctime, mtime, op_ts, deleted, last_seen)
+VALUES (@path, @ctime, @mtime, @op_ts, 0, @scan_id)
 ON CONFLICT(path) DO UPDATE SET
   ctime=excluded.ctime,
   mtime=excluded.mtime,
+  op_ts=excluded.op_ts,
   deleted=0,
   last_seen=excluded.last_seen
 `);
@@ -78,6 +80,7 @@ ON CONFLICT(path) DO UPDATE SET
     path: string;
     ctime: number;
     mtime: number;
+    op_ts: number;
     scan_id: number;
   };
 
@@ -86,12 +89,13 @@ ON CONFLICT(path) DO UPDATE SET
   });
 
   const upsertMeta = db.prepare(`
-INSERT INTO files (path,size,ctime,mtime,hash,deleted,last_seen,hashed_ctime)
-VALUES (@path,@size,@ctime,@mtime,@hash,0,@last_seen,@hashed_ctime)
+INSERT INTO files (path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
+VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, 0, @last_seen, @hashed_ctime)
 ON CONFLICT(path) DO UPDATE SET
   size=excluded.size,
   ctime=excluded.ctime,
   mtime=excluded.mtime,
+  op_ts=excluded.op_ts,
   last_seen=excluded.last_seen,
   deleted=0
 -- NOTE: we intentionally DO NOT overwrite hash or hashed_ctime here.
@@ -140,7 +144,16 @@ ON CONFLICT(path) DO UPDATE SET
 
   // Emit buffering (fewer stdout writes)
   const deltaBuf: string[] = [];
-  const emitObj = (o: any) => {
+  const emitObj = (o: {
+    kind?: "dir";
+    path: string;
+    op_ts: number;
+    deleted: number;
+    size?: number;
+    ctime?: number;
+    mtime?: number;
+    hash?: string;
+  }) => {
     if (!emitDelta) return;
     deltaBuf.push(JSON.stringify(o));
     if (deltaBuf.length >= 1000) flushDeltaBuf();
@@ -184,6 +197,7 @@ ON CONFLICT(path) DO UPDATE SET
               size: meta.size,
               ctime: meta.ctime,
               mtime: meta.mtime,
+              op_ts: meta.mtime,
               hash: r.hash,
               deleted: 0,
             });
@@ -252,12 +266,22 @@ ON CONFLICT(path) DO UPDATE SET
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
 
       if (entry.dirent.isDirectory()) {
-        dirMetaBuf.push({ path: full, ctime, mtime, scan_id });
+        // directory ops don't bump mtime reliably, so we use
+        // operation time.
+        const op_ts = Date.now();
+        dirMetaBuf.push({ path: full, ctime, mtime, scan_id, op_ts });
 
         // emit-delta: dir create/update (we don’t care which;
         // downstream treats as “ensure exists”)
         if (emitDelta) {
-          emitObj({ kind: "dir", path: full, ctime, mtime, deleted: 0 });
+          emitObj({
+            kind: "dir",
+            path: full,
+            ctime,
+            mtime,
+            op_ts,
+            deleted: 0,
+          });
         }
 
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
@@ -266,12 +290,14 @@ ON CONFLICT(path) DO UPDATE SET
         }
       } else if (entry.dirent.isFile()) {
         const size = st.size;
+        const op_ts = mtime;
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
           path: full,
           size,
           ctime,
           mtime,
+          op_ts,
           hash: null,
           last_seen: scan_id,
           hashed_ctime: null,
@@ -289,7 +315,6 @@ ON CONFLICT(path) DO UPDATE SET
         if (needsHash) {
           // remember minimal meta so we can emit a full delta row when the hash arrives
           pendingMeta.set(full, { size, ctime, mtime });
-
           jobBuf.push({ path: full, size, ctime, mtime });
           // Dispatch in batches to minimize IPC
           if (jobBuf.length >= DISPATCH_BATCH) {
@@ -342,20 +367,24 @@ ON CONFLICT(path) DO UPDATE SET
       .all(scan_id) as { path: string }[];
 
     // Mark deletions: files
-    db.prepare(`UPDATE files SET deleted = 1 WHERE last_seen <> ?`).run(
-      scan_id,
-    );
+    const op_ts = Date.now();
+    db.prepare(
+      `UPDATE files SET deleted=1, op_ts=? WHERE last_seen <> ?`,
+    ).run(op_ts, scan_id);
 
     // emit-delta: Emit deletions
     if (emitDelta && toDelete.length) {
       for (const r of toDelete) {
-        emitObj({ path: r.path, deleted: 1 });
+        emitObj({ path: r.path, deleted: 1, op_ts });
       }
       flushDeltaBuf();
     }
 
     // Mark deletions: dirs
-    db.prepare(`UPDATE dirs SET deleted=1 WHERE last_seen <> ?`).run(scan_id);
+    db.prepare(`UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
+      op_ts,
+      scan_id,
+    );
 
     // emit-delta: Emit dir deletions
     if (emitDelta) {
@@ -363,7 +392,7 @@ ON CONFLICT(path) DO UPDATE SET
         .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
         .all(scan_id);
       for (const r of gone) {
-        emitObj({ kind: "dir", path: r.path, deleted: 1 });
+        emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts });
       }
       flushDeltaBuf();
     }
