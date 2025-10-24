@@ -18,6 +18,19 @@ import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 
+// SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are all
+// used for clock skew, when injesting remote data.
+// - subtracting a small SAFETY_MS only when the skew is
+//   positive (remote behind) keeps adjusted times from being too far in the
+//   future, but avoids pushing them unnecessarily early if the remote is
+//   ahead. It’s conservative and works well for last write wins.
+// - FUTURE_SLACK_MS and CAP_BACKOFF_MS are for if we start receiving
+//   values in the future (after sync), due to the clock acting
+//   really weird.
+const SAFETY_MS = Number(process.env.CLOCK_SKEW_SAFETY_MS ?? 100);
+const FUTURE_SLACK_MS = Number(process.env.FUTURE_SLACK_MS ?? 400);
+const CAP_BACKOFF_MS = Number(process.env.FUTURE_CAP_BACKOFF_MS ?? 1);
+
 function buildProgram(): Command {
   const program = new Command()
     .name("ccsync-ingest-delta")
@@ -39,6 +52,27 @@ export type IngestDeltaOptions = {
 
 export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
   const { db: dbPath, verbose, root } = opts;
+
+  let skew: number | null = null; // local time = remote time + skew
+  const nowLocal = () => Date.now();
+  // adjust remote time, accounting for skew, with per-path monotonicity
+  const lastByPath = new Map<string, number>();
+  function monotonicFor(path: string, t: number) {
+    const last = lastByPath.get(path) ?? -Infinity;
+    const next = t <= last ? last + 1 : t;
+    lastByPath.set(path, next);
+    return next;
+  }
+  const adjustRemoteTime = (ts: number | undefined) => {
+    const n = nowLocal();
+    const base = Number.isFinite(ts as any) ? Number(ts) : n;
+    let t = base + (skew ?? 0);
+    // Cap far-future timestamps (allow a little slack)
+    if (t > n + FUTURE_SLACK_MS) {
+      t = n - CAP_BACKOFF_MS;
+    }
+    return t;
+  };
 
   // ---------- db ----------
   const db = getDb(dbPath);
@@ -81,6 +115,22 @@ ON CONFLICT(path) DO UPDATE SET
     }
     const now = Date.now();
     for (const r of rows) {
+      if (r?.kind === "time") {
+        // special event that tells us the remote time, so we can sync clocks
+        const remoteNow = Number(r.remote_now_ms);
+        if (Number.isFinite(remoteNow)) {
+          // Upper-bound skew (includes network delay)
+          let s = nowLocal() - remoteNow;
+          // Only subtract safety when skew is positive (remote behind).
+          // For negative skew (remote ahead), keep it as-is (no extra push earlier).
+          if (s > 0) {
+            s = Math.max(0, s - SAFETY_MS);
+          }
+          skew = s;
+        }
+        continue; // nothing to write for this line
+      }
+
       // shape: {path, size?, ctime?, mtime?, hash?, deleted?}
       // normalize/guard
       if (root && !r.path.startsWith(root + "/") && r.path !== root) {
@@ -88,8 +138,7 @@ ON CONFLICT(path) DO UPDATE SET
       }
       const isDelete = r.deleted === 1;
 
-      // [ ] TODO: need to adjust op_ts by clock skew:
-      const op_ts = r.op_ts;
+      const op_ts = monotonicFor(r.path, adjustRemoteTime(r.op_ts));
 
       if (r.kind === "dir") {
         upsertDir.run({

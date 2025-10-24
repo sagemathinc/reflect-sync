@@ -42,7 +42,7 @@ function vlog(verbose: boolean | undefined, ...args: any[]) {
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
   const rpath = relR(root, abs);
   if (!rpath) return;
-  const rec = { ev, rpath}
+  const rec = { ev, rpath };
   process.stdout.write(JSON.stringify(rec) + "\n");
   // vlog(true, rec);
 }

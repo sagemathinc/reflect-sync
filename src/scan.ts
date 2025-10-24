@@ -43,6 +43,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   if (verbose) {
     console.log("running scan with database = ", DB_PATH);
   }
+
+  if (emitDelta) {
+    process.stdout.write(
+      JSON.stringify({ kind: "time", remote_now_ms: Date.now() }) + "\n",
+    );
+  }
+
   const CPU_COUNT = Math.min(os.cpus().length, 8);
   const DB_BATCH_SIZE = 2000;
   const DISPATCH_BATCH = 256; // files per worker message
@@ -368,9 +375,10 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Mark deletions: files
     const op_ts = Date.now();
-    db.prepare(
-      `UPDATE files SET deleted=1, op_ts=? WHERE last_seen <> ?`,
-    ).run(op_ts, scan_id);
+    db.prepare(`UPDATE files SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
+      op_ts,
+      scan_id,
+    );
 
     // emit-delta: Emit deletions
     if (emitDelta && toDelete.length) {
