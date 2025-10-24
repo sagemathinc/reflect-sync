@@ -59,11 +59,27 @@ export async function sync(
   r: Roots,
   prefer: "alpha" | "beta" = "alpha",
   verbose: boolean | undefined = undefined,
+  args?: string[],
+  args2?: string[],
 ) {
   const verboseArg = verbose || VERBOSE ? ["--verbose"] : [];
 
-  await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...verboseArg]);
-  await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...verboseArg]);
+  await runDist("scan.js", [
+    "--root",
+    r.aRoot,
+    "--db",
+    r.aDb,
+    ...verboseArg,
+    ...(args ?? []),
+  ]);
+  await runDist("scan.js", [
+    "--root",
+    r.bRoot,
+    "--db",
+    r.bDb,
+    ...verboseArg,
+    ...(args ?? []),
+  ]);
   await runDist("merge-rsync.js", [
     "--alpha-root",
     r.aRoot,
@@ -78,6 +94,7 @@ export async function sync(
     "--prefer",
     prefer,
     ...verboseArg,
+    ...(args2 ?? []),
   ]);
 }
 

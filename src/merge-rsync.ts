@@ -491,8 +491,10 @@ export async function runMergeRsync({
       toAlpha = uniq([...toAlpha, ...bothChangedToAlpha, ...bothChangedTie]);
     }
 
-    // deletions (files) without conflict
-    let delInBeta = db
+    // deletions (files) with LWW against changes on the other side
+
+    // No-conflict delete: A deleted & B didn't change
+    const delInBeta_noConflict = db
       .prepare(
         `
         SELECT dA.rpath
@@ -504,7 +506,46 @@ export async function runMergeRsync({
       .all()
       .map((r) => r.rpath as string);
 
-    let delInAlpha = db
+    // Conflict: A deleted vs B changed → LWW (delete in B if A newer; tie -> prefer alpha)
+    const delInBeta_conflict = db
+      .prepare(
+        `
+        SELECT dA.rpath
+        FROM tmp_deletedA dA
+        JOIN tmp_changedB cB USING (rpath)
+        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
+        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
+        LEFT JOIN base_rel  br ON br.rpath = dA.rpath
+        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
+           OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
+      `,
+      )
+      .all(EPS, EPS, prefer)
+      .map((r) => r.rpath as string);
+
+    // Conflict: A deleted vs B changed → LWW (copy B->A if B newer; tie -> prefer beta)
+    const toAlpha_conflict = db
+      .prepare(
+        `
+        SELECT dA.rpath
+        FROM tmp_deletedA dA
+        JOIN tmp_changedB cB USING (rpath)
+        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
+        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
+        LEFT JOIN base_rel  br ON br.rpath = dA.rpath
+        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
+           OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
+      `,
+      )
+      .all(EPS, EPS, prefer)
+      .map((r) => r.rpath as string);
+
+    let delInBeta = uniq([...delInBeta_noConflict, ...delInBeta_conflict]);
+    toAlpha = uniq([...toAlpha, ...toAlpha_conflict]);
+
+    // Symmetric side: B deleted vs A changed
+
+    const delInAlpha_noConflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -516,57 +557,7 @@ export async function runMergeRsync({
       .all()
       .map((r) => r.rpath as string);
 
-    // In the comparisons below we use COALESCE(a.op_ts, b.op_ts)
-    // when a is deleted since if a file created then sync'd over
-    // then immediately deleted it won't appear at all in the files
-    // table so a.op_ts isn't defined.  This way it is treated
-    // as a tie and prefer is used.
-
-    // delete-vs-change conflicts (files) → LWW
-    const delA_vs_changeB_copyToAlpha = db
-      .prepare(
-        `
-        SELECT dA.rpath
-        FROM tmp_deletedA dA
-        JOIN tmp_changedB cB USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, b.op_ts) + ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
-
-    const delA_vs_changeB_deleteInBeta = db
-      .prepare(
-        `
-        SELECT dA.rpath
-        FROM tmp_deletedA dA
-        JOIN tmp_changedB cB USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(a.op_ts, b.op_ts) > COALESCE(b.op_ts, 0) + ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
-
-    const delA_vs_changeB_tie = db
-      .prepare(
-        `
-        SELECT dA.rpath
-        FROM tmp_deletedA dA
-        JOIN tmp_changedB cB USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
-        WHERE ABS(COALESCE(a.op_ts, b.op_ts) - COALESCE(b.op_ts, 0)) <= ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
-
-    // symmetric: B deleted vs A changed
-    const delB_vs_changeA_copyToBeta = db
+    const delInAlpha_conflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -574,13 +565,15 @@ export async function runMergeRsync({
         JOIN tmp_changedA cA USING (rpath)
         LEFT JOIN alpha_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, a.op_ts) + ?
+        LEFT JOIN base_rel  br ON br.rpath = dB.rpath
+        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
+           OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const delB_vs_changeA_deleteInAlpha = db
+    const toBeta_conflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -588,48 +581,16 @@ export async function runMergeRsync({
         JOIN tmp_changedA cA USING (rpath)
         LEFT JOIN alpha_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(b.op_ts, a.op_ts) > COALESCE(a.op_ts, 0) + ?
+        LEFT JOIN base_rel  br ON br.rpath = dB.rpath
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
+           OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const delB_vs_changeA_tie = db
-      .prepare(
-        `
-        SELECT dB.rpath
-        FROM tmp_deletedB dB
-        JOIN tmp_changedA cA USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dB.rpath
-        WHERE ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, a.op_ts)) <= ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
-
-    // apply LWW/ties for delete-vs-change
-    toAlpha = uniq([
-      ...toAlpha,
-      ...delA_vs_changeB_copyToAlpha,
-      ...(prefer === "beta" ? delA_vs_changeB_tie : []),
-    ]);
-    delInBeta = uniq([
-      ...delInBeta,
-      ...delA_vs_changeB_deleteInBeta,
-      ...(prefer === "alpha" ? delA_vs_changeB_tie : []),
-    ]);
-
-    toBeta = uniq([
-      ...toBeta,
-      ...delB_vs_changeA_copyToBeta,
-      ...(prefer === "alpha" ? delB_vs_changeA_tie : []),
-    ]);
-    delInAlpha = uniq([
-      ...delInAlpha,
-      ...delB_vs_changeA_deleteInAlpha,
-      ...(prefer === "beta" ? delB_vs_changeA_tie : []),
-    ]);
+    let delInAlpha = uniq([...delInAlpha_noConflict, ...delInAlpha_conflict]);
+    toBeta = uniq([...toBeta, ...toBeta_conflict]);
 
     // ---------- DIR plans with LWW (presence-based) ----------
     // create-only
@@ -706,8 +667,10 @@ export async function runMergeRsync({
       toAlphaDirs = uniq([...toAlphaDirs, ...bothDirsToAlpha, ...bothDirsTie]);
     }
 
-    // dir delete-only
-    let delDirsInBeta = db
+    // dir deletions with LWW
+
+    // no-conflict
+    const delDirsInBeta_noConflict = db
       .prepare(
         `
         SELECT dA.rpath
@@ -719,7 +682,7 @@ export async function runMergeRsync({
       .all()
       .map((r) => r.rpath as string);
 
-    let delDirsInAlpha = db
+    const delDirsInAlpha_noConflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -731,8 +694,8 @@ export async function runMergeRsync({
       .all()
       .map((r) => r.rpath as string);
 
-    // dir delete-vs-create conflicts → LWW
-    const dDelA_vs_cB_toAlpha = db
+    // conflict: A deleted dir vs B created dir
+    const delDirsInBeta_conflict = db
       .prepare(
         `
         SELECT dA.rpath
@@ -740,13 +703,15 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, b.op_ts) + ?
+        LEFT JOIN base_dirs_rel br ON br.rpath = dA.rpath
+        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
+           OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const dDelA_vs_cB_delInBeta = db
+    const toAlphaDirs_conflict = db
       .prepare(
         `
         SELECT dA.rpath
@@ -754,27 +719,16 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedB cB USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE COALESCE(a.op_ts, b.op_ts) > COALESCE(b.op_ts, 0) + ?
+        LEFT JOIN base_dirs_rel br ON br.rpath = dA.rpath
+        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
+           OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const dDelA_vs_cB_tie = db
-      .prepare(
-        `
-        SELECT dA.rpath
-        FROM tmp_dirs_deletedA dA
-        JOIN tmp_dirs_changedB cB USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        WHERE ABS(COALESCE(a.op_ts, b.op_ts) - COALESCE(b.op_ts,0)) <= ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
-
-    const dDelB_vs_cA_toBeta = db
+    // conflict: B deleted dir vs A created dir
+    const delDirsInAlpha_conflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -782,13 +736,15 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedA cA USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(a.op_ts,0) > COALESCE(b.op_ts, a.op_ts) + ?
+        LEFT JOIN base_dirs_rel br ON br.rpath = dB.rpath
+        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
+           OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const dDelB_vs_cA_delInAlpha = db
+    const toBetaDirs_conflict = db
       .prepare(
         `
         SELECT dB.rpath
@@ -796,49 +752,27 @@ export async function runMergeRsync({
         JOIN tmp_dirs_changedA cA USING (rpath)
         LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
         LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE COALESCE(b.op_ts, a.op_ts) > COALESCE(a.op_ts,0) + ?
+        LEFT JOIN base_dirs_rel br ON br.rpath = dB.rpath
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
+           OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
       )
-      .all(EPS)
+      .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    const dDelB_vs_cA_tie = db
-      .prepare(
-        `
-        SELECT dB.rpath
-        FROM tmp_dirs_deletedB dB
-        JOIN tmp_dirs_changedA cA USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts, a.op_ts)) <= ?
-      `,
-      )
-      .all(EPS)
-      .map((r) => r.rpath as string);
+    let delDirsInBeta = uniq([
+      ...delDirsInBeta_noConflict,
+      ...delDirsInBeta_conflict,
+    ]);
+    let delDirsInAlpha = uniq([
+      ...delDirsInAlpha_noConflict,
+      ...delDirsInAlpha_conflict,
+    ]);
+    toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
+    toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
 
-    toAlphaDirs = uniq([
-      ...toAlphaDirs,
-      ...dDelA_vs_cB_toAlpha,
-      ...(prefer === "beta" ? dDelA_vs_cB_tie : []),
-    ]);
-    delDirsInBeta = uniq([
-      ...delDirsInBeta,
-      ...dDelA_vs_cB_delInBeta,
-      ...(prefer === "alpha" ? dDelA_vs_cB_tie : []),
-    ]);
-
-    toBetaDirs = uniq([
-      ...toBetaDirs,
-      ...dDelB_vs_cA_toBeta,
-      ...(prefer === "alpha" ? dDelB_vs_cA_tie : []),
-    ]);
-    delDirsInAlpha = uniq([
-      ...delDirsInAlpha,
-      ...dDelB_vs_cA_delInAlpha,
-      ...(prefer === "beta" ? dDelB_vs_cA_tie : []),
-    ]);
-
-    // ---------- TYPE-FLIP (file vs dir) conflicts: delete blocking FILE on dest before creating DIR ----------
+    // ---------- TYPE-FLIP (file vs dir) conflicts ----------
+    // If alpha has a dir and beta has a file at same rpath -> delete file in beta
     const fileConflictsInBeta = db
       .prepare(
         `
@@ -851,6 +785,7 @@ export async function runMergeRsync({
       .all()
       .map((r) => r.rpath as string);
 
+    // If beta has a dir and alpha has a file -> delete file in alpha
     const fileConflictsInAlpha = db
       .prepare(
         `

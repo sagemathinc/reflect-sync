@@ -46,11 +46,11 @@ describe("LWW: delete vs modify", () => {
 
     // delete on beta first (older delete op_ts after next scan)
     await fsp.rm(b);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     // then modify alpha later (newer op_ts)
     await fsp.writeFile(a, "alpha-newer");
-    await setMtimeMs(a, Date.now() - 2_000);
 
-    await sync(r, "beta"); // prefer irrelevant; newer op_ts should restore to beta
+    await sync(r, "beta", false, undefined, ["--lww-epsilon-ms", "50"]); // prefer irrelevant; newer op_ts should restore to beta
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-newer");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha-newer");
   });
