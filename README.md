@@ -4,7 +4,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 
 - **Rsync transport** (latest rsync recommended)
 - **SQLite indexes** per side (alpha / beta) + base snapshot for true 3-way merges
-- **Incremental scans** with content hashes only when needed (based on ctime)
+- **Incremental scans** with content hashes using [xxHash](https://www.npmjs.com/package/@node-rs/xxhash) only when needed (based on ctime)
 - **Realtime micro-sync** for hot files (debounced, safe on partial edits)
 - **SSH-friendly**: stream remote deltas over stdin; no bespoke daemon required
 - **Clean CLIs**: `ccsync scan /root`, `ccsync merge …`, `ccsync scheduler …` (plus aliases)
@@ -22,10 +22,11 @@ Open source under the MIT License.
 Some differences compared to Mutagen, and todos:
 
 - the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
-- conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins.  There is no manual resolution modes.
-- we will change the hash from sha256 to something faster
-- only supports macos and linux.
-- timestamps are preserved instead of being ignored/reset \(like with Mutagen\)
+- conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins. There is no manual resolution modes.
+- instead of Sha-256 **we use xxHash** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash).  Using a very fast non-cryptographic hash is a good fit for file sync.
+- only supports macos and linux (currently)
+- timestamps are preserved instead of being ignored \(like with Mutagen\)
+- permissions are fully preserved instead of being partly ignored.
 
 For more details, see [Design Details](./DESIGN.md).
 
@@ -227,4 +228,3 @@ TypeScript compiler outputs to `dist/` mirroring `src/` (see `tsconfig.json`).
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global` to get `ccsync` on your PATH.
 - For SSH use, ensure the remote has Node 24\+ and `ccsync` on PATH \(installed or included in your SEA image\). Then `ccsync scan … --emit-delta | ccsync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
-

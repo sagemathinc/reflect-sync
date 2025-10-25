@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -43,18 +43,19 @@
     "backup"
   ],
   "license": "MIT",
-  "packageManager": "pnpm@10.15.0",
+  "packageManager": "pnpm@10.19.0",
   "dependencies": {
+    "@node-rs/xxhash": "^1.7.6",
     "@nodelib/fs.walk": "^3.0.1",
     "ascii-table3": "^1.0.1",
     "better-sqlite3": "^12.4.1",
     "chokidar": "^4.0.3",
-    "commander": "^14.0.1"
+    "commander": "^14.0.2"
   },
   "devDependencies": {
     "@commander-js/extra-typings": "^14.0.0",
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.7.2",
+    "@types/node": "^24.9.1",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.5",
     "tsx": "^4.20.6",
