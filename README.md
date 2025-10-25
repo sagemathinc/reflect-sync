@@ -4,7 +4,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 
 - **Rsync transport** (latest rsync recommended)
 - **SQLite indexes** per side (alpha / beta) + base snapshot for true 3-way merges
-- **Incremental scans** with content hashes using [xxHash](https://www.npmjs.com/package/@node-rs/xxhash) only when needed (based on ctime)
+- **Incremental scans** with content hashes using [XXH3](https://www.npmjs.com/package/@node-rs/xxhash) only when needed (based on ctime)
 - **Realtime micro-sync** for hot files (debounced, safe on partial edits)
 - **SSH-friendly**: stream remote deltas over stdin; no bespoke daemon required
 - **Clean CLIs**: `ccsync scan /root`, `ccsync merge …`, `ccsync scheduler …` (plus aliases)
@@ -23,7 +23,7 @@ Some differences compared to Mutagen, and todos:
 
 - the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
 - conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins. There is no manual resolution modes.
-- instead of Sha-256 **we use xxHash** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash).  Using a very fast non-cryptographic hash is a good fit for file sync.
+- instead of Sha-256 **we use XXH3** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash).  Using a very fast non-cryptographic hash is a good fit for file sync.
 - only supports macos and linux (currently)
 - timestamps are preserved instead of being ignored \(like with Mutagen\)
 - permissions are fully preserved instead of being partly ignored.
