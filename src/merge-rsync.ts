@@ -74,7 +74,7 @@ export async function runMergeRsync({
   function rsyncArgsBase() {
     const a = ["-a", "-I", "--relative"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
     // NOTE: -I disables rsync's quick-check so listed files always copy.
   }
@@ -83,7 +83,7 @@ export async function runMergeRsync({
     // -d: transfer directories themselves (no recursion) — needed for empty dirs
     const a = ["-a", "-d", "--relative", "--from0"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -97,7 +97,7 @@ export async function runMergeRsync({
       "--force",
     ];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -115,6 +115,7 @@ export async function runMergeRsync({
     args: string[],
     okCodes: number[] = [0],
   ): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
+    const t = Date.now();
     if (verbose)
       console.log(
         `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
@@ -125,6 +126,9 @@ export async function runMergeRsync({
         const zero = code === 0;
         const ok = code !== null && okCodes.includes(code!);
         resolve({ code, ok, zero });
+        if (verbose) {
+          console.log("time:", Date.now() - t, "ms");
+        }
       });
       p.on("error", () =>
         resolve({ code: 1, ok: okCodes.includes(1), zero: false }),
