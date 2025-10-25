@@ -178,6 +178,28 @@ export async function runMergeRsync({
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
     // ---------- Build relative-path temp tables ----------
+    // Temp views to normalize to a single stream of path/hash/deleted/op_ts
+    db.exec(
+      `DROP VIEW IF EXISTS alpha_entries; DROP VIEW IF EXISTS beta_entries;`,
+    );
+
+    db.exec(
+      `
+      CREATE TEMP VIEW alpha_entries AS
+      SELECT path, hash, deleted, op_ts FROM alpha.files
+      UNION ALL
+      SELECT path, hash, deleted, op_ts FROM alpha.links;
+    `,
+    );
+    db.exec(
+      `
+      CREATE TEMP VIEW beta_entries AS
+      SELECT path, hash, deleted, op_ts FROM beta.files
+      UNION ALL
+      SELECT path, hash, deleted, op_ts FROM beta.links;
+    `,
+    );
+
     db.exec(
       `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
     );
@@ -187,26 +209,24 @@ export async function runMergeRsync({
       CREATE TEMP TABLE alpha_rel AS
       SELECT
         CASE
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          WHEN path = ? THEN '' ELSE path
-        END AS rpath,
-        hash, deleted, op_ts
-      FROM alpha.files
+          WHEN instr(path, (:alphaRoot || '/')) = 1 THEN substr(path, length(:alphaRoot) + 2)
+          WHEN path = :alphaRoot THEN '' ELSE path
+        END AS rpath, hash, deleted, op_ts
+      FROM alpha_entries;
     `,
-    ).run(alphaRoot, alphaRoot, alphaRoot);
+    ).run({ alphaRoot });
 
     db.prepare(
       `
       CREATE TEMP TABLE beta_rel AS
       SELECT
         CASE
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          WHEN path = ? THEN '' ELSE path
-        END AS rpath,
-        hash, deleted, op_ts
-      FROM beta.files
+          WHEN instr(path, (:betaRoot || '/')) = 1 THEN substr(path, length(:betaRoot) + 2)
+          WHEN path = :betaRoot THEN '' ELSE path
+        END AS rpath, hash, deleted, op_ts
+      FROM beta_entries;
     `,
-    ).run(betaRoot, betaRoot, betaRoot);
+    ).run({ betaRoot });
 
     db.prepare(
       `
@@ -227,26 +247,8 @@ export async function runMergeRsync({
       `DROP TABLE IF EXISTS alpha_dirs_rel; DROP TABLE IF EXISTS beta_dirs_rel; DROP TABLE IF EXISTS base_dirs_rel;`,
     );
 
-    const hasAlphaDirs =
-      (
-        db
-          .prepare(
-            `SELECT 1 AS ok FROM alpha.sqlite_master WHERE type='table' AND name='dirs'`,
-          )
-          .get() as any
-      )?.ok === 1;
-    const hasBetaDirs =
-      (
-        db
-          .prepare(
-            `SELECT 1 AS ok FROM beta.sqlite_master WHERE type='table' AND name='dirs'`,
-          )
-          .get() as any
-      )?.ok === 1;
-
-    if (hasAlphaDirs) {
-      db.prepare(
-        `
+    db.prepare(
+      `
         CREATE TEMP TABLE alpha_dirs_rel AS
         SELECT
           CASE
@@ -256,16 +258,10 @@ export async function runMergeRsync({
           deleted, op_ts
         FROM alpha.dirs
       `,
-      ).run(alphaRoot, alphaRoot, alphaRoot);
-    } else {
-      db.exec(
-        `CREATE TEMP TABLE alpha_dirs_rel(rpath TEXT, deleted INTEGER, op_ts INTEGER);`,
-      );
-    }
+    ).run(alphaRoot, alphaRoot, alphaRoot);
 
-    if (hasBetaDirs) {
-      db.prepare(
-        `
+    db.prepare(
+      `
         CREATE TEMP TABLE beta_dirs_rel AS
         SELECT
           CASE
@@ -275,12 +271,9 @@ export async function runMergeRsync({
           deleted, op_ts
         FROM beta.dirs
       `,
-      ).run(betaRoot, betaRoot, betaRoot);
-    } else {
-      db.exec(
-        `CREATE TEMP TABLE beta_dirs_rel(rpath TEXT, deleted INTEGER, op_ts INTEGER);`,
-      );
-    }
+    ).run(betaRoot, betaRoot, betaRoot);
+
+    // ----- base
 
     db.prepare(
       `

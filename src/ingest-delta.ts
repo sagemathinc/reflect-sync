@@ -105,6 +105,19 @@ ON CONFLICT(path) DO UPDATE SET
   last_seen=excluded.last_seen
 `);
 
+  const upsertLink = db.prepare(`
+INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
+VALUES (@path, @target, @ctime, @mtime, @op_ts, @hash, @deleted, @now)
+ON CONFLICT(path) DO UPDATE SET
+target=COALESCE(excluded.target, links.target),
+ctime=COALESCE(excluded.ctime, links.ctime),
+mtime=COALESCE(excluded.mtime, links.mtime),
+op_ts=COALESCE(excluded.op_ts, links.op_ts),
+hash=COALESCE(excluded.hash, links.hash),
+deleted=excluded.deleted,
+last_seen=excluded.last_seen
+`);
+
   const insTouch = db.prepare(
     `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
   );
@@ -146,6 +159,19 @@ ON CONFLICT(path) DO UPDATE SET
           ctime: isDelete ? null : (r.ctime ?? null),
           mtime: isDelete ? null : (r.mtime ?? null),
           op_ts,
+          deleted: isDelete ? 1 : 0,
+          now,
+        });
+      } else if (r.kind === "link") {
+        const isDelete = r.deleted === 1;
+        const op_ts = monotonicFor(r.path, adjustRemoteTime(r.op_ts));
+        upsertLink.run({
+          path: r.path,
+          target: isDelete ? null : (r.target ?? null),
+          ctime: isDelete ? null : (r.ctime ?? null),
+          mtime: isDelete ? null : (r.mtime ?? null),
+          op_ts,
+          hash: isDelete ? null : (r.hash ?? null),
           deleted: isDelete ? 1 : 0,
           now,
         });

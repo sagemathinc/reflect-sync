@@ -180,7 +180,7 @@ You can materialize helpers (e.g., a `path_norm` column with `/` separators, or 
 
 ## Tradeoffs & known limitations (current)
 
-- **Dirs/links/attrs**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but we plan explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.
+- **Dirs/links/attrs**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.  Directories and symlinks are sync'd, just not immediately.
 - **Base updates & verification**: we update `base.db` after rsync; the next full cycle **verifies** the result end\-to\-end. In high\-churn cases you may see rsync 23/24 warnings—by design.
 - **ctime reliance**: ctime is an excellent gate for rehashing but can vary across FS types or be coarser than you like; you can switch to an `(mtime, size)` policy if desired \(configurable in future\).
 

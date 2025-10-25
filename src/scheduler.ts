@@ -413,6 +413,9 @@ export async function runScheduler({
       "--root",
       params.root,
       "--emit-delta",
+      // use same path as local DB, but on remote:
+      "--db",
+      params.localDb,
     ];
     if (verbose) {
       console.log("$ ssh", sshArgs.join(" "));

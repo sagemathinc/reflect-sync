@@ -3,9 +3,11 @@
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
+import { readlink } from "node:fs/promises";
 import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
+import { xxh128String } from "./hash.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -14,7 +16,7 @@ function buildProgram(): Command {
     .name("ccsync-scan")
     .description("Run a local scan writing to sqlite database")
     .requiredOption("--root <path>", "directory to scan")
-    .option("--db <file>", "path to sqlite database", "alpha.db")
+    .requiredOption("--db <file>", "path to sqlite database")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
     .option("--verbose", "enable verbose logging", false);
 }
@@ -92,7 +94,9 @@ ON CONFLICT(path) DO UPDATE SET
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
-    for (const r of rows) upsertDir.run(r);
+    for (const r of rows) {
+      upsertDir.run(r);
+    }
   });
 
   const upsertMeta = db.prepare(`
@@ -109,7 +113,9 @@ ON CONFLICT(path) DO UPDATE SET
 `);
 
   const applyMetaBatch = db.transaction((rows: Row[]) => {
-    for (const r of rows) upsertMeta.run(r);
+    for (const r of rows) {
+      upsertMeta.run(r);
+    }
   });
 
   const applyHashBatch = db.transaction(
@@ -119,9 +125,40 @@ ON CONFLICT(path) DO UPDATE SET
        SET hash = ?, hashed_ctime = ?, deleted = 0
        WHERE path = ?`,
       );
-      for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
+      for (const r of rows) {
+        stmt.run(r.hash, r.ctime, r.path);
+      }
     },
   );
+
+  type LinkRow = {
+    path: string;
+    target: string;
+    ctime: number;
+    mtime: number;
+    op_ts: number;
+    hash: string;
+    scan_id: number;
+  };
+
+  const upsertLink = db.prepare(`
+INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
+VALUES (@path, @target, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
+ON CONFLICT(path) DO UPDATE SET
+target=excluded.target,
+ctime=excluded.ctime,
+mtime=excluded.mtime,
+op_ts=excluded.op_ts,
+hash=excluded.hash,
+deleted=0,
+last_seen=excluded.last_seen
+`);
+
+  const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
+    for (const r of rows) {
+      upsertLink.run(r);
+    }
+  });
 
   // ----------------- Worker pool ------------------
   type Job = { path: string; size: number; ctime: number; mtime: number };
@@ -152,7 +189,7 @@ ON CONFLICT(path) DO UPDATE SET
   // Emit buffering (fewer stdout writes)
   const deltaBuf: string[] = [];
   const emitObj = (o: {
-    kind?: "dir";
+    kind?: "dir" | "link";
     path: string;
     op_ts: number;
     deleted: number;
@@ -160,6 +197,7 @@ ON CONFLICT(path) DO UPDATE SET
     ctime?: number;
     mtime?: number;
     hash?: string;
+    target?: string; // for links
   }) => {
     if (!emitDelta) return;
     deltaBuf.push(JSON.stringify(o));
@@ -231,7 +269,10 @@ ON CONFLICT(path) DO UPDATE SET
       stats: true,
       followSymbolicLinks: false,
       concurrency: 128,
-      entryFilter: (e) => e.dirent.isFile() || e.dirent.isDirectory(),
+      entryFilter: (e) =>
+        e.dirent.isFile() ||
+        e.dirent.isDirectory() ||
+        e.dirent.isSymbolicLink(),
       errorFilter: () => true,
     });
 
@@ -248,6 +289,7 @@ ON CONFLICT(path) DO UPDATE SET
     // Mini-buffers
     const metaBuf: Row[] = [];
     const dirMetaBuf: DirRow[] = [];
+    const linksBuf: LinkRow[] = [];
     let jobBuf: Job[] = [];
 
     // Prepare a fast fetch of existing meta to check ctime change
@@ -331,6 +373,43 @@ ON CONFLICT(path) DO UPDATE SET
             jobBuf = [];
           }
         }
+      } else if (entry.dirent.isSymbolicLink()) {
+        let target = "";
+        try {
+          target = await readlink(full);
+        } catch {}
+        const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
+        const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+        const op_ts = mtime; // LWW uses op_ts consistently
+        const hash = xxh128String(target);
+
+        linksBuf.push({
+          path: full,
+          target,
+          ctime,
+          mtime,
+          op_ts,
+          hash,
+          scan_id,
+        });
+
+        // emit-delta for remote ingestion
+        emitObj({
+          kind: "link",
+          path: full,
+          ctime,
+          mtime,
+          op_ts,
+          hash,
+          target,
+          deleted: 0,
+        });
+
+        if (linksBuf.length >= DB_BATCH_SIZE) {
+          applyLinksBatch(linksBuf);
+          linksBuf.length = 0;
+        }
+        continue;
       }
     }
 
@@ -344,6 +423,12 @@ ON CONFLICT(path) DO UPDATE SET
     if (dirMetaBuf.length) {
       applyDirBatch(dirMetaBuf);
       dirMetaBuf.length = 0;
+    }
+
+    // Flush remaining links
+    if (linksBuf.length) {
+      applyLinksBatch(linksBuf);
+      linksBuf.length = 0;
     }
 
     // Flush remaining job batch
@@ -401,6 +486,24 @@ ON CONFLICT(path) DO UPDATE SET
         .all(scan_id);
       for (const r of gone) {
         emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts });
+      }
+      flushDeltaBuf();
+    }
+
+    // Mark deletions: links
+    const toDeleteLinks = db
+      .prepare(`SELECT path FROM links WHERE last_seen <> ? AND deleted = 0`)
+      .all(scan_id) as { path: string }[];
+
+    const op_ts_links = Date.now();
+    db.prepare(`UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
+      op_ts_links,
+      scan_id,
+    );
+
+    if (emitDelta && toDeleteLinks.length) {
+      for (const r of toDeleteLinks) {
+        emitObj({ kind: "link", path: r.path, deleted: 1, op_ts: op_ts_links });
       }
       flushDeltaBuf();
     }
