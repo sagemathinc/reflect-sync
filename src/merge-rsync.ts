@@ -8,6 +8,7 @@ import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { getDb } from "./db.js";
 import Database from "better-sqlite3";
+import { parallelCopyPhase } from "./parallel-rsync.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -186,17 +187,17 @@ export async function runMergeRsync({
     db.exec(
       `
       CREATE TEMP VIEW alpha_entries AS
-      SELECT path, hash, deleted, op_ts FROM alpha.files
+      SELECT path, hash, deleted, op_ts, size FROM alpha.files
       UNION ALL
-      SELECT path, hash, deleted, op_ts FROM alpha.links;
+      SELECT path, hash, deleted, op_ts, NULL FROM alpha.links;
     `,
     );
     db.exec(
       `
       CREATE TEMP VIEW beta_entries AS
-      SELECT path, hash, deleted, op_ts FROM beta.files
+      SELECT path, hash, deleted, op_ts, size FROM beta.files
       UNION ALL
-      SELECT path, hash, deleted, op_ts FROM beta.links;
+      SELECT path, hash, deleted, op_ts, NULL FROM beta.links;
     `,
     );
 
@@ -211,7 +212,7 @@ export async function runMergeRsync({
         CASE
           WHEN instr(path, (:alphaRoot || '/')) = 1 THEN substr(path, length(:alphaRoot) + 2)
           WHEN path = :alphaRoot THEN '' ELSE path
-        END AS rpath, hash, deleted, op_ts
+        END AS rpath, hash, deleted, op_ts, size
       FROM alpha_entries;
     `,
     ).run({ alphaRoot });
@@ -223,7 +224,7 @@ export async function runMergeRsync({
         CASE
           WHEN instr(path, (:betaRoot || '/')) = 1 THEN substr(path, length(:betaRoot) + 2)
           WHEN path = :betaRoot THEN '' ELSE path
-        END AS rpath, hash, deleted, op_ts
+        END AS rpath, hash, deleted, op_ts, size
       FROM beta_entries;
     `,
     ).run({ betaRoot });
@@ -377,6 +378,34 @@ export async function runMergeRsync({
       CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedA_rpath  ON tmp_dirs_deletedA(rpath);
       CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedB_rpath  ON tmp_dirs_deletedB(rpath);
     `);
+
+    // Helper to fetch sizes in bulk so we can run rsync's in parallel.
+    type CopyItem = { rpath: string; size: number };
+    function fetchSizedItems(
+      db: Database.Database,
+      from: "alpha_rel" | "beta_rel",
+      rpaths: string[],
+    ): CopyItem[] {
+      if (rpaths.length === 0) return [];
+      db.exec(
+        `DROP TABLE IF EXISTS tmp_list; CREATE TEMP TABLE tmp_list(rpath TEXT PRIMARY KEY);`,
+      );
+      const ins = db.prepare(
+        `INSERT OR IGNORE INTO tmp_list(rpath) VALUES (?)`,
+      );
+      db.transaction(() => {
+        for (const r of rpaths) ins.run(r);
+      })();
+      const rows = db
+        .prepare(
+          `SELECT t.rpath, COALESCE(rel.size, 1) AS size
+       FROM tmp_list t
+       JOIN ${from} rel USING (rpath)`,
+        )
+        .all() as { rpath: string; size: number }[];
+      db.exec(`DROP TABLE IF EXISTS tmp_list`);
+      return rows;
+    }
 
     const count = (tbl: string) =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).get() as any).n as number;
@@ -888,33 +917,6 @@ export async function runMergeRsync({
       let copyDirsAlphaBetaZero = false;
       let copyDirsBetaAlphaZero = false;
 
-      async function rsyncCopy(
-        fromRoot: string,
-        toRoot: string,
-        listFile: string,
-        label: string,
-      ) {
-        if (!(await fileNonEmpty(listFile))) {
-          if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
-          return { zero: false };
-        }
-        if (verbose) {
-          console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
-        }
-        const args = [
-          ...rsyncArgsBase(),
-          "--from0",
-          `--files-from=${listFile}`,
-          ensureTrailingSlash(fromRoot),
-          ensureTrailingSlash(toRoot),
-        ];
-        const res = await run("rsync", args, [0, 23, 24]); // accept partials
-        if (verbose) {
-          console.log(`>>> rsync ${label}: done (code ${res.code})`);
-        }
-        return { zero: res.zero };
-      }
-
       async function rsyncCopyDirs(
         fromRoot: string,
         toRoot: string,
@@ -996,13 +998,17 @@ export async function runMergeRsync({
         await rsyncCopyDirs(beta, alpha, listToAlphaDirs, "beta→alpha")
       ).zero;
 
-      // 3) copy files
-      copyAlphaBetaZero = (
-        await rsyncCopy(alpha, beta, listToBeta, "alpha→beta")
-      ).zero;
-      copyBetaAlphaZero = (
-        await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha")
-      ).zero;
+      // 3) copy files (parallelized; deletes are still serial above/below)
+      const toBetaItems: CopyItem[] = fetchSizedItems(db, "alpha_rel", toBeta);
+      const toAlphaItems: CopyItem[] = fetchSizedItems(db, "beta_rel", toAlpha);
+
+      // Note: parallelCopyPhase auto-falls back to a single rsync for small lists.
+      await parallelCopyPhase(toBetaItems, alpha, beta, rsyncArgsBase());
+      await parallelCopyPhase(toAlphaItems, beta, alpha, rsyncArgsBase());
+
+      // We reached here with no thrown error → treat as success for base updates.
+      copyAlphaBetaZero = toBeta.length > 0 ? true : false;
+      copyBetaAlphaZero = toAlpha.length > 0 ? true : false;
 
       // 4) delete dirs last (after files removed so dirs are empty)
       await rsyncDelete(alpha, beta, listDelDirsInBeta, "beta deleted (dirs)");
