@@ -23,7 +23,7 @@ Some differences compared to Mutagen, and todos:
 
 - the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
 - conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins. There is no manual resolution modes.
-- instead of Sha-256 **we use XXH3** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash).  Using a very fast non-cryptographic hash is a good fit for file sync.
+- instead of Sha-256 **we use XXH3** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash). Using a very fast non-cryptographic hash is a good fit for file sync.
 - only supports macos and linux (currently)
 - timestamps are preserved instead of being ignored \(like with Mutagen\)
 - permissions are fully preserved instead of being partly ignored.
@@ -228,3 +228,117 @@ TypeScript compiler outputs to `dist/` mirroring `src/` (see `tsconfig.json`).
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global` to get `ccsync` on your PATH.
 - For SSH use, ensure the remote has Node 24\+ and `ccsync` on PATH \(installed or included in your SEA image\). Then `ccsync scan … --emit-delta | ccsync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
+
+Here’s a drop-in README section you can paste in. I wrote it for external readers and kept the comparisons crisp.
+
+---
+
+## Why ccsync?
+
+**ccsync** is a two-way file sync tool with **deterministic Last-Write-Wins (LWW)** semantics, built on **rsync** for transfer and **SQLite** for state. It aims to be predictable, debuggable, and fast for the common case of **two roots** (e.g., laptop ↔ server, container bind-mount ↔ host, staging ↔ prod).
+
+### Key properties
+
+- **Deterministic LWW:** Changes are decided by content timestamps with a small configurable epsilon; ties break toward the **preferred side** you choose.
+- **Hash-driven change detection:** Content hashes, not “mtime only,” determine whether a file actually changed—keeps plans stable and reduces churn.
+- **First-class symlinks:** Links are scanned via `lstat`, targets are stored and hashed as **`link:<target>`**, and rsync preserves them.
+- **Simple & inspectable:** Uses SQLite tables and NDJSON deltas—easy to debug, test, and reason about.
+- **MIT-licensed:** Permissive for both open-source and commercial use.
+
+---
+
+## When to use ccsync
+
+Use ccsync when you want:
+
+- **Two endpoints** with **predictable outcomes** (no “conflict copies”).
+- Great performance on **large files** or **incremental edits** (thanks to rsync).
+- **Transparent plans** and state you can audit (SQLite + file lists).
+- **Symlink-accurate** behavior across platforms that support them.
+
+Not a perfect fit if you need:
+
+- A **multi\-node mesh** with discovery/relays \(see Syncthing/Resilio\).
+- Built\-in **version history** or a cloud UI \(see Nextcloud/Dropbox\).
+- **Interactive** conflict resolution UX \(see Unison\); with ccsync there is **never** conflict resolution.
+
+---
+
+## How it compares
+
+| Tool          | License                             | Sync model                   | Conflict policy                   | Notes                                         |
+| ------------- | ----------------------------------- | ---------------------------- | --------------------------------- | --------------------------------------------- |
+| **ccsync**    | **MIT**                             | Two-way between two roots    | **LWW** (+ preferred side on tie) | rsync transport; SQLite state; symlink-aware  |
+| **Unison**    | GPL-3                               | Two-way                      | Interactive or policy-driven      | Mature, formal; heavier UX for headless flows |
+| **Syncthing** | MPL-2.0                             | Continuous P2P mesh          | **Conflict copies** on diverge    | Great for many devices; background indexer    |
+| **Mutagen**   | Source-available (see project docs) | Dev-focused low-latency sync | Modes incl. “prefer side”         | Very fast for dev trees; custom protocol      |
+| **lsyncd**    | GPL-2.0+                            | One-way (event → rsync)      | N/A                               | Simple near-real-time mirroring               |
+
+> Philosophy difference: **ccsync** favors _determinism without duplicates_ (LWW + preference). Tools like Syncthing/Dropbox prefer _never lose data_ (create conflict files), which is ideal for less controlled, multi-party edits.
+
+---
+
+## Semantics (brief)
+
+- **Change detection:** By **content hash**. Pure mtime bumps don’t count as edits.
+- **Last write wins \(LWW\) resolution:** The newer op timestamp wins; within `--lww-epsilon-ms`, the **preferred side** wins.
+- **Type changes:** File ↔ symlink ↔ dir follow the same LWW rule \(so type can change if the winner differs\).
+- **Deletes:** Deletions are first\-class operations and replicate per LWW.
+- **Symlinks:** Stored with target string and hashed as `link:<target>`; preserved by rsync.
+
+---
+
+## Performance notes
+
+- **Large files / small edits:** Excellent (rsync rolling checksums).
+- **Many small files:** Competitive when watch-driven; initial cold scans take longer than always-on indexers.
+- **High-latency links:** rsync is single-stream; consider batching file lists or running a few parallel rsyncs for huge trees.
+- **Observability:** Plans are explicit (`toAlpha`, `toBeta`, delete lists) and replayable.
+
+---
+
+## Platform support
+
+- **Linux/macOS:** Fully supported (Node.js 24+). Uses `lutimes` where available for precise symlink mtimes.
+- **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions.
+
+---
+
+## Open Source
+
+The MIT license is maximally permissive: embed, modify, and redistribute with minimal friction. This makes **ccsync** easy to adopt in both open\-source stacks and commercial tooling.
+
+Here’s a concise, copy-pasteable matrix for your README.
+
+---
+
+## ccsync vs. X — choose-by-scenario
+
+| Scenario                                                                | Recommended                  | Why                                                                                  | Notes                                                                       |
+| ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ccsync**                   | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod              |
+| **One-way near-real-time mirroring** (e.g., deploy artifacts → webroot) | **lsyncd**                   | Event→batch→rsync is simple and robust                                               | If you still want ccsync, just run one side as authoritative (prefer-alpha) |
+| **Dev loop; tons of small files; low latency**                          | **Mutagen**                  | Purpose-built for fast dev sync; very low overhead on edits                          | License differs; protocol/agent required                                    |
+| **Many devices; peer-to-peer mesh; zero central server**                | **Syncthing**                | Discovery, relay, NAT traversal, continuous                                          | Creates conflict copies on diverge (safer for multi-writer)                 |
+| **Non-technical users; desktop + mobile; web UI; version history**      | **Nextcloud** or **Dropbox** | Turnkey clients + history + sharing                                                  | Heavier footprint; server (Nextcloud) or cloud (Dropbox)                    |
+| **CI/CD cache or artifacts between two machines**                       | **ccsync**                   | Deterministic, debuggable, rsync-efficient on large binaries                         | Keep file lists tight; parallelize rsync if needed                          |
+| **Large binary files with small edits over LAN**                        | **ccsync**                   | rsync rolling checksum excels                                                        | Consider `--inplace` only if types won’t change and perms allow             |
+| **Interactive conflict resolution preferred**                           | **Unison**                   | Mature interactive/tunable policy engine                                             | More friction in headless automation                                        |
+| **Multi-writer folder; avoid any silent overwrite**                     | **Syncthing**                | Uses conflict files rather than overwrite                                            | Safer for less-controlled edits; not deterministic                          |
+| **Windows-first environment**                                           | **Syncthing** / **Dropbox**  | Native UX; no rsync/WSL needed                                                       | **ccsync** works best via **WSL** (document this path)                      |
+| **Air-gapped / restricted SSH only**                                    | **ccsync**                   | rsync over SSH; explicit file lists; easy to audit                                   | Works well in regulated environments                                        |
+| **Exact promotion between environments (e.g., staging → prod)**         | **ccsync**                   | Precise deletes; type changes honored; no conflict files                             | Keep backups if human edits happen in prod                                  |
+| **One-way ingest to object storage (S3, etc.)**                         | **rclone** (adjacent tool)   | Direct backends; checksumming; retries                                               | Different problem space; can be combined with ccsync locally                |
+
+**Legend:**
+
+- **LWW** = Last-Write-Wins. In ccsync, ties within `--lww-epsilon-ms` break toward your **preferred side** (alpha/beta).
+- “Conflict copies” = tools that create duplicate files when both sides changed (e.g., `filename (conflict copy).txt`).
+
+**Rule of thumb**
+
+- Want **determinism** between **two roots** → pick **ccsync**.
+- Want a **mesh** or **never lose data** via conflict files → pick **Syncthing** (or cloud sync).
+- Want **dev-loop speed** → pick **Mutagen**.
+- Want **one-way mirroring** → pick **lsyncd**.
+- Want **history + sharing** → pick **Nextcloud/Dropbox**.
