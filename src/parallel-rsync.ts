@@ -10,8 +10,12 @@ import * as path from "node:path";
 
 type CopyItem = { rpath: string; size: number };
 
+const VERBOSE = false;
+
 function chooseLaneCount(requested?: number): number {
-  if (requested && requested > 0) return requested;
+  if (requested && requested > 0) {
+    return requested;
+  }
   const cores = os.cpus()?.length ?? 4;
   return Math.min(Math.max(2, Math.floor(cores / 2)), 8);
 }
@@ -61,7 +65,10 @@ function runRsync(
     dstRoot,
   ];
   return new Promise((resolve, reject) => {
-    const child = spawn("rsync", args, { stdio: "inherit", env });
+    const child = spawn("rsync", args, {
+      stdio: VERBOSE ? "inherit" : undefined,
+      env,
+    });
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0 || code === 23 || code === 24) resolve();

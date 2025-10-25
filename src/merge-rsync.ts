@@ -75,7 +75,7 @@ export async function runMergeRsync({
   function rsyncArgsBase() {
     const a = ["-a", "-I", "--relative"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
     // NOTE: -I disables rsync's quick-check so listed files always copy.
   }
@@ -84,7 +84,7 @@ export async function runMergeRsync({
     // -d: transfer directories themselves (no recursion) — needed for empty dirs
     const a = ["-a", "-d", "--relative", "--from0"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -98,7 +98,7 @@ export async function runMergeRsync({
       "--force",
     ];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -1003,8 +1003,23 @@ export async function runMergeRsync({
       const toAlphaItems: CopyItem[] = fetchSizedItems(db, "beta_rel", toAlpha);
 
       // Note: parallelCopyPhase auto-falls back to a single rsync for small lists.
+      let t = Date.now();
+      if (verbose) {
+        console.log(`>>> rsync ${toBetaItems.length} files alpha→beta`);
+      }
       await parallelCopyPhase(toBetaItems, alpha, beta, rsyncArgsBase());
+      if (verbose) {
+        console.log("Time: ", Date.now() - t, "ms");
+      }
+
+      if (verbose) {
+        t = Date.now();
+        console.log(`>>> rsync ${toAlphaItems.length} files beta→alpha`);
+      }
       await parallelCopyPhase(toAlphaItems, beta, alpha, rsyncArgsBase());
+      if (verbose) {
+        console.log("Time: ", Date.now() - t, "ms");
+      }
 
       // We reached here with no thrown error → treat as success for base updates.
       copyAlphaBetaZero = toBeta.length > 0 ? true : false;
