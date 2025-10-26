@@ -2,6 +2,8 @@
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import { MAX_WATCHERS } from "./defaults.js";
+import ignore from "ignore";
+import { access, readFile } from "node:fs/promises";
 
 export type HotWatchEvent =
   | "add"
@@ -23,6 +25,13 @@ export interface HotWatchOptions {
   ttlMs?: number; // default 30 min
   hotDepth?: number; // default 2
   awaitWriteFinish?: { stabilityThreshold: number; pollInterval: number }; // default {200, 50}
+
+  /**
+   * Optional external ignore predicate (e.g. to enforce "either-side" ignores).
+   * Receives rpath (POSIX) relative to this.root and a boolean for "is directory".
+   * If it returns true, the event is dropped.
+   */
+  isIgnored?: (rpath: string, isDir: boolean) => boolean;
 }
 
 // POSIX-normalize path (also makes Windows separators into '/')
@@ -58,6 +67,10 @@ export class HotWatchManager {
   private lru: string[] = []; // oldest first
   private opts: Required<HotWatchOptions>;
 
+  // local .ccsyncignore matcher (hot-reloaded)
+  private ig: ReturnType<typeof ignore> | null = null;
+  private igWatcher: FSWatcher | null = null;
+
   constructor(
     private root: string,
     private onHotEvent: (abs: string, ev: HotWatchEvent) => void,
@@ -71,11 +84,63 @@ export class HotWatchManager {
         stabilityThreshold: 200,
         pollInterval: 50,
       },
+      isIgnored: opts.isIgnored ?? (() => false),
     };
+
+    // kick off initial load of .ccsyncignore and watch it for changes
+    this.reloadIg();
+    this.watchIgnoreFile();
   }
 
   size() {
     return this.map.size;
+  }
+
+  private async reloadIg() {
+    const ig = ignore();
+    const igPath = path.join(this.root, ".ccsyncignore");
+    try {
+      await access(igPath);
+      const raw = await readFile(igPath, "utf8");
+      ig.add(raw.replace(/\r\n/g, "\n"));
+      this.ig = ig;
+    } catch {
+      // no ignore file present
+      this.ig = ig; // empty matcher
+    }
+  }
+
+  private watchIgnoreFile() {
+    const igPath = path.join(this.root, ".ccsyncignore");
+    this.igWatcher = chokidar
+      .watch(igPath, { ignoreInitial: true, depth: 0, persistent: true })
+      .on("add", () => this.reloadIg())
+      .on("change", () => this.reloadIg())
+      .on("unlink", () => this.reloadIg());
+  }
+
+  private localIgnoresFile(rpath: string): boolean {
+    if (!this.ig) return false;
+    return this.ig.ignores(rpath);
+  }
+
+  private localIgnoresDir(rpath: string): boolean {
+    if (!this.ig) return false;
+    const withSlash = rpath.endsWith("/") ? rpath : rpath + "/";
+    return this.ig.ignores(withSlash);
+  }
+
+  /**
+   * Combined ignore: local .ccsyncignore OR external predicate (e.g., other side).
+   */
+  private isIgnored(rpath: string, isDir: boolean): boolean {
+    const local = isDir
+      ? this.localIgnoresDir(rpath)
+      : this.localIgnoresFile(rpath);
+    if (local) {
+      return true;
+    }
+    return !!this.opts.isIgnored(rpath, isDir);
   }
 
   async add(rdir: string) {
@@ -94,19 +159,38 @@ export class HotWatchManager {
       ignoreInitial: true,
       depth: this.opts.hotDepth,
       awaitWriteFinish: this.opts.awaitWriteFinish,
+      // (We filter precisely in the handler; leaving this unset avoids extra stats.)
     });
 
     const handler = async (ev: HotWatchEvent, abs: string) => {
       const absN = norm(abs);
+
+      // Compute rpath relative to this.root
+      const rel = norm(path.relative(this.root, absN));
+      const r = !rel || rel === "." ? "" : rel;
+
+      // Determine if this is a directory event
+      const isDir = ev === "addDir" || ev === "unlinkDir";
+
+      // Honor ignores: if ignored, drop event and stop descending
+      if (this.isIgnored(r, isDir)) {
+        // If we just discovered an ignored directory, stop watching its subtree
+        if (isDir && ev === "addDir") {
+          watcher.unwatch(absN);
+        }
+        return;
+      }
+
+      // Forward allowed event
       this.onHotEvent(absN, ev);
 
       // escalate deeper when event is at frontier depth
       const d = relDepth(anchorAbs, absN);
       if (d >= this.opts.hotDepth && this.map.size < this.opts.maxWatchers) {
         const deeperDir = norm(path.dirname(absN));
-        const r = norm(path.relative(this.root, deeperDir));
-        if (r && r !== ".") {
-          await this.add(r);
+        const rDeeper = norm(path.relative(this.root, deeperDir));
+        if (rDeeper && rDeeper !== ".") {
+          await this.add(rDeeper);
         }
       }
 
@@ -168,6 +252,10 @@ export class HotWatchManager {
         s.watcher.close().catch(() => {}),
       ),
     );
+    if (this.igWatcher) {
+      await this.igWatcher.close().catch(() => {});
+      this.igWatcher = null;
+    }
     this.map.clear();
     this.lru = [];
   }

@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+#!/usr/bin/env nodeargs
+
 // merge-rsync.ts
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";

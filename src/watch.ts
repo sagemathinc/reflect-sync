@@ -188,7 +188,11 @@ function buildProgram() {
     .option("--shallow-depth <n>", "root watcher depth", "1")
     .option("--hot-depth <n>", "hot anchor depth", "2")
     .option("--hot-ttl-ms <ms>", "TTL for hot anchors", String(30 * 60_000))
-    .option("--max-hot-watchers <n>", "max concurrent hot watchers", String(MAX_WATCHERS))
+    .option(
+      "--max-hot-watchers <n>",
+      "max concurrent hot watchers",
+      String(MAX_WATCHERS),
+    )
     .option("--verbose", "log to stderr", false);
 
   return program;
