@@ -127,6 +127,90 @@ export async function runMerge({
     db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
+    // ---------- EARLY-OUT FAST PATH ----------
+    // We compute a light-weight "digest" of each side's catalog (files+links and dirs).
+    // If both digests equal what we saved after the last merge, we skip planning/rsync entirely.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS merge_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+      );
+    `);
+
+    const computeSideDigest = (side: "alpha" | "beta") => {
+      // files + links aggregated together
+      const f = db
+        .prepare(
+          `
+        SELECT
+          COUNT(*)                                AS n,
+          COALESCE(SUM(op_ts), 0)                 AS s_op,
+          COALESCE(MAX(op_ts), 0)                 AS m_op,
+          COALESCE(SUM(deleted), 0)               AS s_del,
+          COALESCE(SUM(LENGTH(path)), 0)          AS s_plen,
+          COALESCE(SUM(LENGTH(COALESCE(hash,''))), 0) AS s_hlen
+        FROM (
+          SELECT path, hash, deleted, op_ts FROM ${side}.files
+          UNION ALL
+          SELECT path, hash, deleted, op_ts FROM ${side}.links
+        )
+      `,
+        )
+        .get() as any;
+
+      // dirs
+      const d = db
+        .prepare(
+          `
+        SELECT
+          COUNT(*)                        AS n,
+          COALESCE(SUM(op_ts), 0)         AS s_op,
+          COALESCE(MAX(op_ts), 0)         AS m_op,
+          COALESCE(SUM(deleted), 0)       AS s_del,
+          COALESCE(SUM(LENGTH(path)), 0)  AS s_plen
+        FROM ${side}.dirs
+      `,
+        )
+        .get() as any;
+
+      // A compact, stable string; collisions are extremely unlikely with these aggregates.
+      return `F:${f.n},${f.s_op},${f.m_op},${f.s_del},${f.s_plen},${f.s_hlen};D:${d.n},${d.s_op},${d.m_op},${d.s_plen},${d.s_del}`;
+    };
+
+    const digestAlpha = computeSideDigest("alpha");
+    const digestBeta = computeSideDigest("beta");
+    if (verbose) {
+      console.log("digests:", { digestAlpha, digestBeta });
+    }
+
+    const lastAlpha =
+      (
+        db
+          .prepare(`SELECT value FROM merge_meta WHERE key='alpha_digest'`)
+          .get() as any
+      )?.value ?? null;
+    const lastBeta =
+      (
+        db
+          .prepare(`SELECT value FROM merge_meta WHERE key='beta_digest'`)
+          .get() as any
+      )?.value ?? null;
+
+    if (
+      lastAlpha !== null &&
+      lastBeta !== null &&
+      digestAlpha === lastAlpha &&
+      digestBeta === lastBeta
+    ) {
+      if (verbose) {
+        console.log(
+          "[merge] no-op: catalogs unchanged; skipping planning/rsync",
+        );
+      }
+      return; // 🔚 Early return – nothing to do
+    }
+    // ---------- END EARLY-OUT FAST PATH ----------
+
     // ---------- Build relative-path temp tables ----------
     // Temp views to normalize to a single stream of path/hash/deleted/op_ts
     db.exec(
@@ -1465,6 +1549,12 @@ export async function runMerge({
       if (verbose) {
         console.log("Merge complete.");
       }
+
+      // Persist current side digests so we can early-out next time.
+      // (Only after successful non-dry-run merge.)
+      const up = db.prepare(`REPLACE INTO merge_meta(key,value) VALUES(?,?)`);
+      up.run("alpha_digest", digestAlpha);
+      up.run("beta_digest", digestBeta);
     } finally {
       if (!LEAVE_TEMP_FILES) {
         await rm(tmp, { recursive: true, force: true });

@@ -80,11 +80,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 INSERT INTO dirs(path, ctime, mtime, op_ts, deleted, last_seen)
 VALUES (@path, @ctime, @mtime, @op_ts, 0, @scan_id)
 ON CONFLICT(path) DO UPDATE SET
-  ctime=excluded.ctime,
-  mtime=excluded.mtime,
-  op_ts=excluded.op_ts,
-  deleted=0,
-  last_seen=excluded.last_seen
+  ctime     = excluded.ctime,
+  mtime     = excluded.mtime,
+  deleted   = 0,
+  last_seen = excluded.last_seen,
+  -- Preserve current op_ts unless we are resurrecting a previously-deleted dir
+  op_ts     = CASE
+                WHEN dirs.deleted = 1 THEN excluded.op_ts
+                ELSE dirs.op_ts
+              END
 `);
 
   type DirRow = {
