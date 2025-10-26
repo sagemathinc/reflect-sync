@@ -77,10 +77,22 @@ export async function runMergeRsync({
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);
 
+  const t = (label: string) => {
+    if (!verbose) {
+      return () => {};
+    }
+    console.log(`[phase] ${label}: running...`);
+    const t0 = Date.now();
+    return () => {
+      const dt = Date.now() - t0;
+      if (dt > 20) console.log(`[phase] ${label}: ${dt} ms`);
+    };
+  };
+
   function rsyncArgsBase() {
     const a = ["-a", "-I", "--relative"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
     // NOTE: -I disables rsync's quick-check so listed files always copy.
   }
@@ -89,7 +101,7 @@ export async function runMergeRsync({
     // -d: transfer directories themselves (no recursion) — needed for empty dirs
     const a = ["-a", "-d", "--relative", "--from0"];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -103,7 +115,7 @@ export async function runMergeRsync({
       "--force",
     ];
     if (dryRun) a.unshift("-n");
-    if (verbose) a.push("-v");
+    //if (verbose) a.push("-v");
     return a;
   }
 
@@ -127,7 +139,7 @@ export async function runMergeRsync({
         `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
       );
     return new Promise((resolve) => {
-      const p = spawn(cmd, args, { stdio: "inherit" });
+      const p = spawn(cmd, args); //, verbose ? { stdio: "inherit" } : undefined);
       p.on("exit", (code) => {
         const zero = code === 0;
         const ok = code !== null && okCodes.includes(code!);
@@ -149,10 +161,6 @@ export async function runMergeRsync({
   // small helpers used by safety rails
   const asSet = (xs: string[]) => new Set(xs);
   const uniq = (xs: string[]) => Array.from(asSet(xs));
-  const setMinus = (xs: string[], bad: Set<string>) =>
-    xs.filter((x) => !bad.has(x));
-  const isParentOf = (parent: string, child: string) =>
-    parent && (child === parent || child.startsWith(parent + "/"));
   const depth = (r: string) => (r ? r.split("/").length : 0);
   const sortDeepestFirst = (xs: string[]) =>
     xs.slice().sort((a, b) => depth(b) - depth(a));
@@ -214,6 +222,7 @@ export async function runMergeRsync({
       `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
     );
 
+    let done = t("build *_rel");
     // Define the *_rel tables with a primary key and WITHOUT ROWID.
     // This makes rpath unique, saves memory, and gives you an implicit PK index.
 
@@ -342,7 +351,9 @@ export async function runMergeRsync({
     CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_deleted_rpath  ON beta_dirs_rel(deleted, rpath);
     CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_deleted_rpath  ON base_dirs_rel(deleted, rpath);
     `);
+    done();
 
+    done = t("build tmp_* files");
     // ---------- 3-way plan: FILES (change/delete sets) ----------
     db.exec(`
       DROP TABLE IF EXISTS tmp_changedA;
@@ -420,7 +431,9 @@ export async function runMergeRsync({
       CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedA_rpath  ON tmp_dirs_deletedA(rpath);
       CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedB_rpath  ON tmp_dirs_deletedB(rpath);
     `);
+    done();
 
+    done = t("derive plan arrays");
     const count = (tbl: string) =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).get() as any).n as number;
     if (verbose) {
@@ -518,6 +531,9 @@ export async function runMergeRsync({
       toBeta = uniq([...toBeta, ...bothChangedToBeta]);
       toAlpha = uniq([...toAlpha, ...bothChangedToAlpha, ...bothChangedTie]);
     }
+    done();
+
+    done = t("deletions");
 
     // deletions (files) with LWW against changes on the other side
 
@@ -686,6 +702,8 @@ export async function runMergeRsync({
       )
       .all(EPS)
       .map((r) => r.rpath as string);
+    done();
+    done = t("to alpha/beta uniq");
 
     if (prefer === "alpha") {
       toBetaDirs = uniq([...toBetaDirs, ...bothDirsToBeta, ...bothDirsTie]);
@@ -694,8 +712,10 @@ export async function runMergeRsync({
       toBetaDirs = uniq([...toBetaDirs, ...bothDirsToBeta]);
       toAlphaDirs = uniq([...toAlphaDirs, ...bothDirsToAlpha, ...bothDirsTie]);
     }
+    done();
 
     // dir deletions with LWW
+    done = t("dir LWW");
 
     // no-conflict
     const delDirsInBeta_noConflict = db
@@ -798,6 +818,9 @@ export async function runMergeRsync({
     ]);
     toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
     toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
+    done();
+
+    done = t("type flips");
 
     // ---------- TYPE-FLIP (file vs dir) conflicts ----------
     // If alpha has a dir and beta has a file at same rpath -> delete file in beta
@@ -828,6 +851,9 @@ export async function runMergeRsync({
 
     delInBeta = uniq([...delInBeta, ...fileConflictsInBeta]);
     delInAlpha = uniq([...delInAlpha, ...fileConflictsInAlpha]);
+    done();
+
+    done = t("safety rails");
 
     // ---------- SAFETY RAILS ----------
     // These are not "just" safety -- they are important since doing them
@@ -876,10 +902,12 @@ export async function runMergeRsync({
       // Block alpha→beta copies that land under a dir beta deleted
       toBeta = toBeta.filter((r) => !underBDeleted(r));
     }
+    done();
 
     // ---------- APPLY IGNORES ----------
     // Drop any rpaths that are ignored on either side. This makes ignores local-only:
     // we do not copy *or* delete ignored paths, and we do not update base for them.
+    done = t("ignores");
     const before = verbose
       ? {
           toBeta: toBeta.length,
@@ -928,29 +956,93 @@ export async function runMergeRsync({
     toAlpha = dropInternal(toAlpha);
     delInBeta = dropInternal(delInBeta);
     delInAlpha = dropInternal(delInAlpha);
+    done();
 
-    // copy/delete overlap (files): favor copy, drop deletion
+    done = t("overlaps");
     const delInBetaSet = asSet(delInBeta);
     const delInAlphaSet = asSet(delInAlpha);
-    const overlapBeta = toBeta.filter((r) => delInBetaSet.has(r));
-    const overlapAlpha = toAlpha.filter((r) => delInAlphaSet.has(r));
-    if (overlapBeta.length || overlapAlpha.length) {
-      console.warn(
-        `planner safety: copy/delete overlap detected (alpha→beta overlap=${overlapBeta.length}, beta→alpha overlap=${overlapAlpha.length}); dropping deletions for overlapped paths`,
-      );
-      delInBeta = setMinus(delInBeta, asSet(overlapBeta));
-      delInAlpha = setMinus(delInAlpha, asSet(overlapAlpha));
+    /** -------- 1) copy/delete overlap (files) in O(n) using Sets -------- */
+    if (toBeta.length && delInBeta.length) {
+      const toBetaSet = new Set(toBeta);
+      const before = delInBeta.length;
+      delInBeta = delInBeta.filter((r) => !toBetaSet.has(r));
+      const dropped = before - delInBeta.length;
+      if (dropped && verbose) {
+        console.warn(
+          `planner safety: alpha→beta file overlap dropped=${dropped}`,
+        );
+      }
+    }
+    if (toAlpha.length && delInAlpha.length) {
+      const toAlphaSet = new Set(toAlpha);
+      const before = delInAlpha.length;
+      delInAlpha = delInAlpha.filter((r) => !toAlphaSet.has(r));
+      const dropped = before - delInAlpha.length;
+      if (dropped && verbose) {
+        console.warn(
+          `planner safety: beta→alpha file overlap dropped=${dropped}`,
+        );
+      }
     }
 
-    // dir delete safety: don't delete a dir that's a parent of any copy/create
-    const betaIncoming = [...toBeta, ...toBetaDirs];
-    const alphaIncoming = [...toAlpha, ...toAlphaDirs];
+    /** -------- 2) dir delete safety in O(m log n) via binary search -------- */
+    function normalizeDir(d: string) {
+      return d.endsWith("/") ? d.slice(0, -1) : d;
+    }
+    function lowerBound(arr: string[], target: string) {
+      let lo = 0,
+        hi = arr.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (arr[mid] < target) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    }
+    /**
+     * Returns true if any incoming path is the dir itself or lies under it.
+     * incomingSorted must be lexicographically sorted.
+     */
+    function anyIncomingUnderDir(
+      incomingSorted: string[],
+      dir: string,
+    ): boolean {
+      const d = normalizeDir(dir);
+      if (!d) return incomingSorted.length > 0; // deleting root? be conservative
+      const prefix = d + "/";
+      // First incoming >= "d/" (all children come after this point)
+      const i = lowerBound(incomingSorted, prefix);
+      if (i < incomingSorted.length) {
+        const cand = incomingSorted[i];
+        if (cand === d) return true; // exact match (dir created/copied)
+        if (cand.startsWith(prefix)) return true; // a descendant exists
+      }
+      return false;
+    }
+
+    // Sort once; merging files + dirs keeps semantics you had before
+    const betaIncomingSorted = [...toBeta, ...toBetaDirs].sort();
+    const alphaIncomingSorted = [...toAlpha, ...toAlphaDirs].sort();
+
+    const beforeDelDirsInBeta = delDirsInBeta.length;
     delDirsInBeta = delDirsInBeta.filter(
-      (d) => !betaIncoming.some((p) => isParentOf(d, p)),
+      (d) => !anyIncomingUnderDir(betaIncomingSorted, d),
     );
+    const droppedBetaDirs = beforeDelDirsInBeta - delDirsInBeta.length;
+
+    const beforeDelDirsInAlpha = delDirsInAlpha.length;
     delDirsInAlpha = delDirsInAlpha.filter(
-      (d) => !alphaIncoming.some((p) => isParentOf(d, p)),
+      (d) => !anyIncomingUnderDir(alphaIncomingSorted, d),
     );
+    const droppedAlphaDirs = beforeDelDirsInAlpha - delDirsInAlpha.length;
+
+    if (verbose && (droppedBetaDirs || droppedAlphaDirs)) {
+      console.warn(
+        `planner safety: dir-delete clamped (beta=${droppedBetaDirs}, alpha=${droppedAlphaDirs})`,
+      );
+    }
+
+    done();
 
     // Assert (verbose only)
     if (verbose) {
@@ -966,6 +1058,7 @@ export async function runMergeRsync({
 
     const tmp = await mkdtemp(path.join(tmpdir(), "sync-plan-"));
     try {
+      done = t("files lists");
       // ---------- files-from (NUL-separated) ----------
       const listToBeta = path.join(tmp, "toBeta.list");
       const listToAlpha = path.join(tmp, "toAlpha.list");
@@ -990,6 +1083,7 @@ export async function runMergeRsync({
       await writeFile(listToAlphaDirs, join0(toAlphaDirs));
       await writeFile(listDelDirsInBeta, join0(delDirsInBeta));
       await writeFile(listDelDirsInAlpha, join0(delDirsInAlpha));
+      done();
 
       if (verbose) {
         console.log(`Plan:
@@ -1110,26 +1204,33 @@ export async function runMergeRsync({
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
 
       // 1) delete file conflicts first
+      done = t("rsync: 1) delete file conflicts");
       await rsyncDelete(beta, alpha, listDelInAlpha, "alpha deleted (files)");
       await rsyncDelete(alpha, beta, listDelInBeta, "beta deleted (files)");
+      done();
 
       // 2) create dirs (so file copies won't fail due to missing parents)
+      done = t("rsync: 2) create dirs");
       copyDirsAlphaBetaZero = (
         await rsyncCopyDirs(alpha, beta, listToBetaDirs, "alpha→beta")
       ).zero;
       copyDirsBetaAlphaZero = (
         await rsyncCopyDirs(beta, alpha, listToAlphaDirs, "beta→alpha")
       ).zero;
+      done();
 
       // 3) copy files
+      done = t("rsync: 3) copy files");
       copyAlphaBetaZero = (
         await rsyncCopy(alpha, beta, listToBeta, "alpha→beta")
       ).zero;
       copyBetaAlphaZero = (
         await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha")
       ).zero;
+      done();
 
       // 4) delete dirs last (after files removed so dirs are empty)
+      done = t("rsync: 4) delete dirs");
       await rsyncDelete(alpha, beta, listDelDirsInBeta, "beta deleted (dirs)");
       await rsyncDelete(
         beta,
@@ -1137,6 +1238,7 @@ export async function runMergeRsync({
         listDelDirsInAlpha,
         "alpha deleted (dirs)",
       );
+      done();
 
       if (verbose) {
         console.log("rsync's all done, now updating database");
@@ -1148,6 +1250,7 @@ export async function runMergeRsync({
         return;
       }
 
+      done = t("post rsync database update");
       // ---------- set-based base updates (fast) ----------
       db.exec(`
         DROP TABLE IF EXISTS plan_to_beta;
@@ -1332,6 +1435,7 @@ export async function runMergeRsync({
         }
       })();
 
+      done();
       // Optional hygiene on big runs
       db.exec("PRAGMA optimize");
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
