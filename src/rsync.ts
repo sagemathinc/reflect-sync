@@ -30,7 +30,8 @@ export function rsyncArgsBase(opts: {
 }) {
   const a = ["-a", "-I", "--relative"];
   if (opts.dryRun) a.unshift("-n");
-  //if (opts.verbose) a.push("-v");
+  if (verbose2) a.push("-v");
+  if (!opts.verbose) a.push("--quiet");
   return a;
   // NOTE: -I disables rsync's quick-check so listed files always copy.
 }
@@ -42,7 +43,8 @@ export function rsyncArgsDirs(opts: {
   // -d: transfer directories themselves (no recursion) — needed for empty dirs
   const a = ["-a", "-d", "--relative", "--from0"];
   if (opts.dryRun) a.unshift("-n");
-  //if (opts.verbose) a.push("-v");
+  if (verbose2) a.push("-v");
+  if (!opts.verbose) a.push("--quiet");
   return a;
 }
 
@@ -61,7 +63,8 @@ export function rsyncArgsDelete(opts: {
   if (opts.dryRun) {
     a.unshift("-n");
   }
-  //if (opts.verbose) a.push("-v");
+  if (verbose2) a.push("-v");
+  if (!opts.verbose) a.push("--quiet");
   return a;
 }
 
@@ -77,7 +80,11 @@ export function run(
       `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
     );
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, verbose2 ? { stdio: "inherit" } : {});
+    // ignore is critical for stdio since we don't read the output
+    // and there is a lot, so it would otherwise DEADLOCK.
+    const p = spawn(cmd, args, {
+      stdio: verbose2 ? "inherit" : ["ignore", "ignore", "ignore"],
+    });
     p.on("exit", (code) => {
       const zero = code === 0;
       const ok = code !== null && okCodes.includes(code!);
