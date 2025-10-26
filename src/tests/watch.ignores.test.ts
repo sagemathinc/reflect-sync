@@ -194,4 +194,23 @@ describe("HotWatchManager + ignores", () => {
 
     expect(seen.length).toBe(0);
   });
+
+  test("IGNORE_FILE writes do not emit hot events", async () => {
+    mgr = new HotWatchManager(tmp, onHotEvent, {
+      hotDepth: 2,
+      awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 20 },
+    });
+    await mgr.add("");
+    await wait(150);
+
+    // write & update the ignore file
+    const ig = join(tmp, IGNORE_FILE);
+    await fsp.writeFile(ig, "dist/\n");
+    await wait(200);
+    await fsp.appendFile(ig, "# comment\n");
+    await wait(300);
+
+    // The hot watcher should not surface these
+    expect(seen.length).toBe(0);
+  });
 });

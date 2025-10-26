@@ -135,6 +135,9 @@ export class HotWatchManager {
    * Combined ignore: local .ccsyncignore OR external predicate (e.g., other side).
    */
   isIgnored(rpath: string, isDir: boolean): boolean {
+    if (rpath.split("/").pop() == IGNORE_FILE) {
+      return true;
+    }
     const local = isDir
       ? this.localIgnoresDir(rpath)
       : this.localIgnoresFile(rpath);
@@ -169,6 +172,9 @@ export class HotWatchManager {
       // Compute rpath relative to this.root
       const rel = norm(path.relative(this.root, absN));
       const r = !rel || rel === "." ? "" : rel;
+      const base = r.split("/").pop();
+      // Drop any event on  itself (don’t propagate, don’t escalate)
+      if (base === IGNORE_FILE) return;
 
       // Determine if this is a directory event
       const isDir = ev === "addDir" || ev === "unlinkDir";

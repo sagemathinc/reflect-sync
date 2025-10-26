@@ -10,6 +10,7 @@ import { cliEntrypoint } from "./cli-util.js";
 import { getDb } from "./db.js";
 import Database from "better-sqlite3";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
+import { IGNORE_FILE } from "./constants.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -857,6 +858,13 @@ export async function runMergeRsync({
       );
       console.log("Ignores filtered plan counts (dropped):", delta);
     }
+    const dropInternal = (xs: string[]) =>
+      xs.filter((r) => r.split("/").pop() !== IGNORE_FILE);
+
+    toBeta = dropInternal(toBeta);
+    toAlpha = dropInternal(toAlpha);
+    delInBeta = dropInternal(delInBeta);
+    delInAlpha = dropInternal(delInAlpha);
 
     // copy/delete overlap (files): favor copy, drop deletion
     const delInBetaSet = asSet(delInBeta);
