@@ -50,7 +50,8 @@
     "ascii-table3": "^1.0.1",
     "better-sqlite3": "^12.4.1",
     "chokidar": "^4.0.3",
-    "commander": "^14.0.2"
+    "commander": "^14.0.2",
+    "ignore": "^7.0.5"
   },
   "devDependencies": {
     "@commander-js/extra-typings": "^14.0.0",

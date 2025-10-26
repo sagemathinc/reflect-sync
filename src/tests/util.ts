@@ -142,3 +142,17 @@ export async function setMtimeMs(p: string, whenMs: number) {
   const st = await fsp.stat(p);
   await fsp.utimes(p, st.atimeMs / 1000, whenMs / 1000);
 }
+
+export async function dirExists(p: string) {
+  return !!(await fsp
+    .stat(p)
+    .then((st) => st.isDirectory())
+    .catch(() => false));
+}
+
+export async function linkExists(p: string) {
+  return !!(await fsp
+    .lstat(p)
+    .then((st) => st.isSymbolicLink())
+    .catch(() => false));
+}

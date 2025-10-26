@@ -8,6 +8,7 @@ import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { getDb } from "./db.js";
 import Database from "better-sqlite3";
+import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -71,10 +72,13 @@ export async function runMergeRsync({
 }: MergeRsyncOptions) {
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
 
+  const alphaIg = await loadIgnoreFile(alphaRoot);
+  const betaIg = await loadIgnoreFile(betaRoot);
+
   function rsyncArgsBase() {
     const a = ["-a", "-I", "--relative"];
     if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
+    if (verbose) a.push("-v");
     return a;
     // NOTE: -I disables rsync's quick-check so listed files always copy.
   }
@@ -83,7 +87,7 @@ export async function runMergeRsync({
     // -d: transfer directories themselves (no recursion) — needed for empty dirs
     const a = ["-a", "-d", "--relative", "--from0"];
     if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
+    if (verbose) a.push("-v");
     return a;
   }
 
@@ -97,7 +101,7 @@ export async function runMergeRsync({
       "--force",
     ];
     if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
+    if (verbose) a.push("-v");
     return a;
   }
 
@@ -807,6 +811,51 @@ export async function runMergeRsync({
     toAlphaDirs = uniq(toAlphaDirs);
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
+
+    // ---------- APPLY IGNORES ----------
+    // Drop any rpaths that are ignored on either side. This makes ignores local-only:
+    // we do not copy *or* delete ignored paths, and we do not update base for them.
+    const before = verbose
+      ? {
+          toBeta: toBeta.length,
+          toAlpha: toAlpha.length,
+          delInBeta: delInBeta.length,
+          delInAlpha: delInAlpha.length,
+          toBetaDirs: toBetaDirs.length,
+          toAlphaDirs: toAlphaDirs.length,
+          delDirsInBeta: delDirsInBeta.length,
+          delDirsInAlpha: delDirsInAlpha.length,
+        }
+      : {};
+
+    const ignore = (x) => filterIgnored(x, alphaIg, betaIg);
+    toBeta = ignore(toBeta);
+    toAlpha = ignore(toAlpha);
+    delInBeta = ignore(delInBeta);
+    delInAlpha = ignore(delInAlpha);
+
+    const ignoreDirs = (x) => filterIgnoredDirs(x, alphaIg, betaIg);
+    toBetaDirs = ignoreDirs(toBetaDirs);
+    toAlphaDirs = ignoreDirs(toAlphaDirs);
+    delDirsInBeta = ignoreDirs(delDirsInBeta);
+    delDirsInAlpha = ignoreDirs(delDirsInAlpha);
+
+    if (verbose) {
+      const after = {
+        toBeta: toBeta.length,
+        toAlpha: toAlpha.length,
+        delInBeta: delInBeta.length,
+        delInAlpha: delInAlpha.length,
+        toBetaDirs: toBetaDirs.length,
+        toAlphaDirs: toAlphaDirs.length,
+        delDirsInBeta: delDirsInBeta.length,
+        delDirsInAlpha: delDirsInAlpha.length,
+      };
+      const delta = Object.fromEntries(
+        Object.entries(after).map(([k, v]) => [k, (before as any)[k] - v]),
+      );
+      console.log("Ignores filtered plan counts (dropped):", delta);
+    }
 
     // copy/delete overlap (files): favor copy, drop deletion
     const delInBetaSet = asSet(delInBeta);

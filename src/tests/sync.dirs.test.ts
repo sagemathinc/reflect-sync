@@ -6,16 +6,10 @@
 // delete-vs-create conflicts (prefer alpha/beta), and a skipped "dir→file"
 // current limitation test.
 
-import { sync, fileExists, mkCase } from "./util";
+import { sync, dirExists, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
-
-const dirExists = async (p: string) =>
-  !!(await fsp
-    .stat(p)
-    .then((st) => st.isDirectory())
-    .catch(() => false));
 
 describe("ccsync: directory semantics", () => {
   let tmp: string;

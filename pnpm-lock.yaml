@@ -26,6 +26,9 @@ importers:
       commander:
         specifier: ^14.0.2
         version: 14.0.2
+      ignore:
+        specifier: ^7.0.5
+        version: 7.0.5
     devDependencies:
       '@commander-js/extra-typings':
         specifier: ^14.0.0
@@ -1108,6 +1111,10 @@ packages:
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
+
+  ignore@7.0.5:
+    resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
+    engines: {node: '>= 4'}
 
   import-local@3.2.0:
     resolution: {integrity: sha512-2SPlun1JUPWoM6t3F0dw0FkCF/jWY8kttcY4f599GLTSjh2OCuuhdTkJQsEcZzBqbXZGKMK2OqW1oZsjtf/gQA==}
@@ -2870,6 +2877,8 @@ snapshots:
   human-signals@2.1.0: {}
 
   ieee754@1.2.1: {}
+
+  ignore@7.0.5: {}
 
   import-local@3.2.0:
     dependencies:
