@@ -98,6 +98,7 @@ program
     "remote watch command for micro-sync (emits NDJSON)",
     "ccsync watch",
   )
+  .option("--disable-hot-watch", "only sync during the full sync cycle", false)
   .action(async (opts, command) => {
     // Safety: disallow both sides remote (two-remote rsync not yet supported)
     if (opts.alphaHost && opts.betaHost) {

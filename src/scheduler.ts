@@ -47,6 +47,7 @@ export type SchedulerOptions = {
 
   remoteScanCmd: string; // e.g. "ccsync scan"
   remoteWatchCmd: string; // e.g. "ccsync watch"
+  disableHotWatch: boolean;
 
   sessionDb?: string;
   sessionId?: number;
@@ -94,6 +95,11 @@ function buildProgram(): Command {
       "remote watch command for micro-sync (emits NDJSON lines)",
       "ccsync watch",
     )
+    .option(
+      "--disable-hot-watch",
+      "only sync during the full sync cycle",
+      false,
+    )
     .option("--session-id <id>", "optional session id to enable heartbeats")
     .option("--session-db <path>", "path to session database");
 
@@ -116,6 +122,7 @@ function cliOptsToSchedulerOptions(opts: any): SchedulerOptions {
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteScanCmd: String(opts.remoteScanCmd),
     remoteWatchCmd: String(opts.remoteWatchCmd),
+    disableHotWatch: !!opts.disableHotWatch,
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
   };
@@ -161,6 +168,7 @@ export async function runScheduler({
   betaRemoteDb,
   remoteScanCmd,
   remoteWatchCmd,
+  disableHotWatch,
   sessionDb,
   sessionId,
 }: SchedulerOptions): Promise<void> {
@@ -466,6 +474,7 @@ export async function runScheduler({
   // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root>""
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
   function startRemoteDeltaStream(side: "alpha" | "beta") {
+    if (disableHotWatch) return null;
     const host = side === "alpha" ? alphaHost : betaHost;
     if (!host) return null; // only for remote sides
     const root = side === "alpha" ? alphaRoot : betaRoot;
@@ -624,40 +633,44 @@ export async function runScheduler({
     }
   }
 
-  const hotAlphaMgr = alphaIsRemote
-    ? null
-    : new HotWatchManager(alphaRoot, onAlphaHot, {
-        maxWatchers: MAX_HOT_WATCHERS,
-        ttlMs: HOT_TTL_MS,
-        hotDepth: HOT_DEPTH,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-      });
+  const hotAlphaMgr =
+    alphaIsRemote || disableHotWatch
+      ? null
+      : new HotWatchManager(alphaRoot, onAlphaHot, {
+          maxWatchers: MAX_HOT_WATCHERS,
+          ttlMs: HOT_TTL_MS,
+          hotDepth: HOT_DEPTH,
+          awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+        });
 
-  const hotBetaMgr = betaIsRemote
-    ? null
-    : new HotWatchManager(betaRoot, onBetaHot, {
-        maxWatchers: MAX_HOT_WATCHERS,
-        ttlMs: HOT_TTL_MS,
-        hotDepth: HOT_DEPTH,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-      });
+  const hotBetaMgr =
+    betaIsRemote || disableHotWatch
+      ? null
+      : new HotWatchManager(betaRoot, onBetaHot, {
+          maxWatchers: MAX_HOT_WATCHERS,
+          ttlMs: HOT_TTL_MS,
+          hotDepth: HOT_DEPTH,
+          awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+        });
 
-  const shallowAlpha = alphaIsRemote
-    ? null
-    : chokidar.watch(alphaRoot, {
-        persistent: true,
-        ignoreInitial: true,
-        depth: SHALLOW_DEPTH,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-      });
-  const shallowBeta = betaIsRemote
-    ? null
-    : chokidar.watch(betaRoot, {
-        persistent: true,
-        ignoreInitial: true,
-        depth: SHALLOW_DEPTH,
-        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-      });
+  const shallowAlpha =
+    alphaIsRemote || disableHotWatch
+      ? null
+      : chokidar.watch(alphaRoot, {
+          persistent: true,
+          ignoreInitial: true,
+          depth: SHALLOW_DEPTH,
+          awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+        });
+  const shallowBeta =
+    betaIsRemote || disableHotWatch
+      ? null
+      : chokidar.watch(betaRoot, {
+          persistent: true,
+          ignoreInitial: true,
+          depth: SHALLOW_DEPTH,
+          awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+        });
 
   function enableWatch({ watcher, root, mgr, hot }) {
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
@@ -701,7 +714,7 @@ export async function runScheduler({
   let addRemoteAlphaHotDirs: null | ((dirs: string[]) => void) = null;
   let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
-  if (alphaIsRemote && alphaHost) {
+  if (alphaIsRemote && alphaHost && !disableHotWatch) {
     const h = startSshRemoteWatch({
       side: "alpha",
       host: alphaHost,
@@ -713,7 +726,7 @@ export async function runScheduler({
     addRemoteAlphaHotDirs = h.add;
   }
 
-  if (betaIsRemote && betaHost) {
+  if (betaIsRemote && betaHost && !disableHotWatch) {
     const h = startSshRemoteWatch({
       side: "beta",
       host: betaHost,
@@ -734,6 +747,9 @@ export async function runScheduler({
     sinceTs: number,
     maxDirs = MAX_WATCHERS,
   ) {
+    if (disableHotWatch) {
+      return;
+    }
     const sdb = new Database(dbPath);
     try {
       // get recently touched paths (with some limit)
