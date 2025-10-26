@@ -1,22 +1,26 @@
-/** @type {import('jest').Config} */
+// jest.config.cjs
 module.exports = {
-  testEnvironment: 'node',
-  testMatch: ['**/tests/**/*.test.ts'],
-  verbose: true,
-
-  // ts-jest + ESM
   preset: 'ts-jest/presets/default-esm',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/tests/**/*.test.ts'],
+  moduleFileExtensions: ['ts', 'js', 'json'],
   extensionsToTreatAsEsm: ['.ts'],
+  // map ESM-style ".js" imports in TS source to the corresponding ".ts" files
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+  },
   transform: {
     '^.+\\.ts$': [
       'ts-jest',
       {
         useESM: true,
-        tsconfig: 'tsconfig.json'
-      }
+        tsconfig: {
+          module: 'ESNext',
+          target: 'ES2022',
+          sourceMap: true,
+        },
+      },
     ],
   },
-
-  // helpful if you end up with longer rsync runs
-  testTimeout: 30000
 };

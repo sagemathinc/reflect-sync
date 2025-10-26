@@ -26,6 +26,13 @@ export interface HotWatchOptions {
   ttlMs?: number; // default 30 min
   hotDepth?: number; // default 2
   awaitWriteFinish?: { stabilityThreshold: number; pollInterval: number }; // default {200, 50}
+
+  /**
+   * Optional external ignore predicate (e.g. to enforce "either-side" ignores).
+   * Receives rpath (POSIX) relative to this.root and a boolean for "is directory".
+   * If it returns true, the event is dropped.
+   */
+  isIgnored?: (rpath: string, isDir: boolean) => boolean;
 }
 
 // POSIX-normalize path (also makes Windows separators into '/')
@@ -61,7 +68,7 @@ export class HotWatchManager {
   private lru: string[] = []; // oldest first
   private opts: Required<HotWatchOptions>;
 
-  // local IGNORE_FILE matcher (hot-reloaded)
+  // local .ccsyncignore matcher (hot-reloaded)
   private ig: ReturnType<typeof ignore> | null = null;
   private igWatcher: FSWatcher | null = null;
 
@@ -78,9 +85,10 @@ export class HotWatchManager {
         stabilityThreshold: 200,
         pollInterval: 50,
       },
+      isIgnored: opts.isIgnored ?? (() => false),
     };
 
-    // kick off initial load of IGNORE_FILE and watch it for changes
+    // kick off initial load of .ccsyncignore and watch it for changes
     this.reloadIg();
     this.watchIgnoreFile();
   }
@@ -123,19 +131,17 @@ export class HotWatchManager {
     return this.ig.ignores(withSlash);
   }
 
-  // this is also called by the scheduler for the top-level
-  // shallow hot watchers
-  isIgnored(rpath: string, ev: HotWatchEvent): boolean {
-    // Determine if this is a directory event
-    const isDir = ev === "addDir" || ev === "unlinkDir";
-
+  /**
+   * Combined ignore: local .ccsyncignore OR external predicate (e.g., other side).
+   */
+  isIgnored(rpath: string, isDir: boolean): boolean {
     const local = isDir
       ? this.localIgnoresDir(rpath)
       : this.localIgnoresFile(rpath);
     if (local) {
       return true;
     }
-    return false;
+    return !!this.opts.isIgnored(rpath, isDir);
   }
 
   async add(rdir: string) {
@@ -164,10 +170,13 @@ export class HotWatchManager {
       const rel = norm(path.relative(this.root, absN));
       const r = !rel || rel === "." ? "" : rel;
 
+      // Determine if this is a directory event
+      const isDir = ev === "addDir" || ev === "unlinkDir";
+
       // Honor ignores: if ignored, drop event and stop descending
-      if (this.isIgnored(r, ev)) {
+      if (this.isIgnored(r, isDir)) {
         // If we just discovered an ignored directory, stop watching its subtree
-        if (ev === "addDir") {
+        if (isDir && ev === "addDir") {
           watcher.unwatch(absN);
         }
         return;
