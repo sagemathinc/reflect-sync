@@ -478,12 +478,12 @@ last_seen=excluded.last_seen
       .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
       .all(scan_id) as { path: string }[];
 
-    // Mark deletions: files
     const op_ts = Date.now();
-    db.prepare(`UPDATE files SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
-      op_ts,
-      scan_id,
-    );
+    db.prepare(
+      `UPDATE files
+      SET deleted = 1, op_ts = ?
+      WHERE last_seen <> ? AND deleted = 0`,
+    ).run(op_ts, scan_id);
 
     // emit-delta: Emit deletions
     if (emitDelta && toDelete.length) {
@@ -494,7 +494,7 @@ last_seen=excluded.last_seen
     }
 
     // Mark deletions: dirs
-    db.prepare(`UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
+    db.prepare(`UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`).run(
       op_ts,
       scan_id,
     );
@@ -516,7 +516,7 @@ last_seen=excluded.last_seen
       .all(scan_id) as { path: string }[];
 
     const op_ts_links = Date.now();
-    db.prepare(`UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ?`).run(
+    db.prepare(`UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`).run(
       op_ts_links,
       scan_id,
     );

@@ -180,7 +180,8 @@ export async function runMerge({
     const digestAlpha = computeSideDigest("alpha");
     const digestBeta = computeSideDigest("beta");
     if (verbose) {
-      console.log("digests:", { digestAlpha, digestBeta });
+      console.log("[digest] alpha:", digestAlpha);
+      console.log("[digest] beta:", digestBeta);
     }
 
     const lastAlpha =
