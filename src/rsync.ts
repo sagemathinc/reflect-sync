@@ -96,9 +96,11 @@ export function run(
 export async function writeNulList(file: string, items: string[]) {
   const ws = createWriteStream(file);
   for (const it of items) {
-    ws.write(it);
-    ws.write("\0");
+    if (!ws.write(it + "\0")) {
+      await new Promise<void>((resolve) => ws.once("drain", resolve));
+    }
   }
+  ws.end();
   await finished(ws);
 }
 
@@ -241,7 +243,7 @@ export async function rsyncDeleteChunked(
     }
     const listFile = path.join(
       workDir,
-      `${label.replace(/\s+/g, "-")}.${i}.list`,
+      `${label.replace(/[\s\(\)]+/g, "-")}.${i}.list`,
     );
     await writeNulList(listFile, batches[i]);
     await rsyncDelete(

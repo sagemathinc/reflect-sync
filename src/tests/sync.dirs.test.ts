@@ -136,8 +136,7 @@ describe("ccsync: directory semantics", () => {
     await expect(fsp.readFile(aFile, "utf8")).resolves.toBe("keep-me");
   });
 
-  // We auto delete a directory to allow a file at same path.
-  test("dir→file conflict (prefer beta): currently conservative, dir on alpha remains", async () => {
+  test("dir→file conflict (prefer beta): auto delete a directory to allow a file at same path", async () => {
     const r = await mkCase(tmp, "t-dir-to-file-limit");
     const aDir = join(r.aRoot, "clash");
     const bFile = join(r.bRoot, "clash");

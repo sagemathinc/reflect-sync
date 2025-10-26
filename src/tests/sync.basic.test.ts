@@ -17,7 +17,7 @@ describe("ccsync: scan → merge simple tests and conflicts (part 1)", () => {
     await fsp.rm(tmp, { recursive: true, force: true });
   });
 
-  test("create + delete propagate alpha→beta", async () => {
+  test.only("create + delete propagate alpha→beta", async () => {
     const r = await mkCase(tmp, "t-create-delete");
     const aFile = join(r.aRoot, "hello.txt");
     const bFile = join(r.bRoot, "hello.txt");

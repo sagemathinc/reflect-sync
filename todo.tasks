@@ -1,5 +1,6 @@
 {"desc":"#now make \"syncing a fully built copy of cocalc with all node\\_modules\" rock solid and fast\n","last_edited":1761502619925,"position":-2.9375,"task_id":"29cb086f-a649-4c47-a89f-7aa780d159d5"}
 {"desc":"I think at least one query for the merge plan scales very badly. super slow on a built cocalc...?\n\n","done":true,"last_edited":1761502618785,"position":-1.9375,"task_id":"1670b2bd-2366-4d7c-bb92-9b6bd4ba7940"}
+{"desc":"ccsync session reset\n","last_edited":1761502690140,"position":-3.9375,"task_id":"a902f752-410a-4828-8c97-43d1da3cf216"}
 {"desc":"ignore\n\n- [x] don't watch ignored files\n- [x] don't scan ignored files\n\n","done":true,"last_edited":1761458990155,"position":-1,"task_id":"74fd2541-de8c-4a8a-ac43-5e3fa3d283dc"}
 {"desc":"much better observability, e.g., rsync progress, what exactly is happening with sessions, etc., history\n","last_edited":1761502585693,"position":-0.9375,"task_id":"3dd34736-0885-4324-aaf0-7dc8765623ad"}
 {"desc":"propagate mode\\-only change \\(chmod \\+x\\) without content change\n","last_edited":1761502006652,"position":-0.75,"task_id":"9fdef768-cf20-425c-838c-ab1fe219afde"}

@@ -10,14 +10,7 @@ import { getDb } from "./db.js";
 import Database from "better-sqlite3";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 import { IGNORE_FILE } from "./constants.js";
-import {
-  rsyncCopy,
-  rsyncCopyDirs,
-  rsyncDelete,
-  rsyncDeleteChunked,
-} from "./rsync.js";
-
-const DELETE_CHUNKED = false;
+import { rsyncCopy, rsyncCopyDirs, rsyncDeleteChunked } from "./rsync.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -788,8 +781,63 @@ export async function runMerge({
       .all()
       .map((r) => r.rpath as string);
 
-    delInBeta = uniq([...delInBeta, ...fileConflictsInBeta]);
-    delInAlpha = uniq([...delInAlpha, ...fileConflictsInAlpha]);
+    // If alpha has a dir and beta has a file:
+    // - prefer "alpha": delete beta's file
+    // - prefer "beta": keep beta's file; remove any accidental scheduling
+    if (prefer === "alpha") {
+      delInBeta = uniq([...delInBeta, ...fileConflictsInBeta]);
+    } else {
+      const keep = new Set(fileConflictsInBeta);
+      delInBeta = delInBeta.filter((r) => !keep.has(r));
+    }
+
+    // If beta has a dir and alpha has a file:
+    // - prefer "beta": delete alpha's file
+    // - prefer "alpha": keep alpha's file; remove any accidental scheduling
+    if (prefer === "beta") {
+      delInAlpha = uniq([...delInAlpha, ...fileConflictsInAlpha]);
+    } else {
+      const keep = new Set(fileConflictsInAlpha);
+      delInAlpha = delInAlpha.filter((r) => !keep.has(r));
+    }
+
+    // --- Pre-copy dir→file cleanup sets (only used if that side is preferred) ---
+    // If beta has a file and alpha has a dir at the same rpath → when prefer=beta,
+    // we must remove the dir on alpha before copying files to alpha.
+    let preDeleteDirsOnAlphaForBetaFiles: string[] = db
+      .prepare(
+        `
+    SELECT a.rpath
+    FROM alpha_dirs_rel a
+    JOIN beta_rel b USING (rpath)
+    WHERE a.deleted = 0 AND b.deleted = 0
+  `,
+      )
+      .all()
+      .map((r) => (r as any).rpath as string);
+
+    // If alpha has a file and beta has a dir → when prefer=alpha,
+    // remove the dir on beta before copying files to beta.
+    let preDeleteDirsOnBetaForAlphaFiles: string[] = db
+      .prepare(
+        `
+    SELECT b.rpath
+    FROM beta_dirs_rel b
+    JOIN alpha_rel a USING (rpath)
+    WHERE b.deleted = 0 AND a.deleted = 0
+  `,
+      )
+      .all()
+      .map((r) => (r as any).rpath as string);
+
+    // De-dupe and deepest-first so parent dirs are removed last.
+    preDeleteDirsOnAlphaForBetaFiles = sortDeepestFirst(
+      nonRoot(uniq(preDeleteDirsOnAlphaForBetaFiles)),
+    );
+    preDeleteDirsOnBetaForAlphaFiles = sortDeepestFirst(
+      nonRoot(uniq(preDeleteDirsOnBetaForAlphaFiles)),
+    );
+
     done();
 
     done = t("safety rails");
@@ -947,16 +995,43 @@ export async function runMerge({
       dir: string,
     ): boolean {
       const d = normalizeDir(dir);
-      if (!d) return incomingSorted.length > 0; // deleting root? be conservative
+      if (!d) return incomingSorted.length > 0; // conservative for root
+
+      // 1) exact match at the same path (e.g., file replacing dir)
+      const j = lowerBound(incomingSorted, d);
+      if (j < incomingSorted.length && incomingSorted[j] === d) return true;
+
+      // 2) descendant under d/
       const prefix = d + "/";
-      // First incoming >= "d/" (all children come after this point)
       const i = lowerBound(incomingSorted, prefix);
-      if (i < incomingSorted.length) {
-        const cand = incomingSorted[i];
-        if (cand === d) return true; // exact match (dir created/copied)
-        if (cand.startsWith(prefix)) return true; // a descendant exists
+      return i < incomingSorted.length && incomingSorted[i].startsWith(prefix);
+    }
+
+    // Additional safety: if a side is preferred and we are COPYING OUT of a dir on that side,
+    // don't delete that dir there. (Protects "prefer beta → keep & restore".)
+    if (prefer === "beta" && delDirsInBeta.length) {
+      const outgoingFromBetaSorted = [...toAlpha, ...toAlphaDirs].sort();
+      const before = delDirsInBeta.length;
+      delDirsInBeta = delDirsInBeta.filter(
+        (d) => !anyIncomingUnderDir(outgoingFromBetaSorted, d),
+      );
+      if (verbose && before !== delDirsInBeta.length) {
+        console.warn(
+          `planner safety: kept ${before - delDirsInBeta.length} beta dirs (preferred source has outgoing under them)`,
+        );
       }
-      return false;
+    }
+    if (prefer === "alpha" && delDirsInAlpha.length) {
+      const outgoingFromAlphaSorted = [...toBeta, ...toBetaDirs].sort();
+      const before = delDirsInAlpha.length;
+      delDirsInAlpha = delDirsInAlpha.filter(
+        (d) => !anyIncomingUnderDir(outgoingFromAlphaSorted, d),
+      );
+      if (verbose && before !== delDirsInAlpha.length) {
+        console.warn(
+          `planner safety: kept ${before - delDirsInAlpha.length} alpha dirs (preferred source has outgoing under them)`,
+        );
+      }
     }
 
     // Sort once; merging files + dirs keeps semantics you had before
@@ -1051,45 +1126,55 @@ export async function runMerge({
 
       // 1) delete file conflicts first
       done = t("rsync: 1) delete file conflicts");
-      if (!DELETE_CHUNKED) {
-        await rsyncDelete(
-          beta,
-          alpha,
-          listDelInAlpha,
-          "alpha deleted (files)",
-          {
-            forceEmptySource: false,
-            ...rsyncOpts,
-          },
-        );
-        await rsyncDelete(alpha, beta, listDelInBeta, "beta deleted (files)", {
-          forceEmptySource: false,
+
+      await rsyncDeleteChunked(
+        tmp,
+        beta,
+        alpha,
+        delInAlpha,
+        "alpha deleted (files)",
+        {
+          forceEmptySource: true,
           ...rsyncOpts,
-        });
-      } else {
+        },
+      );
+      await rsyncDeleteChunked(
+        tmp,
+        alpha,
+        beta,
+        delInBeta,
+        "beta deleted (files)",
+        {
+          forceEmptySource: true,
+          ...rsyncOpts,
+        },
+      );
+      done();
+
+      // 1b) dir→file cleanup (remove conflicting dirs on the side where files will land)
+      done = t("rsync: 1b) dir→file cleanup");
+      if (prefer === "beta" && preDeleteDirsOnAlphaForBetaFiles.length) {
+        // Delete dirs on alpha so beta's files can be copied over
         await rsyncDeleteChunked(
           tmp,
-          beta,
           alpha,
-          delInAlpha,
-          "alpha deleted (files)",
-          {
-            forceEmptySource: true,
-            ...rsyncOpts,
-          },
-        );
-        await rsyncDeleteChunked(
-          tmp,
           alpha,
-          beta,
-          delInBeta,
-          "beta deleted (files)",
-          {
-            forceEmptySource: true,
-            ...rsyncOpts,
-          },
+          preDeleteDirsOnAlphaForBetaFiles,
+          "cleanup dir→file on alpha",
+          { forceEmptySource: true },
         );
       }
+      if (prefer === "alpha" && preDeleteDirsOnBetaForAlphaFiles.length) {
+        await rsyncDeleteChunked(
+          tmp,
+          beta,
+          beta,
+          preDeleteDirsOnBetaForAlphaFiles,
+          "cleanup dir→file on beta",
+          { forceEmptySource: true },
+        );
+      }
+
       done();
 
       // 2) create dirs (so file copies won't fail due to missing parents)
@@ -1126,51 +1211,55 @@ export async function runMerge({
 
       // 4) delete dirs last (after files removed so dirs are empty)
       done = t("rsync: 4) delete dirs");
-      if (!DELETE_CHUNKED) {
-        await rsyncDelete(
-          alpha,
-          beta,
-          listDelDirsInBeta,
-          "beta deleted (dirs)",
-          {
-            forceEmptySource: false,
-            ...rsyncOpts,
-          },
+      // Guard: never delete a dir on a side that *also* reports it as created/changed this round
+      // when that side is preferred. This protects the “prefer beta keeps & restore” case.
+      if (prefer === "beta" && delDirsInBeta.length) {
+        const isChangedB = db.prepare<[string], { one?: number }>(
+          `SELECT 1 AS one FROM tmp_dirs_changedB WHERE rpath = ?`,
         );
-        await rsyncDelete(
-          beta,
-          alpha,
-          listDelDirsInAlpha,
-          "alpha deleted (dirs)",
-          {
-            forceEmptySource: false,
-            ...rsyncOpts,
-          },
-        );
-      } else {
-        await rsyncDeleteChunked(
-          tmp,
-          alpha,
-          beta,
-          delDirsInBeta,
-          "beta deleted (dirs)",
-          {
-            forceEmptySource: true,
-            ...rsyncOpts,
-          },
-        );
-        await rsyncDeleteChunked(
-          tmp,
-          beta,
-          alpha,
-          delDirsInAlpha,
-          "alpha deleted (dirs)",
-          {
-            forceEmptySource: true,
-            ...rsyncOpts,
-          },
-        );
+        const before = delDirsInBeta.length;
+        delDirsInBeta = delDirsInBeta.filter((d) => !isChangedB.get(d)?.one);
+        if (verbose && before !== delDirsInBeta.length) {
+          console.warn(
+            `clamped ${before - delDirsInBeta.length} dir deletions in beta (dir existed on beta & prefer=beta)`,
+          );
+        }
       }
+      if (prefer === "alpha" && delDirsInAlpha.length) {
+        const isChangedA = db.prepare<[string], { one?: number }>(
+          `SELECT 1 AS one FROM tmp_dirs_changedA WHERE rpath = ?`,
+        );
+        const before = delDirsInAlpha.length;
+        delDirsInAlpha = delDirsInAlpha.filter((d) => !isChangedA.get(d)?.one);
+        if (verbose && before !== delDirsInAlpha.length) {
+          console.warn(
+            `clamped ${before - delDirsInAlpha.length} dir deletions in alpha (dir existed on alpha & prefer=alpha)`,
+          );
+        }
+      }
+
+      await rsyncDeleteChunked(
+        tmp,
+        alpha,
+        beta,
+        delDirsInBeta,
+        "beta deleted (dirs)",
+        {
+          forceEmptySource: true,
+          ...rsyncOpts,
+        },
+      );
+      await rsyncDeleteChunked(
+        tmp,
+        beta,
+        alpha,
+        delDirsInAlpha,
+        "alpha deleted (dirs)",
+        {
+          forceEmptySource: true,
+          ...rsyncOpts,
+        },
+      );
       done();
 
       if (verbose) {
@@ -1395,5 +1484,5 @@ export async function runMerge({
 }
 
 cliEntrypoint<MergeRsyncOptions>(import.meta.url, buildProgram, runMerge, {
-  label: "merge-rsync",
+  label: "merge",
 });
