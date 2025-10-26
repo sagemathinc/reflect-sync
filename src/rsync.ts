@@ -24,12 +24,25 @@ export async function fileNonEmpty(p: string, verbose?: boolean) {
   }
 }
 
-export function rsyncArgsBase(opts: {
-  dryRun?: boolean | string;
-  verbose?: boolean | string;
-}) {
+function isLocal(p: string) {
+  // crude but good enough: user@host:/path or host:/path patterns
+  return !/^[^:/]+@[^:/]+:|^[^:/]+:/.test(p);
+}
+
+export function rsyncArgsBase(
+  opts: {
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+  },
+  from: string,
+  to: string,
+) {
   const a = ["-a", "-I", "--relative"];
   if (opts.dryRun) a.unshift("-n");
+  if (isLocal(from) && isLocal(to)) {
+    // don't use the rsync delta algorithm
+    a.push("--whole-file");
+  }
   if (verbose2) a.push("-v");
   if (!opts.verbose) a.push("--quiet");
   return a;
@@ -138,7 +151,7 @@ export async function rsyncCopy(
     console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
   }
   const args = [
-    ...rsyncArgsBase(opts),
+    ...rsyncArgsBase(opts, fromRoot, toRoot),
     "--from0",
     `--files-from=${listFile}`,
     ensureTrailingSlash(fromRoot),
@@ -236,7 +249,7 @@ export async function rsyncDeleteChunked(
   } = {},
 ) {
   if (!rpaths.length) return;
-  const { chunkSize = 50000 } = opts; // good default for large waves
+  const { chunkSize = 50_000 } = opts;
   const batches = chunk(rpaths, chunkSize);
   if (opts.verbose) {
     console.log(
