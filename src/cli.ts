@@ -61,8 +61,8 @@ program
       .default("alpha"),
   )
   .action(async (opts, command) => {
-    const { runMergeRsync } = await import("./merge-rsync.js");
-    await runMergeRsync({ ...command.optsWithGlobals(), ...opts });
+    const { runMerge } = await import("./merge.js");
+    await runMerge({ ...command.optsWithGlobals(), ...opts });
   });
 
 program

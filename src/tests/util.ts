@@ -80,7 +80,7 @@ export async function sync(
     ...verboseArg,
     ...(args ?? []),
   ]);
-  await runDist("merge-rsync.js", [
+  await runDist("merge.js", [
     "--alpha-root",
     r.aRoot,
     "--beta-root",

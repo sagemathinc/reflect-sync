@@ -1,2 +1,7 @@
-{"desc":"I think at least one query for the merge plan scales very badly. super slow on a built cocalc...?\n\n","last_edited":1761438020698,"position":0,"task_id":"1670b2bd-2366-4d7c-bb92-9b6bd4ba7940"}
+{"desc":"#now make \"syncing a fully built copy of cocalc with all node\\_modules\" rock solid and fast\n","last_edited":1761502619925,"position":-2.9375,"task_id":"29cb086f-a649-4c47-a89f-7aa780d159d5"}
+{"desc":"I think at least one query for the merge plan scales very badly. super slow on a built cocalc...?\n\n","done":true,"last_edited":1761502618785,"position":-1.9375,"task_id":"1670b2bd-2366-4d7c-bb92-9b6bd4ba7940"}
 {"desc":"ignore\n\n- [x] don't watch ignored files\n- [x] don't scan ignored files\n\n","done":true,"last_edited":1761458990155,"position":-1,"task_id":"74fd2541-de8c-4a8a-ac43-5e3fa3d283dc"}
+{"desc":"much better observability, e.g., rsync progress, what exactly is happening with sessions, etc., history\n","last_edited":1761502585693,"position":-0.9375,"task_id":"3dd34736-0885-4324-aaf0-7dc8765623ad"}
+{"desc":"propagate mode\\-only change \\(chmod \\+x\\) without content change\n","last_edited":1761502006652,"position":-0.75,"task_id":"9fdef768-cf20-425c-838c-ab1fe219afde"}
+{"desc":"propagate uid/gid using numeric ids\n","last_edited":1761501997595,"position":-0.5,"task_id":"25d2f344-f73c-421e-8488-55aad5da4865"}
+{"desc":"stress testing \\(large randomized sync runs\\)\n","last_edited":1761502572848,"position":-0.875,"task_id":"f9ce7c5f-2f27-4c2c-be12-3832f1186c71"}

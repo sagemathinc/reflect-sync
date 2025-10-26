@@ -7,7 +7,7 @@
 //
 // Notes:
 // * Local watchers only; remote changes arrive via remote watch stream.
-// * Full-cycle still uses "ccsync merge" (your merge-rsync.ts).
+// * Full-cycle still uses "ccsync merge" (your merge.ts).
 // * Test knobs are env-based: SCHED_MIN_MS, MICRO_DEBOUNCE_MS, etc.
 
 import { spawn, SpawnOptions, ChildProcess } from "node:child_process";

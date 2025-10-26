@@ -1,9 +1,8 @@
-#!/usr/bin/env nodeargs
+#!/usr/bin/env node
 
-// merge-rsync.ts
-import { spawn } from "node:child_process";
+// merge.ts
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, writeFile, stat as fsStat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -11,6 +10,14 @@ import { getDb } from "./db.js";
 import Database from "better-sqlite3";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 import { IGNORE_FILE } from "./constants.js";
+import {
+  rsyncCopy,
+  rsyncCopyDirs,
+  rsyncDelete,
+  rsyncDeleteChunked,
+} from "./rsync.js";
+
+const DELETE_CHUNKED = false;
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -59,7 +66,7 @@ function join0(items: string[]) {
     : Buffer.alloc(0);
 }
 
-export async function runMergeRsync({
+export async function runMerge({
   alphaRoot,
   betaRoot,
   alphaDb,
@@ -73,6 +80,7 @@ export async function runMergeRsync({
   verbose,
 }: MergeRsyncOptions) {
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
+  const rsyncOpts = { dryRun, verbose };
 
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);
@@ -88,75 +96,6 @@ export async function runMergeRsync({
       if (dt > 20) console.log(`[phase] ${label}: ${dt} ms`);
     };
   };
-
-  function rsyncArgsBase() {
-    const a = ["-a", "-I", "--relative"];
-    if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
-    return a;
-    // NOTE: -I disables rsync's quick-check so listed files always copy.
-  }
-
-  function rsyncArgsDirs() {
-    // -d: transfer directories themselves (no recursion) — needed for empty dirs
-    const a = ["-a", "-d", "--relative", "--from0"];
-    if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
-    return a;
-  }
-
-  function rsyncArgsDelete() {
-    const a = [
-      "-a",
-      "--relative",
-      "--from0",
-      "--ignore-missing-args",
-      "--delete-missing-args",
-      "--force",
-    ];
-    if (dryRun) a.unshift("-n");
-    //if (verbose) a.push("-v");
-    return a;
-  }
-
-  async function fileNonEmpty(p: string) {
-    try {
-      return (await fsStat(p)).size > 0;
-    } catch (err) {
-      if (verbose) console.warn("fileNonEmpty ", p, err);
-      return false;
-    }
-  }
-
-  function run(
-    cmd: string,
-    args: string[],
-    okCodes: number[] = [0],
-  ): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
-    const t = Date.now();
-    if (verbose)
-      console.log(
-        `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
-      );
-    return new Promise((resolve) => {
-      const p = spawn(cmd, args); //, verbose ? { stdio: "inherit" } : undefined);
-      p.on("exit", (code) => {
-        const zero = code === 0;
-        const ok = code !== null && okCodes.includes(code!);
-        resolve({ code, ok, zero });
-        if (verbose) {
-          console.log("time:", Date.now() - t, "ms");
-        }
-      });
-      p.on("error", () =>
-        resolve({ code: 1, ok: okCodes.includes(1), zero: false }),
-      );
-    });
-  }
-
-  function ensureTrailingSlash(root: string): string {
-    return root.endsWith("/") ? root : root + "/";
-  }
 
   // small helpers used by safety rails
   const asSet = (xs: string[]) => new Set(xs);
@@ -921,13 +860,13 @@ export async function runMergeRsync({
         }
       : {};
 
-    const ignore = (x) => filterIgnored(x, alphaIg, betaIg);
+    const ignore = (x: string[]) => filterIgnored(x, alphaIg, betaIg);
     toBeta = ignore(toBeta);
     toAlpha = ignore(toAlpha);
     delInBeta = ignore(delInBeta);
     delInAlpha = ignore(delInAlpha);
 
-    const ignoreDirs = (x) => filterIgnoredDirs(x, alphaIg, betaIg);
+    const ignoreDirs = (x: string[]) => filterIgnoredDirs(x, alphaIg, betaIg);
     toBetaDirs = ignoreDirs(toBetaDirs);
     toAlphaDirs = ignoreDirs(toAlphaDirs);
     delDirsInBeta = ignoreDirs(delDirsInBeta);
@@ -1107,137 +1046,131 @@ export async function runMergeRsync({
       let copyDirsAlphaBetaZero = false;
       let copyDirsBetaAlphaZero = false;
 
-      async function rsyncCopy(
-        fromRoot: string,
-        toRoot: string,
-        listFile: string,
-        label: string,
-      ) {
-        if (!(await fileNonEmpty(listFile))) {
-          if (verbose) console.log(`>>> rsync ${label}: nothing to do`);
-          return { zero: false };
-        }
-        if (verbose) {
-          console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
-        }
-        const args = [
-          ...rsyncArgsBase(),
-          "--from0",
-          `--files-from=${listFile}`,
-          ensureTrailingSlash(fromRoot),
-          ensureTrailingSlash(toRoot),
-        ];
-        const res = await run("rsync", args, [0, 23, 24]); // accept partials
-        if (verbose) {
-          console.log(`>>> rsync ${label}: done (code ${res.code})`);
-        }
-        return { zero: res.zero };
-      }
-
-      async function rsyncCopyDirs(
-        fromRoot: string,
-        toRoot: string,
-        listFile: string,
-        label: string,
-      ) {
-        if (!(await fileNonEmpty(listFile))) {
-          if (verbose) console.log(`>>> rsync ${label} (dirs): nothing to do`);
-          return { zero: false };
-        }
-        if (verbose) {
-          console.log(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
-        }
-        const args = [
-          ...rsyncArgsDirs(),
-          `--files-from=${listFile}`,
-          ensureTrailingSlash(fromRoot),
-          ensureTrailingSlash(toRoot),
-        ];
-        const res = await run("rsync", args, [0, 23, 24]);
-        if (verbose) {
-          console.log(`>>> rsync ${label} (dirs): done (code ${res.code})`);
-        }
-        return { zero: res.zero };
-      }
-
-      async function rsyncDelete(
-        fromRoot: string,
-        toRoot: string,
-        listFile: string,
-        label: string,
-        opts: { forceEmptySource?: boolean } = {},
-      ) {
-        if (!(await fileNonEmpty(listFile))) {
-          if (verbose) console.log(`>>> rsync delete ${label}: nothing to do`);
-          return;
-        }
-
-        // Force all listed paths to be "missing" by using an empty temp source dir
-        let sourceRoot = ensureTrailingSlash(fromRoot);
-        let tmpEmptyDir: string | null = null;
-        try {
-          if (opts.forceEmptySource) {
-            tmpEmptyDir = await mkdtemp(path.join(tmpdir(), "rsync-empty-"));
-            sourceRoot = ensureTrailingSlash(tmpEmptyDir);
-          }
-
-          if (verbose) {
-            console.log(
-              `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
-            );
-          }
-          const args = [
-            ...rsyncArgsDelete(), // includes --delete-missing-args --force
-            `--files-from=${listFile}`,
-            sourceRoot,
-            ensureTrailingSlash(toRoot),
-          ];
-          await run("rsync", args, [0, 24]);
-        } finally {
-          if (tmpEmptyDir) {
-            await rm(tmpEmptyDir, { recursive: true, force: true });
-          }
-        }
-      }
-
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
 
       // 1) delete file conflicts first
       done = t("rsync: 1) delete file conflicts");
-      await rsyncDelete(beta, alpha, listDelInAlpha, "alpha deleted (files)");
-      await rsyncDelete(alpha, beta, listDelInBeta, "beta deleted (files)");
+      if (!DELETE_CHUNKED) {
+        await rsyncDelete(
+          beta,
+          alpha,
+          listDelInAlpha,
+          "alpha deleted (files)",
+          {
+            forceEmptySource: false,
+            ...rsyncOpts,
+          },
+        );
+        await rsyncDelete(alpha, beta, listDelInBeta, "beta deleted (files)", {
+          forceEmptySource: false,
+          ...rsyncOpts,
+        });
+      } else {
+        await rsyncDeleteChunked(
+          tmp,
+          beta,
+          alpha,
+          delInAlpha,
+          "alpha deleted (files)",
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+          },
+        );
+        await rsyncDeleteChunked(
+          tmp,
+          alpha,
+          beta,
+          delInBeta,
+          "beta deleted (files)",
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+          },
+        );
+      }
       done();
 
       // 2) create dirs (so file copies won't fail due to missing parents)
       done = t("rsync: 2) create dirs");
       copyDirsAlphaBetaZero = (
-        await rsyncCopyDirs(alpha, beta, listToBetaDirs, "alpha→beta")
+        await rsyncCopyDirs(
+          alpha,
+          beta,
+          listToBetaDirs,
+          "alpha→beta",
+          rsyncOpts,
+        )
       ).zero;
       copyDirsBetaAlphaZero = (
-        await rsyncCopyDirs(beta, alpha, listToAlphaDirs, "beta→alpha")
+        await rsyncCopyDirs(
+          beta,
+          alpha,
+          listToAlphaDirs,
+          "beta→alpha",
+          rsyncOpts,
+        )
       ).zero;
       done();
 
       // 3) copy files
       done = t("rsync: 3) copy files");
       copyAlphaBetaZero = (
-        await rsyncCopy(alpha, beta, listToBeta, "alpha→beta")
+        await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
       ).zero;
       copyBetaAlphaZero = (
-        await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha")
+        await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
       ).zero;
       done();
 
       // 4) delete dirs last (after files removed so dirs are empty)
       done = t("rsync: 4) delete dirs");
-      await rsyncDelete(alpha, beta, listDelDirsInBeta, "beta deleted (dirs)");
-      await rsyncDelete(
-        beta,
-        alpha,
-        listDelDirsInAlpha,
-        "alpha deleted (dirs)",
-      );
+      if (!DELETE_CHUNKED) {
+        await rsyncDelete(
+          alpha,
+          beta,
+          listDelDirsInBeta,
+          "beta deleted (dirs)",
+          {
+            forceEmptySource: false,
+            ...rsyncOpts,
+          },
+        );
+        await rsyncDelete(
+          beta,
+          alpha,
+          listDelDirsInAlpha,
+          "alpha deleted (dirs)",
+          {
+            forceEmptySource: false,
+            ...rsyncOpts,
+          },
+        );
+      } else {
+        await rsyncDeleteChunked(
+          tmp,
+          alpha,
+          beta,
+          delDirsInBeta,
+          "beta deleted (dirs)",
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+          },
+        );
+        await rsyncDeleteChunked(
+          tmp,
+          beta,
+          alpha,
+          delDirsInAlpha,
+          "alpha deleted (dirs)",
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+          },
+        );
+      }
       done();
 
       if (verbose) {
@@ -1461,6 +1394,6 @@ export async function runMergeRsync({
   main();
 }
 
-cliEntrypoint<MergeRsyncOptions>(import.meta.url, buildProgram, runMergeRsync, {
+cliEntrypoint<MergeRsyncOptions>(import.meta.url, buildProgram, runMerge, {
   label: "merge-rsync",
 });
