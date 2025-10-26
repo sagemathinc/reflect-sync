@@ -1,6 +1,7 @@
 import ignore from "ignore";
 import path from "node:path";
 import { readFile, access } from "node:fs/promises";
+import { IGNORE_FILE } from "./constants.js";
 
 export type Ignorer = {
   ignoresFile: (r: string) => boolean; // file/symlink path
@@ -10,7 +11,7 @@ export type Ignorer = {
 
 export async function loadIgnoreFile(root: string): Promise<Ignorer> {
   const ig = ignore();
-  const file = path.join(root, ".ccsyncignore");
+  const file = path.join(root, IGNORE_FILE);
   try {
     await access(file);
     const raw = await readFile(file, "utf8");

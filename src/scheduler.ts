@@ -676,6 +676,10 @@ export async function runScheduler({
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
       watcher.on(evt as any, async (p: string) => {
         const r = rel(root, p);
+        if (mgr.isIgnored(r, evt)) {
+          return;
+        }
+
         const rdir = parentDir(r);
 
         // Seed/bump a hot watcher for the directory

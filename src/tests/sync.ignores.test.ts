@@ -9,8 +9,9 @@ import { sync, dirExists, fileExists, linkExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
+import { IGNORE_FILE } from "../constants";
 
-describe("ccsync: ignore rules (.ccsyncignore)", () => {
+describe("ccsync: ignore rules (IGNORE_FILE)", () => {
   let tmp: string;
 
   beforeAll(async () => {
@@ -24,7 +25,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("*.log ignored on alpha prevents alpha→beta copy", async () => {
     const r = await mkCase(tmp, "t-ig-alpha-nocopy");
-    const aIg = join(r.aRoot, ".ccsyncignore");
+    const aIg = join(r.aRoot, IGNORE_FILE);
     const aLogs = join(r.aRoot, "logs");
     const aLog = join(aLogs, "app.log");
     const bLog = join(r.bRoot, "logs", "app.log");
@@ -40,7 +41,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("ignore prevents delete (alpha ignores path, deletes locally; beta keeps its copy)", async () => {
     const r = await mkCase(tmp, "t-ig-no-delete");
-    const aIg = join(r.aRoot, ".ccsyncignore");
+    const aIg = join(r.aRoot, IGNORE_FILE);
     const aFile = join(r.aRoot, "keep.txt");
     const bFile = join(r.bRoot, "keep.txt");
 
@@ -61,7 +62,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("dir-level ignore 'dist/' excludes its entire subtree", async () => {
     const r = await mkCase(tmp, "t-ig-dist-dir");
-    const aIg = join(r.aRoot, ".ccsyncignore");
+    const aIg = join(r.aRoot, IGNORE_FILE);
     const aDist = join(r.aRoot, "dist");
     const aA = join(aDist, "a.txt");
     const aB = join(aDist, "sub", "b.txt");
@@ -83,7 +84,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("symlink path ignored under links/**", async () => {
     const r = await mkCase(tmp, "t-ig-links-symlink");
-    const aIg = join(r.aRoot, ".ccsyncignore");
+    const aIg = join(r.aRoot, IGNORE_FILE);
     const aLinks = join(r.aRoot, "links");
     const aT = join(aLinks, "target.txt");
     const aL = join(aLinks, "a.lnk");
@@ -106,7 +107,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("beta-only ignore blocks incoming copy", async () => {
     const r = await mkCase(tmp, "t-ig-beta-copy");
-    const bIg = join(r.bRoot, ".ccsyncignore");
+    const bIg = join(r.bRoot, IGNORE_FILE);
     const aTmp = join(r.aRoot, "cache.tmp");
     const bTmp = join(r.bRoot, "cache.tmp");
 
@@ -119,7 +120,7 @@ describe("ccsync: ignore rules (.ccsyncignore)", () => {
 
   test("beta-only ignore blocks delete after seeding", async () => {
     const r = await mkCase(tmp, "t-ig-beta-delete");
-    const bIg = join(r.bRoot, ".ccsyncignore");
+    const bIg = join(r.bRoot, IGNORE_FILE);
     const aCache = join(r.aRoot, "persist.cache");
     const bCache = join(r.bRoot, "persist.cache");
 

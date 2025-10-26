@@ -4,6 +4,7 @@ import path from "node:path";
 import { MAX_WATCHERS } from "./defaults.js";
 import ignore from "ignore";
 import { access, readFile } from "node:fs/promises";
+import { IGNORE_FILE } from "./constants.js";
 
 export type HotWatchEvent =
   | "add"
@@ -25,13 +26,6 @@ export interface HotWatchOptions {
   ttlMs?: number; // default 30 min
   hotDepth?: number; // default 2
   awaitWriteFinish?: { stabilityThreshold: number; pollInterval: number }; // default {200, 50}
-
-  /**
-   * Optional external ignore predicate (e.g. to enforce "either-side" ignores).
-   * Receives rpath (POSIX) relative to this.root and a boolean for "is directory".
-   * If it returns true, the event is dropped.
-   */
-  isIgnored?: (rpath: string, isDir: boolean) => boolean;
 }
 
 // POSIX-normalize path (also makes Windows separators into '/')
@@ -67,7 +61,7 @@ export class HotWatchManager {
   private lru: string[] = []; // oldest first
   private opts: Required<HotWatchOptions>;
 
-  // local .ccsyncignore matcher (hot-reloaded)
+  // local IGNORE_FILE matcher (hot-reloaded)
   private ig: ReturnType<typeof ignore> | null = null;
   private igWatcher: FSWatcher | null = null;
 
@@ -84,10 +78,9 @@ export class HotWatchManager {
         stabilityThreshold: 200,
         pollInterval: 50,
       },
-      isIgnored: opts.isIgnored ?? (() => false),
     };
 
-    // kick off initial load of .ccsyncignore and watch it for changes
+    // kick off initial load of IGNORE_FILE and watch it for changes
     this.reloadIg();
     this.watchIgnoreFile();
   }
@@ -98,7 +91,7 @@ export class HotWatchManager {
 
   private async reloadIg() {
     const ig = ignore();
-    const igPath = path.join(this.root, ".ccsyncignore");
+    const igPath = path.join(this.root, IGNORE_FILE);
     try {
       await access(igPath);
       const raw = await readFile(igPath, "utf8");
@@ -111,7 +104,7 @@ export class HotWatchManager {
   }
 
   private watchIgnoreFile() {
-    const igPath = path.join(this.root, ".ccsyncignore");
+    const igPath = path.join(this.root, IGNORE_FILE);
     this.igWatcher = chokidar
       .watch(igPath, { ignoreInitial: true, depth: 0, persistent: true })
       .on("add", () => this.reloadIg())
@@ -130,17 +123,19 @@ export class HotWatchManager {
     return this.ig.ignores(withSlash);
   }
 
-  /**
-   * Combined ignore: local .ccsyncignore OR external predicate (e.g., other side).
-   */
-  private isIgnored(rpath: string, isDir: boolean): boolean {
+  // this is also called by the scheduler for the top-level
+  // shallow hot watchers
+  isIgnored(rpath: string, ev: HotWatchEvent): boolean {
+    // Determine if this is a directory event
+    const isDir = ev === "addDir" || ev === "unlinkDir";
+
     const local = isDir
       ? this.localIgnoresDir(rpath)
       : this.localIgnoresFile(rpath);
     if (local) {
       return true;
     }
-    return !!this.opts.isIgnored(rpath, isDir);
+    return false;
   }
 
   async add(rdir: string) {
@@ -169,13 +164,10 @@ export class HotWatchManager {
       const rel = norm(path.relative(this.root, absN));
       const r = !rel || rel === "." ? "" : rel;
 
-      // Determine if this is a directory event
-      const isDir = ev === "addDir" || ev === "unlinkDir";
-
       // Honor ignores: if ignored, drop event and stop descending
-      if (this.isIgnored(r, isDir)) {
+      if (this.isIgnored(r, ev)) {
         // If we just discovered an ignored directory, stop watching its subtree
-        if (isDir && ev === "addDir") {
+        if (ev === "addDir") {
           watcher.unwatch(absN);
         }
         return;
