@@ -1160,39 +1160,57 @@ export async function runMergeRsync({
         DROP TABLE IF EXISTS plan_dirs_del_beta;
         DROP TABLE IF EXISTS plan_dirs_del_alpha;
 
-        CREATE TEMP TABLE plan_to_beta  (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_to_alpha (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_del_beta (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_del_alpha(rpath TEXT PRIMARY KEY);
+        CREATE TEMP TABLE plan_to_beta  (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_to_alpha (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_del_beta (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_del_alpha(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
 
-        CREATE TEMP TABLE plan_dirs_to_beta  (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_dirs_to_alpha (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_dirs_del_beta (rpath TEXT PRIMARY KEY);
-        CREATE TEMP TABLE plan_dirs_del_alpha(rpath TEXT PRIMARY KEY);
+        CREATE TEMP TABLE plan_dirs_to_beta  (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_dirs_to_alpha (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_dirs_del_beta (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_dirs_del_alpha(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
       `);
 
-      const ins = (tbl: string) =>
-        db.prepare(`INSERT OR IGNORE INTO ${tbl}(rpath) VALUES (?)`);
-      const insToBeta = ins("plan_to_beta");
-      const insToAlpha = ins("plan_to_alpha");
-      const insDelBeta = ins("plan_del_beta");
-      const insDelAlpha = ins("plan_del_alpha");
-      const insDirToBeta = ins("plan_dirs_to_beta");
-      const insDirToAlpha = ins("plan_dirs_to_alpha");
-      const insDirDelBeta = ins("plan_dirs_del_beta");
-      const insDirDelAlpha = ins("plan_dirs_del_alpha");
+      // Insert many rpaths in one statement (chunked to avoid param limits).
+      // The param limit in sqlite is by default 32766, so chunk should be less
+      // than that.
+      function bulkInsert(table: string, rows: string[], chunk = 5000) {
+        if (!rows.length) return;
+        for (let i = 0; i < rows.length; i += chunk) {
+          const slice = rows.slice(i, i + chunk);
+          const placeholders = slice.map(() => "(?)").join(",");
+          db.prepare(
+            `INSERT OR IGNORE INTO ${table}(rpath) VALUES ${placeholders}`,
+          ).run(...slice);
+        }
+      }
 
-      db.transaction(() => {
-        for (const r of toBeta) insToBeta.run(r);
-        for (const r of toAlpha) insToAlpha.run(r);
-        for (const r of delInBeta) insDelBeta.run(r);
-        for (const r of delInAlpha) insDelAlpha.run(r);
+      // (Optional) tiny timer wrapper to see wins
+      function timed(label: string, fn: () => void) {
+        if (!verbose) {
+          fn();
+          return;
+        }
+        const t0 = Date.now();
+        fn();
+        const dt = Date.now() - t0;
+        if (dt > 10) console.log(`[plan] ${label}: ${dt} ms`);
+      }
 
-        for (const r of toBetaDirs) insDirToBeta.run(r);
-        for (const r of toAlphaDirs) insDirToAlpha.run(r);
-        for (const r of delDirsInBeta) insDirDelBeta.run(r);
-        for (const r of delDirsInAlpha) insDirDelAlpha.run(r);
-      })();
+      timed("insert plan tables", () => {
+        const tx = db.transaction(() => {
+          bulkInsert("plan_to_beta", toBeta);
+          bulkInsert("plan_to_alpha", toAlpha);
+          bulkInsert("plan_del_beta", delInBeta);
+          bulkInsert("plan_del_alpha", delInAlpha);
+
+          bulkInsert("plan_dirs_to_beta", toBetaDirs);
+          bulkInsert("plan_dirs_to_alpha", toAlphaDirs);
+          bulkInsert("plan_dirs_del_beta", delDirsInBeta);
+          bulkInsert("plan_dirs_del_alpha", delDirsInAlpha);
+        });
+        tx();
+      });
 
       // Index plan tables for faster joins on big sets
       db.exec(`
