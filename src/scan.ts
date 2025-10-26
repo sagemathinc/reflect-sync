@@ -8,6 +8,8 @@ import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { xxh128String } from "./hash.js";
+import path from "node:path";
+import { loadIgnoreFile, normalizeR } from "./ignore.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -264,15 +266,32 @@ last_seen=excluded.last_seen
     const t0 = Date.now();
     const scan_id = Date.now();
 
+    const absRoot = path.resolve(root);
+    const toR = (abs: string) => normalizeR(path.relative(absRoot, abs));
+
+    // Load per-root ignore matcher (gitignore semantics)
+    const ig = await loadIgnoreFile(absRoot);
+
     // stream entries with stats so we avoid a second stat in main thread
-    const stream = walk.walkStream(root, {
+    const stream = walk.walkStream(absRoot, {
       stats: true,
       followSymbolicLinks: false,
       concurrency: 128,
-      entryFilter: (e) =>
-        e.dirent.isFile() ||
-        e.dirent.isDirectory() ||
-        e.dirent.isSymbolicLink(),
+      // Do not descend into ignored directories
+      deepFilter: (e) => {
+        if (e.dirent.isDirectory()) {
+          const r = toR(e.path);
+          return !ig.ignoresDir(r);
+        }
+        return true;
+      },
+      // Do not emit ignored directories/files/links as entries
+      entryFilter: (e) => {
+        const r = toR(e.path);
+        if (e.dirent.isDirectory()) return !ig.ignoresDir(r);
+        // For files & symlinks, ignore file-style rules
+        return !ig.ignoresFile(r);
+      },
       errorFilter: () => true,
     });
 
@@ -309,19 +328,17 @@ last_seen=excluded.last_seen
       path: string;
       stats: import("fs").Stats;
     }>) {
-      const full = entry.path; // already full path
+      const full = entry.path; // absolute
       const st = entry.stats!;
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
 
       if (entry.dirent.isDirectory()) {
-        // directory ops don't bump mtime reliably, so we use
-        // operation time.
+        // directory ops don't bump mtime reliably, so we use op time.
         const op_ts = Date.now();
         dirMetaBuf.push({ path: full, ctime, mtime, scan_id, op_ts });
 
-        // emit-delta: dir create/update (we don’t care which;
-        // downstream treats as “ensure exists”)
+        // emit-delta: dir ensure
         if (emitDelta) {
           emitObj({
             kind: "dir",
@@ -453,7 +470,6 @@ last_seen=excluded.last_seen
     flushDeltaBuf();
 
     // Compute deletions (anything not seen this pass and not already deleted)
-    // Select first so we know which paths to emit as deletions.
     const toDelete = db
       .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
       .all(scan_id) as { path: string }[];
