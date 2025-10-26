@@ -1,2 +1,2 @@
 {"desc":"I think at least one query for the merge plan scales very badly. super slow on a built cocalc...?\n\n","last_edited":1761438020698,"position":0,"task_id":"1670b2bd-2366-4d7c-bb92-9b6bd4ba7940"}
-{"desc":"ignore\n\n- [x] don't watch ignored files\n- [ ] don't scan ignored files\n\n","last_edited":1761457538787,"position":-1,"task_id":"74fd2541-de8c-4a8a-ac43-5e3fa3d283dc"}
+{"desc":"ignore\n\n- [x] don't watch ignored files\n- [x] don't scan ignored files\n\n","done":true,"last_edited":1761458990155,"position":-1,"task_id":"74fd2541-de8c-4a8a-ac43-5e3fa3d283dc"}

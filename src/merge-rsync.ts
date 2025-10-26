@@ -214,10 +214,22 @@ export async function runMergeRsync({
       `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
     );
 
+    // Define the *_rel tables with a primary key and WITHOUT ROWID.
+    // This makes rpath unique, saves memory, and gives you an implicit PK index.
+
     db.prepare(
       `
-      CREATE TEMP TABLE alpha_rel AS
-      SELECT
+     CREATE TEMP TABLE alpha_rel(
+       rpath TEXT PRIMARY KEY,
+       hash  TEXT,
+       deleted INTEGER,
+       op_ts  INTEGER
+     ) WITHOUT ROWID;
+    `,
+    ).run();
+    db.prepare(
+      `
+     INSERT INTO alpha_rel SELECT
         CASE
           WHEN instr(path, (:alphaRoot || '/')) = 1 THEN substr(path, length(:alphaRoot) + 2)
           WHEN path = :alphaRoot THEN '' ELSE path
@@ -228,8 +240,16 @@ export async function runMergeRsync({
 
     db.prepare(
       `
-      CREATE TEMP TABLE beta_rel AS
-      SELECT
+    CREATE TEMP TABLE beta_rel(
+      rpath TEXT PRIMARY KEY,
+      hash  TEXT,
+      deleted INTEGER,
+      op_ts  INTEGER
+    ) WITHOUT ROWID;`,
+    ).run();
+    db.prepare(
+      `
+    INSERT INTO beta_rel SELECT
         CASE
           WHEN instr(path, (:betaRoot || '/')) = 1 THEN substr(path, length(:betaRoot) + 2)
           WHEN path = :betaRoot THEN '' ELSE path
@@ -308,6 +328,19 @@ export async function runMergeRsync({
       CREATE INDEX IF NOT EXISTS idx_alpha_dirs_rel_rpath  ON alpha_dirs_rel(rpath);
       CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_rpath   ON beta_dirs_rel(rpath);
       CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_rpath   ON base_dirs_rel(rpath);
+    `);
+
+    // composite indexes to speed up queries involving deleted
+    db.exec(`
+    -- For files
+    CREATE INDEX IF NOT EXISTS idx_alpha_rel_deleted_rpath ON alpha_rel(deleted, rpath);
+    CREATE INDEX IF NOT EXISTS idx_beta_rel_deleted_rpath  ON beta_rel(deleted, rpath);
+    CREATE INDEX IF NOT EXISTS idx_base_rel_deleted_rpath  ON base_rel(deleted, rpath);
+
+    -- For dirs
+    CREATE INDEX IF NOT EXISTS idx_alpha_dirs_rel_deleted_rpath ON alpha_dirs_rel(deleted, rpath);
+    CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_deleted_rpath  ON beta_dirs_rel(deleted, rpath);
+    CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_deleted_rpath  ON base_dirs_rel(deleted, rpath);
     `);
 
     // ---------- 3-way plan: FILES (change/delete sets) ----------
@@ -411,10 +444,6 @@ export async function runMergeRsync({
           AND (
             ? <> 'beta' OR (
               a.rpath NOT IN (SELECT rpath FROM tmp_deletedB)
-              AND NOT EXISTS (
-                SELECT 1 FROM tmp_dirs_deletedB d
-                WHERE a.rpath = d.rpath OR a.rpath LIKE d.rpath || '/%'
-              )
             )
           )
       `,
@@ -432,10 +461,6 @@ export async function runMergeRsync({
           AND (
             ? <> 'alpha' OR (
               b.rpath NOT IN (SELECT rpath FROM tmp_deletedA)
-              AND NOT EXISTS (
-                SELECT 1 FROM tmp_dirs_deletedA d
-                WHERE b.rpath = d.rpath OR b.rpath LIKE d.rpath || '/%'
-              )
             )
           )
       `,
@@ -805,6 +830,8 @@ export async function runMergeRsync({
     delInAlpha = uniq([...delInAlpha, ...fileConflictsInAlpha]);
 
     // ---------- SAFETY RAILS ----------
+    // These are not "just" safety -- they are important since doing them
+    // in sql is slow.
     toBeta = uniq(toBeta);
     toAlpha = uniq(toAlpha);
     delInBeta = uniq(delInBeta);
@@ -813,6 +840,42 @@ export async function runMergeRsync({
     toAlphaDirs = uniq(toAlphaDirs);
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
+
+    // --- JS guard to block copies into a side that deleted a parent dir (by preference) ---
+    function makePrefixChecker(dirs: string[]) {
+      // Normalize and sort longest-first for early exits
+      const ps = dirs
+        .map((d) => (d.endsWith("/") ? d.slice(0, -1) : d))
+        .filter((d) => d && d !== ".")
+        .sort((a, b) => b.length - a.length);
+      return (p: string) => {
+        for (const pre of ps) {
+          if (p === pre || p.startsWith(pre + "/")) return true;
+        }
+        return false;
+      };
+    }
+
+    // We only need the raw deleted-dir *candidates* from the tmp tables:
+    const deletedDirsA = db
+      .prepare(`SELECT rpath FROM tmp_dirs_deletedA`)
+      .all()
+      .map((r: any) => r.rpath as string);
+    const deletedDirsB = db
+      .prepare(`SELECT rpath FROM tmp_dirs_deletedB`)
+      .all()
+      .map((r: any) => r.rpath as string);
+
+    if (prefer === "alpha" && deletedDirsA.length) {
+      const underADeleted = makePrefixChecker(deletedDirsA);
+      // Block beta→alpha copies that land under a dir alpha deleted
+      toAlpha = toAlpha.filter((r) => !underADeleted(r));
+    }
+    if (prefer === "beta" && deletedDirsB.length) {
+      const underBDeleted = makePrefixChecker(deletedDirsB);
+      // Block alpha→beta copies that land under a dir beta deleted
+      toBeta = toBeta.filter((r) => !underBDeleted(r));
+    }
 
     // ---------- APPLY IGNORES ----------
     // Drop any rpaths that are ignored on either side. This makes ignores local-only:
