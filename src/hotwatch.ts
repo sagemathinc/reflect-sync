@@ -33,6 +33,8 @@ export interface HotWatchOptions {
    * If it returns true, the event is dropped.
    */
   isIgnored?: (rpath: string, isDir: boolean) => boolean;
+
+  verbose?: boolean;
 }
 
 // POSIX-normalize path (also makes Windows separators into '/')
@@ -86,6 +88,7 @@ export class HotWatchManager {
         pollInterval: 50,
       },
       isIgnored: opts.isIgnored ?? (() => false),
+      verbose: !!opts.verbose,
     };
 
     // kick off initial load of .ccsyncignore and watch it for changes
@@ -165,6 +168,15 @@ export class HotWatchManager {
       awaitWriteFinish: this.opts.awaitWriteFinish,
       // (We filter precisely in the handler; leaving this unset avoids extra stats.)
     });
+    watcher.on(
+      "error",
+      this.opts.verbose
+        ? (err) => {
+            // e.g., a symlink loop "b -> b" in a watched path will cause this
+            console.log("WARNING: hot watch error", err);
+          }
+        : () => {},
+    );
 
     const handler = async (ev: HotWatchEvent, abs: string) => {
       const absN = norm(abs);

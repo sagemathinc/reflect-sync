@@ -656,6 +656,14 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
+  shallowAlpha?.on(
+    "error",
+    verbose
+      ? (err) => {
+          console.log("WARNING: shallowAlpha watch error", err);
+        }
+      : () => {},
+  );
   const shallowBeta =
     betaIsRemote || disableHotWatch
       ? null
@@ -665,6 +673,14 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
+  shallowBeta?.on(
+    "error",
+    verbose
+      ? (err) => {
+          console.log("WARNING: shallowBeta watch error", err);
+        }
+      : () => {},
+  );
 
   function enableWatch({ watcher, root, mgr, hot }) {
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {

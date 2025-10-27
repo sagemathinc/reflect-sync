@@ -115,6 +115,14 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     depth: shallowDepth,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
   });
+  shallow.on(
+    "error",
+    verbose
+      ? (err) => {
+          console.log("WARNING: shallow watch error", err);
+        }
+      : () => {},
+  );
 
   function wireShallow() {
     const handle = async (evt: HotWatchEvent, abs: string) => {
