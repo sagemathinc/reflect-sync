@@ -26,7 +26,13 @@ import { Command, Option } from "commander";
 import readline from "node:readline";
 import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
-import { HotWatchManager, minimalCover, norm, parentDir } from "./hotwatch.js";
+import {
+  HotWatchManager,
+  minimalCover,
+  norm,
+  parentDir,
+  handleWatchErrors,
+} from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { MAX_WATCHERS } from "./defaults.js";
 
@@ -656,14 +662,9 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
-  shallowAlpha?.on(
-    "error",
-    verbose
-      ? (err) => {
-          console.log("WARNING: shallowAlpha watch error", err);
-        }
-      : () => {},
-  );
+  if (shallowAlpha != null) {
+    handleWatchErrors(shallowAlpha);
+  }
   const shallowBeta =
     betaIsRemote || disableHotWatch
       ? null
@@ -673,14 +674,9 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
-  shallowBeta?.on(
-    "error",
-    verbose
-      ? (err) => {
-          console.log("WARNING: shallowBeta watch error", err);
-        }
-      : () => {},
-  );
+  if (shallowBeta != null) {
+    handleWatchErrors(shallowBeta);
+  }
 
   function enableWatch({ watcher, root, mgr, hot }) {
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
@@ -693,7 +689,9 @@ export async function runScheduler({
         const rdir = parentDir(r);
 
         // Seed/bump a hot watcher for the directory
-        if (rdir) await mgr.add(rdir);
+        if (rdir) {
+          await mgr.add(rdir);
+        }
 
         // Promote the *first* event directly to microSync too
         if (r && (evt === "add" || evt === "change" || evt === "unlink")) {

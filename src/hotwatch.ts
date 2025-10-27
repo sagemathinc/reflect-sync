@@ -121,6 +121,7 @@ export class HotWatchManager {
       .on("add", () => this.reloadIg())
       .on("change", () => this.reloadIg())
       .on("unlink", () => this.reloadIg());
+    handleWatchErrors(this.igWatcher);
   }
 
   private localIgnoresFile(rpath: string): boolean {
@@ -168,6 +169,9 @@ export class HotWatchManager {
       awaitWriteFinish: this.opts.awaitWriteFinish,
       // (We filter precisely in the handler; leaving this unset avoids extra stats.)
     });
+
+    handleWatchErrors(watcher);
+
     watcher.on(
       "error",
       this.opts.verbose
@@ -278,4 +282,16 @@ export class HotWatchManager {
     this.map.clear();
     this.lru = [];
   }
+}
+
+export function handleWatchErrors(watch) {
+  watch.on("error", (err) => {
+    if (err.code == "ELOOP") {
+      // stating a symlink loop happens, but it's fine -- just use it
+      watch.emit("change", err.path);
+    } else {
+      // serious problem, but don't throw uncaught exception
+      console.error("Watch error", err);
+    }
+  });
 }

@@ -6,7 +6,12 @@ import { Command } from "commander";
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import readline from "node:readline";
-import { HotWatchManager, HOT_EVENTS, type HotWatchEvent } from "./hotwatch.js";
+import {
+  HotWatchManager,
+  HOT_EVENTS,
+  type HotWatchEvent,
+  handleWatchErrors,
+} from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
 import { MAX_WATCHERS } from "./defaults.js";
 
@@ -146,7 +151,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     for (const evt of HOT_EVENTS) {
       shallow.on(evt, (p) => handle(evt, p));
     }
-    shallow.on("error", (err) => console.error("watch: shallow error", err));
+    handleWatchErrors(shallow);
   }
 
   wireShallow();
