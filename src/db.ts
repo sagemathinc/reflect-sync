@@ -12,7 +12,7 @@ export function getDb(dbPath: string): Database {
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS files (
-  path TEXT PRIMARY KEY,
+  path TEXT PRIMARY KEY NOT NULL,
   size INTEGER,
   ctime INTEGER,
   mtime INTEGER,
@@ -31,7 +31,7 @@ CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
 
   db.exec(`
   CREATE TABLE IF NOT EXISTS dirs (
-    path       TEXT PRIMARY KEY,
+    path       TEXT PRIMARY KEY NOT NULL,
     ctime      INTEGER,
     mtime      INTEGER,
     op_ts      INTEGER,  -- operation timestamp for last write wins
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
 
   db.exec(`
   CREATE TABLE IF NOT EXISTS recent_touch (
-    path TEXT PRIMARY KEY,
+    path TEXT PRIMARY KEY NOT NULL,
     ts   INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_recent_touch_ts ON recent_touch(ts);
@@ -53,7 +53,7 @@ CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
 
   db.exec(`
   CREATE TABLE IF NOT EXISTS links (
-    path       TEXT PRIMARY KEY,
+    path       TEXT PRIMARY KEY NOT NULL,
     target     TEXT,
     ctime      INTEGER,
     mtime      INTEGER,

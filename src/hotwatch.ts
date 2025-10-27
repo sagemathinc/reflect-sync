@@ -154,6 +154,9 @@ export class HotWatchManager {
   async add(rdir: string) {
     rdir = rdir === "" ? "." : rdir;
     const anchorAbs = norm(path.join(this.root, rdir));
+    if (!anchorAbs.startsWith(this.root)) {
+      throw Error(`invalid path -- '${rdir}'`);
+    }
     const now = Date.now();
 
     if (this.map.has(anchorAbs)) {
@@ -162,6 +165,9 @@ export class HotWatchManager {
       return;
     }
 
+    if (this.opts.verbose) {
+      console.log("hot-watcher: watch ", { rdir, anchorAbs });
+    }
     const watcher = chokidar.watch(anchorAbs, {
       persistent: true,
       ignoreInitial: true,
@@ -172,17 +178,7 @@ export class HotWatchManager {
 
     handleWatchErrors(watcher);
 
-    watcher.on(
-      "error",
-      this.opts.verbose
-        ? (err) => {
-            // e.g., a symlink loop "b -> b" in a watched path will cause this
-            console.log("WARNING: hot watch error", err);
-          }
-        : () => {},
-    );
-
-    const handler = async (ev: HotWatchEvent, abs: string) => {
+    const handler = async (ev: HotWatchEvent, abs: string, _stats?) => {
       const absN = norm(abs);
 
       // Compute rpath relative to this.root
@@ -224,7 +220,9 @@ export class HotWatchManager {
     };
 
     HOT_EVENTS.forEach((evt) => {
-      watcher.on(evt as any, (p: string) => handler(evt as HotWatchEvent, p));
+      watcher.on(evt as any, (p: string, stats?) =>
+        handler(evt as HotWatchEvent, p, stats),
+      );
     });
 
     this.map.set(anchorAbs, { watcher, expiresAt: now + this.opts.ttlMs });

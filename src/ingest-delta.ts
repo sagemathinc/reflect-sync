@@ -121,13 +121,15 @@ ON CONFLICT(path) DO UPDATE SET
     }
     const now = Date.now();
     for (const r of rows) {
-      if (r?.kind === "time") {
+      if (r.kind === "time") {
         // special event conveying the remote "now" for skew calc
         const remoteNow = Number(r.remote_now_ms);
         if (Number.isFinite(remoteNow)) {
           // Upper-bound skew (includes network delay), minus safety if remote is behind
           let s = nowLocal() - remoteNow;
-          if (s > 0) s = Math.max(0, s - SAFETY_MS);
+          if (s > 0) {
+            s = Math.max(0, s - SAFETY_MS);
+          }
           skew = s;
         }
         continue;
@@ -136,6 +138,9 @@ ON CONFLICT(path) DO UPDATE SET
       // All paths are RELATIVE now; just ingest.
       const isDelete = r.deleted === 1;
       const op_ts = monotonicFor(r.path, adjustRemoteTime(r.op_ts));
+      if (r.path == null) {
+        throw Error(`invalid data -- ${JSON.stringify(r)}`);
+      }
 
       if (r.kind === "dir") {
         upsertDir.run({
@@ -184,7 +189,7 @@ ON CONFLICT(path) DO UPDATE SET
   function flush() {
     if (!buf.length) return;
     tx(buf);
-    buf = [];
+    buf.length = 0;
   }
 
   const rl = readline.createInterface({ input: process.stdin });
@@ -193,7 +198,9 @@ ON CONFLICT(path) DO UPDATE SET
     try {
       const r = JSON.parse(line);
       buf.push(r);
-      if (buf.length >= BATCH) flush();
+      if (buf.length >= BATCH) {
+        flush();
+      }
     } catch {
       // ignore malformed lines
     }

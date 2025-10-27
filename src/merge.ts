@@ -197,15 +197,52 @@ export async function runMerge({
     db.exec(
       `DROP VIEW IF EXISTS alpha_entries; DROP VIEW IF EXISTS beta_entries;`,
     );
+    // this is complicated because a path may occur in both alpha.files
+    // and alpha.links, e.g., if it was recently a file, then replaced
+    // by a symlink with the same name.  Hence we dedup buy taking
+    // the non-deleted one (say).  The paths must be unique for
+    // creating alpha_rel and beta_rel below, where the path is the
+    // primary key.
     db.exec(`
+      -- alpha
       CREATE TEMP VIEW alpha_entries AS
+      WITH unioned AS (
         SELECT path, hash, deleted, op_ts FROM alpha.files
         UNION ALL
-        SELECT path, hash, deleted, op_ts FROM alpha.links;
+        SELECT path, hash, deleted, op_ts FROM alpha.links
+      ),
+      ranked AS (
+        SELECT path, hash, deleted, op_ts,
+               ROW_NUMBER() OVER (
+                 PARTITION BY path
+                 ORDER BY deleted ASC,  -- prefer deleted=0
+                          op_ts  DESC  -- then newest op_ts
+               ) AS rn
+        FROM unioned
+      )
+      SELECT path, hash, deleted, op_ts
+      FROM ranked
+      WHERE rn = 1;
+
+      -- beta
       CREATE TEMP VIEW beta_entries AS
+      WITH unioned AS (
         SELECT path, hash, deleted, op_ts FROM beta.files
         UNION ALL
-        SELECT path, hash, deleted, op_ts FROM beta.links;
+        SELECT path, hash, deleted, op_ts FROM beta.links
+      ),
+      ranked AS (
+        SELECT path, hash, deleted, op_ts,
+               ROW_NUMBER() OVER (
+                 PARTITION BY path
+                 ORDER BY deleted ASC, op_ts DESC
+               ) AS rn
+        FROM unioned
+      )
+      SELECT path, hash, deleted, op_ts
+      FROM ranked
+      WHERE rn = 1;
+
     `);
 
     db.exec(

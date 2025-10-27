@@ -341,7 +341,7 @@ export async function runScheduler({
       }
 
       proc = spawn("ssh", sshArgs, {
-        stdio: ["pipe", "pipe", "inherit"],
+        stdio: ["pipe", "ignore", "inherit"],
       });
 
       // Read NDJSON lines from stdout
@@ -350,7 +350,13 @@ export async function runScheduler({
         rl.on("line", (line: string) => {
           line = line.trim();
           if (!line) return;
-          const { ev, rpath } = JSON.parse(line);
+          let ev, rpath;
+          try {
+            ({ ev, rpath } = JSON.parse(line));
+          } catch (err) {
+            console.warn("Error parsing scan line", { line }, err);
+            return;
+          }
           const isDir = ev.endsWith("Dir");
           if (!isDir) {
             targetSet.add(rpath);
@@ -641,6 +647,7 @@ export async function runScheduler({
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+          verbose,
         });
 
   const hotBetaMgr =
@@ -651,6 +658,7 @@ export async function runScheduler({
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+          verbose,
         });
 
   const shallowAlpha =
@@ -662,9 +670,6 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
-  if (shallowAlpha != null) {
-    handleWatchErrors(shallowAlpha);
-  }
   const shallowBeta =
     betaIsRemote || disableHotWatch
       ? null
@@ -674,20 +679,18 @@ export async function runScheduler({
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
         });
-  if (shallowBeta != null) {
-    handleWatchErrors(shallowBeta);
-  }
 
   function enableWatch({ watcher, root, mgr, hot }) {
+    handleWatchErrors(watcher);
+
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-      watcher.on(evt as any, async (p: string) => {
+      watcher.on(evt as any, async (p: string, _stats) => {
         const r = rel(root, p);
         if (mgr.isIgnored(r, evt?.endsWith("Dir"))) {
           return;
         }
 
         const rdir = parentDir(r);
-
         // Seed/bump a hot watcher for the directory
         if (rdir) {
           await mgr.add(rdir);
@@ -753,7 +756,6 @@ export async function runScheduler({
   // ---------- seed hot watchers from DB recent_touch ----------
   function seedHotFromDb(
     dbPath: string,
-    root: string,
     mgr: HotWatchManager | null,
     remoteAdd: null | ((dirs: string[]) => void),
     sinceTs: number,
@@ -773,7 +775,7 @@ export async function runScheduler({
       // clear the recently touched table to save space
       sdb.prepare("DELETE FROM recent_touch").run();
       const dirs = rows
-        .map((r: any) => parentDir(norm(path.relative(root, r.path))))
+        .map((r: any) => parentDir(norm(r.path)))
         .filter(Boolean);
       const covered = minimalCover(dirs).slice(0, maxDirs);
       if (mgr != null) {
@@ -928,7 +930,6 @@ export async function runScheduler({
 
     seedHotFromDb(
       alphaDb,
-      alphaRoot,
       hotAlphaMgr,
       addRemoteAlphaHotDirs,
       tAlphaStart,
@@ -954,7 +955,6 @@ export async function runScheduler({
 
     seedHotFromDb(
       betaDb,
-      betaRoot,
       hotBetaMgr,
       addRemoteBetaHotDirs,
       tBetaStart,

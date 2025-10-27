@@ -14,6 +14,7 @@ import {
 } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
 import { MAX_WATCHERS } from "./defaults.js";
+import { inspect } from "node:util";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -41,14 +42,16 @@ const isPlainRel = (r: string) =>
 // STDERR logging only when verbose
 function vlog(verbose: boolean | undefined, ...args: any[]) {
   if (verbose) {
-    console.error(...args);
+    process.stderr.write(inspect(args));
   }
 }
 
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
-  const rpath = relR(root, abs);
-  if (!rpath) return;
-  const rec = { ev, rpath };
+  const path = relR(root, abs);
+  if (!path) {
+    return;
+  }
+  const rec = { ev, path };
   process.stdout.write(JSON.stringify(rec) + "\n");
   // vlog(true, rec);
 }
@@ -111,6 +114,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       hotDepth,
       ttlMs: hotTtlMs,
       maxWatchers: maxHotWatchers,
+      verbose: false, // since it would go to stdout
     },
   );
 
@@ -130,7 +134,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   );
 
   function wireShallow() {
-    const handle = async (evt: HotWatchEvent, abs: string) => {
+    const handle = async (evt: HotWatchEvent, abs: string, _stats?) => {
       // Send the event immediately (so microSync can act quickly)
       emitEvent(abs, evt, rootAbs);
 
@@ -149,7 +153,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     };
 
     for (const evt of HOT_EVENTS) {
-      shallow.on(evt, (p) => handle(evt, p));
+      shallow.on(evt, (p, stats) => handle(evt, p, stats));
     }
     handleWatchErrors(shallow);
   }
