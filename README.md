@@ -6,8 +6,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 - **SQLite indexes** per side (alpha / beta) + base snapshot for true 3-way merges
 - **Incremental scans** with content hashes using [XXH3](https://www.npmjs.com/package/@node-rs/xxhash) only when needed (based on ctime)
 - **Realtime micro-sync** for hot files (debounced, safe on partial edits)
-- **SSH-friendly**: stream remote deltas over stdin; no bespoke daemon required
-- **Clean CLIs**: `ccsync scan /root`, `ccsync merge …`, `ccsync scheduler …` (plus aliases)
+- **SSH-friendly**: stream remote deltas over stdin
 
 > Requires **Node.js 24+**.
 
@@ -259,4 +258,3 @@ Here’s a concise, copy-pasteable matrix for your README.
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-
