@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS files (
     ctime      INTEGER,
     mtime      INTEGER,
     op_ts      INTEGER,  -- operation timestamp for last write wins
+    hash       TEXT DEFAULT '',     -- hash used for *metadata* only for directories.
     deleted    INTEGER DEFAULT 0,
     last_seen  INTEGER
   );

@@ -7,7 +7,7 @@ import { readlink } from "node:fs/promises";
 import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
-import { xxh128String } from "./hash.js";
+import { modeHash, xxh128String } from "./hash.js";
 import path from "node:path";
 import { loadIgnoreFile, normalizeR } from "./ignore.js";
 
@@ -77,13 +77,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // for directory metadata
   const upsertDir = db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, op_ts, deleted, last_seen)
-VALUES (@path, @ctime, @mtime, @op_ts, 0, @scan_id)
+INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
+VALUES (@path, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
 ON CONFLICT(path) DO UPDATE SET
   ctime     = excluded.ctime,
   mtime     = excluded.mtime,
   deleted   = 0,
   last_seen = excluded.last_seen,
+  hash      = excluded.hash,
   -- Preserve current op_ts unless we are resurrecting a previously-deleted dir
   op_ts     = CASE
                 WHEN dirs.deleted = 1 THEN excluded.op_ts
@@ -97,6 +98,7 @@ ON CONFLICT(path) DO UPDATE SET
     mtime: number;
     op_ts: number;
     scan_id: number;
+    hash: string;
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
@@ -292,7 +294,9 @@ last_seen=excluded.last_seen
       // Do not emit ignored directories/files/links as entries
       entryFilter: (e) => {
         const r = toR(e.path);
-        if (e.dirent.isDirectory()) return !ig.ignoresDir(r);
+        if (e.dirent.isDirectory()) {
+          return !ig.ignoresDir(r);
+        }
         // For files & symlinks, ignore file-style rules
         return !ig.ignoresFile(r);
       },
@@ -340,7 +344,8 @@ last_seen=excluded.last_seen
       if (entry.dirent.isDirectory()) {
         // directory ops don't bump mtime reliably, so we use op time.
         const op_ts = Date.now();
-        dirMetaBuf.push({ path: full, ctime, mtime, scan_id, op_ts });
+        const hash = modeHash(st.mode);
+        dirMetaBuf.push({ path: full, ctime, mtime, hash, scan_id, op_ts });
 
         // emit-delta: dir ensure
         if (emitDelta) {
@@ -349,6 +354,7 @@ last_seen=excluded.last_seen
             path: full,
             ctime,
             mtime,
+            hash,
             op_ts,
             deleted: 0,
           });
@@ -494,10 +500,9 @@ last_seen=excluded.last_seen
     }
 
     // Mark deletions: dirs
-    db.prepare(`UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`).run(
-      op_ts,
-      scan_id,
-    );
+    db.prepare(
+      `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
+    ).run(op_ts, scan_id);
 
     // emit-delta: Emit dir deletions
     if (emitDelta) {
@@ -516,10 +521,9 @@ last_seen=excluded.last_seen
       .all(scan_id) as { path: string }[];
 
     const op_ts_links = Date.now();
-    db.prepare(`UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`).run(
-      op_ts_links,
-      scan_id,
-    );
+    db.prepare(
+      `UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
+    ).run(op_ts_links, scan_id);
 
     if (emitDelta && toDeleteLinks.length) {
       for (const r of toDeleteLinks) {

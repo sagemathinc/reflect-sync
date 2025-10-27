@@ -120,7 +120,8 @@ export async function runMerge({
       CREATE TABLE IF NOT EXISTS base_dirs (
         path    TEXT PRIMARY KEY,  -- RELATIVE dir path
         deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER
+        op_ts   INTEGER,
+        hash    TEXT DEFAULT ''
       );
     `);
 
@@ -198,6 +199,7 @@ export async function runMerge({
       )?.value ?? null;
 
     if (
+      false &&
       lastAlpha !== null &&
       lastBeta !== null &&
       digestAlpha === lastAlpha &&
@@ -311,7 +313,7 @@ export async function runMerge({
             WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
             WHEN path = ? THEN '' ELSE path
           END AS rpath,
-          deleted, op_ts
+          deleted, op_ts, COALESCE(hash,'') AS hash
         FROM alpha.dirs
       `,
     ).run(alphaRoot, alphaRoot, alphaRoot);
@@ -324,7 +326,7 @@ export async function runMerge({
             WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
             WHEN path = ? THEN '' ELSE path
           END AS rpath,
-          deleted, op_ts
+          deleted, op_ts, COALESCE(hash,'') AS hash
         FROM beta.dirs
       `,
     ).run(betaRoot, betaRoot, betaRoot);
@@ -340,7 +342,7 @@ export async function runMerge({
           WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
           ELSE path
         END AS rpath,
-        deleted, op_ts
+        deleted, op_ts, COALESCE(hash,'') AS hash
       FROM base_dirs
     `,
     ).run(alphaRoot, alphaRoot, betaRoot, betaRoot);
@@ -415,13 +417,13 @@ export async function runMerge({
         SELECT a.rpath AS rpath
         FROM alpha_dirs_rel a
         LEFT JOIN base_dirs_rel b ON b.rpath = a.rpath
-        WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1);
+        WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
 
       CREATE TEMP TABLE tmp_dirs_changedB AS
         SELECT b.rpath AS rpath
         FROM beta_dirs_rel b
         LEFT JOIN base_dirs_rel bb ON bb.rpath = b.rpath
-        WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1);
+        WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
 
       CREATE TEMP TABLE tmp_dirs_deletedA AS
         SELECT b.rpath
@@ -1504,25 +1506,25 @@ export async function runMerge({
         // Directories
         if (copyDirsAlphaBetaZero && toBetaDirs.length) {
           db.exec(`
-            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts)
-            SELECT p.rpath, 0, a.op_ts
+            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
+            SELECT p.rpath, 0, a.op_ts, a.hash
             FROM plan_dirs_to_beta p
             JOIN alpha_dirs_rel a ON a.rpath = p.rpath;
           `);
         }
         if (copyDirsBetaAlphaZero && toAlphaDirs.length) {
           db.exec(`
-            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts)
-            SELECT p.rpath, 0, b.op_ts
+            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
+            SELECT p.rpath, 0, b.op_ts, b.hash
             FROM plan_dirs_to_alpha p
             JOIN beta_dirs_rel b ON b.rpath = p.rpath;
           `);
         }
         if (delDirsInBeta.length) {
           db.exec(`
-            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts)
+            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
             SELECT p.rpath, 1,
-                   COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+                   COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
             FROM plan_dirs_del_beta p
             LEFT JOIN alpha_dirs_rel a ON a.rpath = p.rpath
             LEFT JOIN beta_dirs_rel  b ON b.rpath  = p.rpath
@@ -1531,9 +1533,9 @@ export async function runMerge({
         }
         if (delDirsInAlpha.length) {
           db.exec(`
-            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts)
+            INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
             SELECT p.rpath, 1,
-                   COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+                   COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
             FROM plan_dirs_del_alpha p
             LEFT JOIN beta_dirs_rel  b ON b.rpath  = p.rpath
             LEFT JOIN alpha_dirs_rel a ON a.rpath = p.rpath

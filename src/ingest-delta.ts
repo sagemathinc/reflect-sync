@@ -95,12 +95,13 @@ ON CONFLICT(path) DO UPDATE SET
 
   // used to update data about directories
   const upsertDir = db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, op_ts, deleted, last_seen)
-VALUES (@path, @ctime, @mtime, @op_ts, @deleted, @now)
+INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
+VALUES (@path, @ctime, @mtime, @op_ts, @hash, @deleted, @now)
 ON CONFLICT(path) DO UPDATE SET
   ctime=COALESCE(excluded.ctime, dirs.ctime),
   mtime=COALESCE(excluded.mtime, dirs.mtime),
   op_ts=COALESCE(excluded.op_ts, dirs.op_ts),
+  hash=excluded.hash,
   deleted=excluded.deleted,
   last_seen=excluded.last_seen
 `);
@@ -158,6 +159,7 @@ last_seen=excluded.last_seen
           path: r.path,
           ctime: isDelete ? null : (r.ctime ?? null),
           mtime: isDelete ? null : (r.mtime ?? null),
+          hash: r.hash,
           op_ts,
           deleted: isDelete ? 1 : 0,
           now,

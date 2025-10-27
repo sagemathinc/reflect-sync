@@ -41,3 +41,7 @@ export async function xxh128File(path: string, size: number): Promise<string> {
   const dig = hasher.digest(); // BigInt
   return hex128(dig);
 }
+
+export function modeHash(mode: number): string {
+  return (mode & 0o7777).toString(16);
+}
