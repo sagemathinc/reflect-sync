@@ -1,4 +1,4 @@
-// rsync.ts
+// src/rsync.ts
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, stat as fsStat } from "node:fs/promises";
@@ -29,15 +29,25 @@ function isLocal(p: string) {
   return !/^[^:/]+@[^:/]+:|^[^:/]+:/.test(p);
 }
 
+function numericIdsFlag(): string[] {
+  try {
+    // When running as root, preserve numeric owner/group IDs exactly.
+    // Safe to pass even locally.
+    return typeof (process as any).getuid === "function" &&
+      (process as any).getuid() === 0
+      ? ["--numeric-ids"]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export function rsyncArgsBase(
-  opts: {
-    dryRun?: boolean | string;
-    verbose?: boolean | string;
-  },
+  opts: { dryRun?: boolean | string; verbose?: boolean | string },
   from: string,
   to: string,
 ) {
-  const a = ["-a", "-I", "--relative"];
+  const a = ["-a", "-I", "--relative", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (isLocal(from) && isLocal(to)) {
     // don't use the rsync delta algorithm
@@ -54,7 +64,7 @@ export function rsyncArgsDirs(opts: {
   verbose?: boolean | string;
 }) {
   // -d: transfer directories themselves (no recursion) — needed for empty dirs
-  const a = ["-a", "-d", "--relative", "--from0"];
+  const a = ["-a", "-d", "--relative", "--from0", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (verbose2) a.push("-v");
   if (!opts.verbose) a.push("--quiet");
@@ -72,10 +82,34 @@ export function rsyncArgsDelete(opts: {
     "--ignore-missing-args",
     "--delete-missing-args",
     "--force",
+    ...numericIdsFlag(),
   ];
   if (opts.dryRun) {
     a.unshift("-n");
   }
+  if (verbose2) a.push("-v");
+  if (!opts.verbose) a.push("--quiet");
+  return a;
+}
+
+// Metadata-only fixers (no content copy)
+export function rsyncArgsFixMeta(opts: {
+  dryRun?: boolean | string;
+  verbose?: boolean | string;
+}) {
+  // -a includes -pgo (perms, owner, group); --no-times prevents touching mtimes
+  const a = ["-a", "--no-times", "--relative", "--from0", ...numericIdsFlag()];
+  if (opts.dryRun) a.unshift("-n");
+  if (verbose2) a.push("-v");
+  if (!opts.verbose) a.push("--quiet");
+  return a;
+}
+export function rsyncArgsFixMetaDirs(opts: {
+  dryRun?: boolean | string;
+  verbose?: boolean | string;
+}) {
+  const a = ["-a", "-d", "--no-times", "--relative", "--from0", ...numericIdsFlag()];
+  if (opts.dryRun) a.unshift("-n");
   if (verbose2) a.push("-v");
   if (!opts.verbose) a.push("--quiet");
   return a;
@@ -187,6 +221,60 @@ export async function rsyncCopyDirs(
   const res = await run("rsync", args, [0, 23, 24], opts.verbose);
   if (opts.verbose) {
     console.log(`>>> rsync ${label} (dirs): done (code ${res.code})`);
+  }
+  return { zero: res.zero };
+}
+
+export async function rsyncFixMeta(
+  fromRoot: string,
+  toRoot: string,
+  listFile: string,
+  label: string,
+  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+): Promise<{ zero: boolean }> {
+  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
+    if (opts.verbose) console.log(`>>> rsync ${label}: nothing to do`);
+    return { zero: false };
+  }
+  if (opts.verbose) {
+    console.log(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
+  }
+  const args = [
+    ...rsyncArgsFixMeta(opts),
+    `--files-from=${listFile}`,
+    ensureTrailingSlash(fromRoot),
+    ensureTrailingSlash(toRoot),
+  ];
+  const res = await run("rsync", args, [0, 23, 24], opts.verbose);
+  if (opts.verbose) {
+    console.log(`>>> rsync ${label} (meta): done (code ${res.code})`);
+  }
+  return { zero: res.zero };
+}
+
+export async function rsyncFixMetaDirs(
+  fromRoot: string,
+  toRoot: string,
+  listFile: string,
+  label: string,
+  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+): Promise<{ zero: boolean }> {
+  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
+    if (opts.verbose) console.log(`>>> rsync ${label} (meta dirs): nothing to do`);
+    return { zero: false };
+  }
+  if (opts.verbose) {
+    console.log(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
+  }
+  const args = [
+    ...rsyncArgsFixMetaDirs(opts),
+    `--files-from=${listFile}`,
+    ensureTrailingSlash(fromRoot),
+    ensureTrailingSlash(toRoot),
+  ];
+  const res = await run("rsync", args, [0, 23, 24], opts.verbose);
+  if (opts.verbose) {
+    console.log(`>>> rsync ${label} (meta dirs): done (code ${res.code})`);
   }
   return { zero: res.zero };
 }
