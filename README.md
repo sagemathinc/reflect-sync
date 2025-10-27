@@ -22,13 +22,12 @@ Open source under the MIT License.
 Some differences compared to Mutagen, and todos:
 
 - the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
-- conflicts are resolved using **last write wins**, with close ties resolved by one chosen side always wins. There is no manual resolution modes.
-- instead of Sha-256 **we use XXH3** via [@node-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash). Using a very fast non-cryptographic hash is a good fit for file sync.
-- only supports macos and linux (currently)
-- timestamps are preserved instead of being ignored \(like with Mutagen\)
-- permissions are fully preserved instead of being partly ignored.
+- conflicts are resolved using **last write wins** \(clocks are sync'd\), with close ties resolved by one chosen side always wins. There is no manual resolution mode.
+- instead of Sha\-256 **we use XXH3** via [@node\-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash). Using a very fast non\-cryptographic hash is a good fit for file sync.
+- only supports macos and linux \(currently\)
+- timestamps and permissions are fully preserved, whereas Mutagen mostly ignores them
 
-For more details, see [Design Details](./DESIGN.md).
+See [Design Details](./DESIGN.md).
 
 ---
 
@@ -53,6 +52,7 @@ Build from source (dev):
 ```bash
 pnpm install
 pnpm build
+pnpm test
 ```
 
 The package exposes the `ccsync` CLI (and aliases `ccsync-scan`, `ccsync-ingest`, `ccsync-merge`, `ccsync-scheduler`) via its `bin` map.
@@ -64,15 +64,10 @@ The package exposes the `ccsync` CLI (and aliases `ccsync-scan`, `ccsync-ingest`
 ### 1) One machine (both roots local)
 
 ```bash
-# First full scan & sync loop
-ccsync scheduler \
-  --alpha-root /srv/alpha \
-  --beta-root  /srv/beta  \
-  --alpha-db   alpha.db   \
-  --beta-db    beta.db    \
-  --base-db    base.db    \
-  --prefer     alpha      \
-  --verbose    true
+ccsync session -h
+ccsync session create /path/to/alpha /path/to/beta
+ccsync session list
+ccsync session status 1
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
@@ -85,61 +80,10 @@ Two ways to do it:
 **a) Let the scheduler do the remote scan over SSH**
 
 ```bash
-ccsync scheduler \
-  --alpha-root /srv/alpha --alpha-host user@alpha.example.com \
-  --beta-root  /srv/beta \
-  --alpha-db   alpha.db   --beta-db beta.db --base-db base.db \
-  --prefer alpha --verbose true
+ccsync session create user@alpha.example.com:/tmp/alaph /tmp/beta
 ```
 
 The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON deltas, and ingest them locally.
-
-**b) Manual pipe (useful to sanity-check)**
-
-```bash
-ssh user@alpha 'env DB_PATH=~/.cache/ccsync/alpha.db ccsync scan /srv/alpha --emit-delta' \
-  | ccsync ingest --db alpha.db --root /srv/alpha
-```
-
----
-
-## Commands
-
-### `ccsync scan <root> [--emit-delta]`
-
-Walks `<root>`, updates (or creates) the local SQLite DB at `DB_PATH` (env), hashing only when ctime changed.
-With `--emit-delta`, prints NDJSON events to stdout so a remote host can mirror into its DB.
-
-- Env: `DB_PATH=/path/to/alpha.db` (or `beta.db`), default `./alpha.db`/`./beta.db`.
-
-### `ccsync ingest --db <dbfile> --root <root>`
-
-Reads NDJSON deltas from stdin and mirrors them into the given `files` table. Intended to pair with a remote `scan --emit-delta`.
-
-### `ccsync merge ...`
-
-3-way plan + rsync, then updates `base.db` to the merged state (relative paths). Typical flags:
-
-```
---alpha-root /srv/alpha --beta-root /srv/beta
---alpha-db alpha.db --beta-db beta.db --base-db base.db
---prefer alpha|beta
-[--dry-run true] [--verbose true]
-```
-
-### `ccsync scheduler ...`
-
-Adaptive watcher/scan/merge loop that ties everything together, including optional SSH for one side:
-
-```
---alpha-root /srv/alpha [--alpha-host user@host]
---beta-root  /srv/beta  [--beta-host  user@host]
---alpha-db alpha.db --beta-db beta.db --base-db base.db
---prefer alpha|beta
-[--dry-run true] [--verbose true]
-```
-
-> The CLI shims for these commands are published in the `bin` field, so you can run them directly after install.
 
 ---
 
@@ -174,53 +118,28 @@ This separation makes it easy to relocate/rotate databases, inspect state, and c
 
 ---
 
-## Examples
-
-**Run a full cycle once (no scheduler):**
-
-```bash
-ccsync scan /srv/alpha   --db-path alpha.db
-ccsync scan /srv/beta    --db-path beta.db
-ccsync merge \
-  --alpha-root /srv/alpha --beta-root /srv/beta \
-  --alpha-db alpha.db --beta-db beta.db --base-db base.db \
-  --prefer alpha --verbose true
-```
-
-**Realtime development project (local):**
-
-```bash
-ccsync scheduler \
-  --alpha-root ~/src/project \
-  --beta-root  /mnt/build-cache/project \
-  --alpha-db alpha.db --beta-db beta.db --base-db base.db \
-  --prefer alpha --verbose true
-```
-
----
-
 ## Troubleshooting
 
-- **`rsync` exit 23/24** (vanished files): normal if files are being edited; scheduler backs off briefly and the next cycle will settle.
-
-- **Inotify/FSEvents limits (Linux/macOS)**: scheduler uses shallow + bounded hot watchers. If you still hit limits, tune:
+- **Inotify/FSEvents limits \(Linux/macOS\)**: scheduler uses shallow \+ bounded hot watchers. If you still hit limits, tune:
   - `MAX_HOT_WATCHERS` — cap number of deep watchers
   - `SHALLOW_DEPTH` — 0 or 1 recommended
   - `HOT_DEPTH` — typical 1–2
 
-- **DB size**: large trees create large but inexpensive DBs. Use WAL mode (default) and SSDs for best throughput.
+- **DB size**: large trees create large but inexpensive DBs. Use WAL mode \(default\) and SSDs for best throughput.
 
 ---
 
 ## Development
 
 ```bash
-pnpm i
+pnpm install
 pnpm build
-node dist/cli.js help      # or: pnpm exec ccsync help (after link/install)
+pnpm test
+pnpm link -g .
+ccsync -h
 ```
 
-TypeScript compiler outputs to `dist/` mirroring `src/` (see `tsconfig.json`).
+TypeScript compiler outputs to `dist/.`
 
 ---
 
@@ -228,8 +147,6 @@ TypeScript compiler outputs to `dist/` mirroring `src/` (see `tsconfig.json`).
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global` to get `ccsync` on your PATH.
 - For SSH use, ensure the remote has Node 24\+ and `ccsync` on PATH \(installed or included in your SEA image\). Then `ccsync scan … --emit-delta | ccsync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
-
-Here’s a drop-in README section you can paste in. I wrote it for external readers and kept the comparisons crisp.
 
 ---
 
@@ -342,3 +259,4 @@ Here’s a concise, copy-pasteable matrix for your README.
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+
