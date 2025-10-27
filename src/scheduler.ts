@@ -911,13 +911,12 @@ export async function runScheduler({
           root: alphaRoot,
           localDb: alphaDb,
         })
-      : await spawnTask("ccsync", [
-          "scan",
-          "--root",
-          alphaRoot,
-          "--db",
-          alphaDb,
-        ]);
+      : await spawnTask(
+          "ccsync",
+          ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
+            verbose ? ["--verbose"] : [],
+          ),
+        );
 
     seedHotFromDb(
       alphaDb,
@@ -938,7 +937,12 @@ export async function runScheduler({
           root: betaRoot,
           localDb: betaDb,
         })
-      : await spawnTask("ccsync", ["scan", "--root", betaRoot, "--db", betaDb]);
+      : await spawnTask(
+          "ccsync",
+          ["scan", "--root", betaRoot, "--db", betaDb].concat(
+            verbose ? ["--verbose"] : [],
+          ),
+        );
 
     seedHotFromDb(
       betaDb,

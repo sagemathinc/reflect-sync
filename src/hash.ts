@@ -8,9 +8,9 @@ const STREAM_HWM = 8 * 1024 * 1024; // 8MB read chunks
 
 // Convert unsigned 128-bit BigInt to 32-char hex (lowercase)
 const TWO128 = 1n << 128n;
-function hex128(x: bigint): string {
+export function hex128(x: bigint): string {
   if (x < 0n) x += TWO128; // normalize (defensive)
-  return x.toString(16).padStart(32, "0");
+  return x.toString(16);
 }
 export function xxh128String(s: string): string {
   const dig = xxh3.xxh128(s);

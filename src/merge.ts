@@ -11,6 +11,8 @@ import Database from "better-sqlite3";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 import { IGNORE_FILE } from "./constants.js";
 import { rsyncCopy, rsyncCopyDirs, rsyncDeleteChunked } from "./rsync.js";
+import { xxh3 } from "@node-rs/xxhash";
+import { hex128 } from "./hash.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -139,51 +141,35 @@ export async function runMerge({
     `);
 
     const computeSideDigest = (side: "alpha" | "beta") => {
-      // files + links aggregated together
-      const f = db
-        .prepare(
-          `
-        SELECT
-          COUNT(*)                                AS n,
-          COALESCE(SUM(op_ts), 0)                 AS s_op,
-          COALESCE(MAX(op_ts), 0)                 AS m_op,
-          COALESCE(SUM(deleted), 0)               AS s_del,
-          COALESCE(SUM(LENGTH(path)), 0)          AS s_plen,
-          COALESCE(SUM(LENGTH(COALESCE(hash,''))), 0) AS s_hlen
+      // Include files, links, and dirs; include 'deleted' so
+      // removes affect the digest.
+      const stmt = db.prepare(`
+        SELECT path, COALESCE(hash, '') AS hash, COALESCE(deleted, 0) AS deleted
         FROM (
-          SELECT path, hash, deleted, op_ts FROM ${side}.files
+          SELECT path, hash, deleted FROM ${side}.files
           UNION ALL
-          SELECT path, hash, deleted, op_ts FROM ${side}.links
+          SELECT path, hash, deleted FROM ${side}.links
+          UNION ALL
+          SELECT path, hash, deleted FROM ${side}.dirs
         )
-      `,
-        )
-        .get() as any;
-
-      // dirs
-      const d = db
-        .prepare(
-          `
-        SELECT
-          COUNT(*)                        AS n,
-          COALESCE(SUM(op_ts), 0)         AS s_op,
-          COALESCE(MAX(op_ts), 0)         AS m_op,
-          COALESCE(SUM(deleted), 0)       AS s_del,
-          COALESCE(SUM(LENGTH(path)), 0)  AS s_plen
-        FROM ${side}.dirs
-      `,
-        )
-        .get() as any;
-
-      // A compact, stable string; collisions are extremely unlikely with these aggregates.
-      return `F:${f.n},${f.s_op},${f.m_op},${f.s_del},${f.s_plen},${f.s_hlen};D:${d.n},${d.s_op},${d.m_op},${d.s_plen},${d.s_del}`;
+        ORDER BY path
+      `);
+      const h = xxh3.Xxh3.withSeed();
+      for (const row of stmt.iterate()) {
+        // Use ASCII separators to be unambiguous and stable.
+        h.update(`${row.path}\x1f${row.hash}\x1f${row.deleted}\x1f`);
+      }
+      return hex128(h.digest());
     };
 
+    let done = t("compute digests");
     const digestAlpha = computeSideDigest("alpha");
     const digestBeta = computeSideDigest("beta");
     if (verbose) {
       console.log("[digest] alpha:", digestAlpha);
       console.log("[digest] beta:", digestBeta);
     }
+    done();
 
     const lastAlpha =
       (
@@ -199,7 +185,6 @@ export async function runMerge({
       )?.value ?? null;
 
     if (
-      false &&
       lastAlpha !== null &&
       lastBeta !== null &&
       digestAlpha === lastAlpha &&
@@ -241,7 +226,7 @@ export async function runMerge({
       `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
     );
 
-    let done = t("build *_rel");
+    done = t("build *_rel");
     // Define the *_rel tables with a primary key and WITHOUT ROWID.
     // This makes rpath unique, saves memory, and gives you an implicit PK index.
 
