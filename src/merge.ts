@@ -81,9 +81,7 @@ export async function runMerge({
   const betaIg = await loadIgnoreFile(betaRoot);
 
   const t = (label: string) => {
-    if (!verbose) {
-      return () => {};
-    }
+    if (!verbose) return () => {};
     console.log(`[phase] ${label}: running...`);
     const t0 = Date.now();
     return () => {
@@ -111,7 +109,7 @@ export async function runMerge({
     db.pragma("synchronous = NORMAL");
     db.pragma("temp_store = MEMORY"); // keep temp tables in RAM for speed
 
-    // base (files) and base_dirs (directories) — now include op_ts for LWW
+    // base (files) and base_dirs (directories) — relative paths; include op_ts for LWW
     db.exec(`
       CREATE TABLE IF NOT EXISTS base (
         path    TEXT PRIMARY KEY,  -- RELATIVE file path
@@ -131,8 +129,7 @@ export async function runMerge({
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
     // ---------- EARLY-OUT FAST PATH ----------
-    // We compute a light-weight "digest" of each side's catalog (files+links and dirs).
-    // If both digests equal what we saved after the last merge, we skip planning/rsync entirely.
+    // Hash live (non-deleted) catalogs of both sides. If unchanged vs last time → skip planning/rsync.
     db.exec(`
       CREATE TABLE IF NOT EXISTS merge_meta (
         key   TEXT PRIMARY KEY,
@@ -141,8 +138,7 @@ export async function runMerge({
     `);
 
     const computeSideDigest = (side: "alpha" | "beta") => {
-      // Include files, links, and dirs; include 'deleted' so
-      // removes affect the digest.
+      // Only non-deleted; include files, links, and dirs; paths are already RELATIVE.
       const stmt = db.prepare(`
         SELECT path, COALESCE(hash, '') AS hash
         FROM (
@@ -150,14 +146,13 @@ export async function runMerge({
           UNION ALL
           SELECT path, hash FROM ${side}.links WHERE deleted = 0
           UNION ALL
-          SELECT path, hash FROM ${side}.dirs WHERE deleted = 0
+          SELECT path, hash FROM ${side}.dirs  WHERE deleted = 0
         )
         ORDER BY path
       `);
       const h = xxh3.Xxh3.withSeed();
       for (const row of stmt.iterate()) {
-        // Use ASCII separators to be unambiguous and stable.
-        h.update(`${row.path}\x1f${row.hash}\x1f${row.deleted}\x1f`);
+        h.update(`${row.path}\x1f${row.hash}\x1f`);
       }
       return hex128(h.digest());
     };
@@ -167,7 +162,7 @@ export async function runMerge({
     const digestBeta = computeSideDigest("beta");
     if (verbose) {
       console.log("[digest] alpha:", digestAlpha);
-      console.log("[digest] beta:", digestBeta);
+      console.log("[digest] beta :", digestBeta);
     }
     done();
 
@@ -190,252 +185,191 @@ export async function runMerge({
       digestAlpha === lastAlpha &&
       digestBeta === lastBeta
     ) {
-      if (verbose) {
+      if (verbose)
         console.log(
           "[merge] no-op: catalogs unchanged; skipping planning/rsync",
         );
-      }
-      return; // 🔚 Early return – nothing to do
+      return;
     }
     // ---------- END EARLY-OUT FAST PATH ----------
 
-    // ---------- Build relative-path temp tables ----------
-    // Temp views to normalize to a single stream of path/hash/deleted/op_ts
+    // ---------- Build rel tables (already RELATIVE paths in alpha/beta) ----------
     db.exec(
       `DROP VIEW IF EXISTS alpha_entries; DROP VIEW IF EXISTS beta_entries;`,
     );
-
-    db.exec(
-      `
+    db.exec(`
       CREATE TEMP VIEW alpha_entries AS
-      SELECT path, hash, deleted, op_ts FROM alpha.files
-      UNION ALL
-      SELECT path, hash, deleted, op_ts FROM alpha.links;
-    `,
-    );
-    db.exec(
-      `
+        SELECT path, hash, deleted, op_ts FROM alpha.files
+        UNION ALL
+        SELECT path, hash, deleted, op_ts FROM alpha.links;
       CREATE TEMP VIEW beta_entries AS
-      SELECT path, hash, deleted, op_ts FROM beta.files
-      UNION ALL
-      SELECT path, hash, deleted, op_ts FROM beta.links;
-    `,
-    );
+        SELECT path, hash, deleted, op_ts FROM beta.files
+        UNION ALL
+        SELECT path, hash, deleted, op_ts FROM beta.links;
+    `);
 
     db.exec(
       `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
     );
 
     done = t("build *_rel");
-    // Define the *_rel tables with a primary key and WITHOUT ROWID.
-    // This makes rpath unique, saves memory, and gives you an implicit PK index.
 
-    db.prepare(
-      `
-     CREATE TEMP TABLE alpha_rel(
-       rpath TEXT PRIMARY KEY,
-       hash  TEXT,
-       deleted INTEGER,
-       op_ts  INTEGER
-     ) WITHOUT ROWID;
-    `,
-    ).run();
-    db.prepare(
-      `
-     INSERT INTO alpha_rel SELECT
-        CASE
-          WHEN instr(path, (:alphaRoot || '/')) = 1 THEN substr(path, length(:alphaRoot) + 2)
-          WHEN path = :alphaRoot THEN '' ELSE path
-        END AS rpath, hash, deleted, op_ts
-      FROM alpha_entries;
-    `,
-    ).run({ alphaRoot });
-
-    db.prepare(
-      `
-    CREATE TEMP TABLE beta_rel(
-      rpath TEXT PRIMARY KEY,
-      hash  TEXT,
-      deleted INTEGER,
-      op_ts  INTEGER
-    ) WITHOUT ROWID;`,
-    ).run();
-    db.prepare(
-      `
-    INSERT INTO beta_rel SELECT
-        CASE
-          WHEN instr(path, (:betaRoot || '/')) = 1 THEN substr(path, length(:betaRoot) + 2)
-          WHEN path = :betaRoot THEN '' ELSE path
-        END AS rpath, hash, deleted, op_ts
-      FROM beta_entries;
-    `,
-    ).run({ betaRoot });
-
-    db.prepare(
-      `
-      CREATE TEMP TABLE base_rel AS
-      SELECT
-        CASE
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          ELSE path
-        END AS rpath,
-        hash, deleted, op_ts
-      FROM base
-    `,
-    ).run(alphaRoot, alphaRoot, betaRoot, betaRoot);
-
-    // ---------- Dirs (alpha/beta may not have dirs table yet) ----------
-    db.exec(
-      `DROP TABLE IF EXISTS alpha_dirs_rel; DROP TABLE IF EXISTS beta_dirs_rel; DROP TABLE IF EXISTS base_dirs_rel;`,
-    );
-
-    db.prepare(
-      `
-        CREATE TEMP TABLE alpha_dirs_rel AS
-        SELECT
-          CASE
-            WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-            WHEN path = ? THEN '' ELSE path
-          END AS rpath,
-          deleted, op_ts, COALESCE(hash,'') AS hash
-        FROM alpha.dirs
-      `,
-    ).run(alphaRoot, alphaRoot, alphaRoot);
-
-    db.prepare(
-      `
-        CREATE TEMP TABLE beta_dirs_rel AS
-        SELECT
-          CASE
-            WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-            WHEN path = ? THEN '' ELSE path
-          END AS rpath,
-          deleted, op_ts, COALESCE(hash,'') AS hash
-        FROM beta.dirs
-      `,
-    ).run(betaRoot, betaRoot, betaRoot);
-
-    // ----- base
-
-    db.prepare(
-      `
-      CREATE TEMP TABLE base_dirs_rel AS
-      SELECT
-        CASE
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          WHEN instr(path, (? || '/')) = 1 THEN substr(path, length(?) + 2)
-          ELSE path
-        END AS rpath,
-        deleted, op_ts, COALESCE(hash,'') AS hash
-      FROM base_dirs
-    `,
-    ).run(alphaRoot, alphaRoot, betaRoot, betaRoot);
-
-    // Index temp rel tables
     db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_alpha_rel_rpath       ON alpha_rel(rpath);
-      CREATE INDEX IF NOT EXISTS idx_beta_rel_rpath        ON beta_rel(rpath);
-      CREATE INDEX IF NOT EXISTS idx_base_rel_rpath        ON base_rel(rpath);
+      CREATE TEMP TABLE alpha_rel(
+        rpath   TEXT PRIMARY KEY,
+        hash    TEXT,
+        deleted INTEGER,
+        op_ts   INTEGER
+      ) WITHOUT ROWID;
 
-      CREATE INDEX IF NOT EXISTS idx_alpha_dirs_rel_rpath  ON alpha_dirs_rel(rpath);
-      CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_rpath   ON beta_dirs_rel(rpath);
-      CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_rpath   ON base_dirs_rel(rpath);
+      CREATE TEMP TABLE beta_rel(
+        rpath   TEXT PRIMARY KEY,
+        hash    TEXT,
+        deleted INTEGER,
+        op_ts   INTEGER
+      ) WITHOUT ROWID;
+
+      CREATE TEMP TABLE base_rel(
+        rpath   TEXT PRIMARY KEY,
+        hash    TEXT,
+        deleted INTEGER,
+        op_ts   INTEGER
+      ) WITHOUT ROWID;
     `);
 
-    // composite indexes to speed up queries involving deleted
     db.exec(`
-    -- For files
-    CREATE INDEX IF NOT EXISTS idx_alpha_rel_deleted_rpath ON alpha_rel(deleted, rpath);
-    CREATE INDEX IF NOT EXISTS idx_beta_rel_deleted_rpath  ON beta_rel(deleted, rpath);
-    CREATE INDEX IF NOT EXISTS idx_base_rel_deleted_rpath  ON base_rel(deleted, rpath);
+      INSERT INTO alpha_rel(rpath,hash,deleted,op_ts)
+      SELECT path, hash, deleted, op_ts FROM alpha_entries;
 
-    -- For dirs
-    CREATE INDEX IF NOT EXISTS idx_alpha_dirs_rel_deleted_rpath ON alpha_dirs_rel(deleted, rpath);
-    CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_deleted_rpath  ON beta_dirs_rel(deleted, rpath);
-    CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_deleted_rpath  ON base_dirs_rel(deleted, rpath);
+      INSERT INTO beta_rel(rpath,hash,deleted,op_ts)
+      SELECT path, hash, deleted, op_ts FROM beta_entries;
+
+      INSERT INTO base_rel(rpath,hash,deleted,op_ts)
+      SELECT path, hash, deleted, op_ts FROM base;
+    `);
+
+    // Dirs (RELATIVE)
+    db.exec(`
+      DROP TABLE IF EXISTS alpha_dirs_rel; DROP TABLE IF EXISTS beta_dirs_rel; DROP TABLE IF EXISTS base_dirs_rel;
+
+      CREATE TEMP TABLE alpha_dirs_rel(
+        rpath   TEXT PRIMARY KEY,
+        deleted INTEGER,
+        op_ts   INTEGER,
+        hash    TEXT
+      ) WITHOUT ROWID;
+
+      CREATE TEMP TABLE beta_dirs_rel(
+        rpath   TEXT PRIMARY KEY,
+        deleted INTEGER,
+        op_ts   INTEGER,
+        hash    TEXT
+      ) WITHOUT ROWID;
+
+      CREATE TEMP TABLE base_dirs_rel(
+        rpath   TEXT PRIMARY KEY,
+        deleted INTEGER,
+        op_ts   INTEGER,
+        hash    TEXT
+      ) WITHOUT ROWID;
+
+      INSERT INTO alpha_dirs_rel(rpath,deleted,op_ts,hash)
+      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM alpha.dirs;
+
+      INSERT INTO beta_dirs_rel(rpath,deleted,op_ts,hash)
+      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM beta.dirs;
+
+      INSERT INTO base_dirs_rel(rpath,deleted,op_ts,hash)
+      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM base_dirs;
+    `);
+
+    // covering indexes for (deleted,rpath) checks
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_alpha_rel_deleted_rpath ON alpha_rel(deleted, rpath);
+      CREATE INDEX IF NOT EXISTS idx_beta_rel_deleted_rpath  ON beta_rel(deleted,  rpath);
+      CREATE INDEX IF NOT EXISTS idx_base_rel_deleted_rpath  ON base_rel(deleted,  rpath);
+
+      CREATE INDEX IF NOT EXISTS idx_alpha_dirs_rel_deleted_rpath ON alpha_dirs_rel(deleted, rpath);
+      CREATE INDEX IF NOT EXISTS idx_beta_dirs_rel_deleted_rpath  ON beta_dirs_rel(deleted,  rpath);
+      CREATE INDEX IF NOT EXISTS idx_base_dirs_rel_deleted_rpath  ON base_dirs_rel(deleted,  rpath);
     `);
     done();
 
+    // ---------- 3-way plan: FILES ----------
     done = t("build tmp_* files");
-    // ---------- 3-way plan: FILES (change/delete sets) ----------
     db.exec(`
       DROP TABLE IF EXISTS tmp_changedA;
       DROP TABLE IF EXISTS tmp_changedB;
       DROP TABLE IF EXISTS tmp_deletedA;
       DROP TABLE IF EXISTS tmp_deletedB;
 
-      CREATE TEMP TABLE tmp_changedA AS
-        SELECT a.rpath AS rpath, a.hash
-        FROM alpha_rel a
-        LEFT JOIN base_rel b ON b.rpath = a.rpath
-        WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
+      CREATE TEMP TABLE tmp_changedA(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_changedB(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_deletedA(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_deletedB(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
 
-      CREATE TEMP TABLE tmp_changedB AS
-        SELECT b.rpath AS rpath, b.hash
-        FROM beta_rel b
-        LEFT JOIN base_rel bb ON bb.rpath = b.rpath
-        WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
+      INSERT OR IGNORE INTO tmp_changedA(rpath)
+      SELECT a.rpath
+      FROM alpha_rel a
+      LEFT JOIN base_rel b USING (rpath)
+      WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
 
-      -- deletions: base says existed (deleted=0) and side is missing or deleted
-      CREATE TEMP TABLE tmp_deletedA AS
-        SELECT b.rpath
-        FROM base_rel b
-        LEFT JOIN alpha_rel a ON a.rpath = b.rpath
-        WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+      INSERT OR IGNORE INTO tmp_changedB(rpath)
+      SELECT b.rpath
+      FROM beta_rel b
+      LEFT JOIN base_rel bb USING (rpath)
+      WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
 
-      CREATE TEMP TABLE tmp_deletedB AS
-        SELECT b.rpath
-        FROM base_rel b
-        LEFT JOIN beta_rel a ON a.rpath = b.rpath
-        WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+      INSERT OR IGNORE INTO tmp_deletedA(rpath)
+      SELECT b.rpath
+      FROM base_rel b
+      LEFT JOIN alpha_rel a USING (rpath)
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+
+      INSERT OR IGNORE INTO tmp_deletedB(rpath)
+      SELECT b.rpath
+      FROM base_rel b
+      LEFT JOIN beta_rel a USING (rpath)
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
     `);
+    done();
 
-    // ---------- 3-way plan: DIRS (presence-only change/delete) ----------
+    // ---------- 3-way plan: DIRS ----------
     db.exec(`
       DROP TABLE IF EXISTS tmp_dirs_changedA;
       DROP TABLE IF EXISTS tmp_dirs_changedB;
       DROP TABLE IF EXISTS tmp_dirs_deletedA;
       DROP TABLE IF EXISTS tmp_dirs_deletedB;
 
-      CREATE TEMP TABLE tmp_dirs_changedA AS
-        SELECT a.rpath AS rpath
-        FROM alpha_dirs_rel a
-        LEFT JOIN base_dirs_rel b ON b.rpath = a.rpath
-        WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
+      CREATE TEMP TABLE tmp_dirs_changedA(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_dirs_changedB(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_dirs_deletedA(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TEMP TABLE tmp_dirs_deletedB(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
 
-      CREATE TEMP TABLE tmp_dirs_changedB AS
-        SELECT b.rpath AS rpath
-        FROM beta_dirs_rel b
-        LEFT JOIN base_dirs_rel bb ON bb.rpath = b.rpath
-        WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
+      INSERT OR IGNORE INTO tmp_dirs_changedA(rpath)
+      SELECT a.rpath
+      FROM alpha_dirs_rel a
+      LEFT JOIN base_dirs_rel b USING (rpath)
+      WHERE a.deleted = 0 AND (b.rpath IS NULL OR b.deleted = 1 OR a.hash <> b.hash);
 
-      CREATE TEMP TABLE tmp_dirs_deletedA AS
-        SELECT b.rpath
-        FROM base_dirs_rel b
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = b.rpath
-        WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+      INSERT OR IGNORE INTO tmp_dirs_changedB(rpath)
+      SELECT b.rpath
+      FROM beta_dirs_rel b
+      LEFT JOIN base_dirs_rel bb USING (rpath)
+      WHERE b.deleted = 0 AND (bb.rpath IS NULL OR bb.deleted = 1 OR b.hash <> bb.hash);
 
-      CREATE TEMP TABLE tmp_dirs_deletedB AS
-        SELECT b.rpath
-        FROM base_dirs_rel b
-        LEFT JOIN beta_dirs_rel a ON a.rpath = b.rpath
-        WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+      INSERT OR IGNORE INTO tmp_dirs_deletedA(rpath)
+      SELECT b.rpath
+      FROM base_dirs_rel b
+      LEFT JOIN alpha_dirs_rel a USING (rpath)
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
+
+      INSERT OR IGNORE INTO tmp_dirs_deletedB(rpath)
+      SELECT b.rpath
+      FROM base_dirs_rel b
+      LEFT JOIN beta_dirs_rel a USING (rpath)
+      WHERE b.deleted = 0 AND (a.rpath IS NULL OR a.deleted = 1);
     `);
-
-    // Index the tmp_* tables too
-    db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_tmp_changedA_rpath       ON tmp_changedA(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_changedB_rpath       ON tmp_changedB(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_deletedA_rpath       ON tmp_deletedA(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_deletedB_rpath       ON tmp_deletedB(rpath);
-
-      CREATE INDEX IF NOT EXISTS idx_tmp_dirs_changedA_rpath  ON tmp_dirs_changedA(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_dirs_changedB_rpath  ON tmp_dirs_changedB(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedA_rpath  ON tmp_dirs_deletedA(rpath);
-      CREATE INDEX IF NOT EXISTS idx_tmp_dirs_deletedB_rpath  ON tmp_dirs_deletedB(rpath);
-    `);
-    done();
 
     done = t("derive plan arrays");
     const count = (tbl: string) =>
@@ -450,50 +384,38 @@ export async function runMerge({
     }
 
     // ---------- Build copy/delete plans (FILES) with LWW ----------
-
-    // A changed, B not changed → copy A→B (respect deletions of dirs on B)
     let toBeta = db
       .prepare(
         `
         SELECT a.rpath
         FROM tmp_changedA a
-        WHERE a.rpath NOT IN (SELECT rpath FROM tmp_changedB)
-          AND (
-            ? <> 'beta' OR (
-              a.rpath NOT IN (SELECT rpath FROM tmp_deletedB)
-            )
-          )
+        WHERE NOT EXISTS (SELECT 1 FROM tmp_changedB WHERE rpath = a.rpath)
+          AND ( ? <> 'beta' OR NOT EXISTS (SELECT 1 FROM tmp_deletedB WHERE rpath = a.rpath))
       `,
       )
       .all(prefer)
       .map((r) => r.rpath as string);
 
-    // B changed, A not changed → copy B→A (respect deletions of dirs on A)
     let toAlpha = db
       .prepare(
         `
         SELECT b.rpath
         FROM tmp_changedB b
-        WHERE b.rpath NOT IN (SELECT rpath FROM tmp_changedA)
-          AND (
-            ? <> 'alpha' OR (
-              b.rpath NOT IN (SELECT rpath FROM tmp_deletedA)
-            )
-          )
+        WHERE NOT EXISTS (SELECT 1 FROM tmp_changedA WHERE rpath = b.rpath)
+          AND ( ? <> 'alpha' OR NOT EXISTS (SELECT 1 FROM tmp_deletedA WHERE rpath = b.rpath))
       `,
       )
       .all(prefer)
       .map((r) => r.rpath as string);
 
-    // changed vs changed → LWW (use op_ts; tie within EPS -> prefer)
     const bothChangedToBeta = db
       .prepare(
         `
         SELECT cA.rpath
         FROM tmp_changedA cA
         JOIN tmp_changedB cB USING (rpath)
-        JOIN alpha_rel a ON a.rpath = cA.rpath
-        JOIN beta_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_rel a USING (rpath)
+        JOIN beta_rel  b USING (rpath)
         WHERE a.op_ts > b.op_ts + ?
       `,
       )
@@ -506,8 +428,8 @@ export async function runMerge({
         SELECT cA.rpath
         FROM tmp_changedA cA
         JOIN tmp_changedB cB USING (rpath)
-        JOIN alpha_rel a ON a.rpath = cA.rpath
-        JOIN beta_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_rel a USING (rpath)
+        JOIN beta_rel  b USING (rpath)
         WHERE b.op_ts > a.op_ts + ?
       `,
       )
@@ -520,8 +442,8 @@ export async function runMerge({
         SELECT cA.rpath
         FROM tmp_changedA cA
         JOIN tmp_changedB cB USING (rpath)
-        JOIN alpha_rel a ON a.rpath = cA.rpath
-        JOIN beta_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_rel a USING (rpath)
+        JOIN beta_rel  b USING (rpath)
         WHERE ABS(a.op_ts - b.op_ts) <= ?
       `,
       )
@@ -537,33 +459,30 @@ export async function runMerge({
     }
     done();
 
+    // ---------- deletions (files) with LWW ----------
     done = t("deletions");
 
-    // deletions (files) with LWW against changes on the other side
-
-    // No-conflict delete: A deleted & B didn't change
     const delInBeta_noConflict = db
       .prepare(
         `
         SELECT dA.rpath
         FROM tmp_deletedA dA
-        LEFT JOIN tmp_changedB cB ON cB.rpath = dA.rpath
+        LEFT JOIN tmp_changedB cB USING (rpath)
         WHERE cB.rpath IS NULL
       `,
       )
       .all()
       .map((r) => r.rpath as string);
 
-    // Conflict: A deleted vs B changed → LWW (delete in B if A newer; tie -> prefer alpha)
     const delInBeta_conflict = db
       .prepare(
         `
         SELECT dA.rpath
         FROM tmp_deletedA dA
         JOIN tmp_changedB cB USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
-        LEFT JOIN base_rel  br ON br.rpath = dA.rpath
+        LEFT JOIN alpha_rel a USING (rpath)
+        LEFT JOIN beta_rel  b USING (rpath)
+        LEFT JOIN base_rel  br USING (rpath)
         WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
            OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
@@ -571,16 +490,15 @@ export async function runMerge({
       .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    // Conflict: A deleted vs B changed → LWW (copy B->A if B newer; tie -> prefer beta)
     const toAlpha_conflict = db
       .prepare(
         `
         SELECT dA.rpath
         FROM tmp_deletedA dA
         JOIN tmp_changedB cB USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dA.rpath
-        LEFT JOIN base_rel  br ON br.rpath = dA.rpath
+        LEFT JOIN alpha_rel a USING (rpath)
+        LEFT JOIN beta_rel  b USING (rpath)
+        LEFT JOIN base_rel  br USING (rpath)
         WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
            OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
       `,
@@ -591,14 +509,12 @@ export async function runMerge({
     let delInBeta = uniq([...delInBeta_noConflict, ...delInBeta_conflict]);
     toAlpha = uniq([...toAlpha, ...toAlpha_conflict]);
 
-    // Symmetric side: B deleted vs A changed
-
     const delInAlpha_noConflict = db
       .prepare(
         `
         SELECT dB.rpath
         FROM tmp_deletedB dB
-        LEFT JOIN tmp_changedA cA ON cA.rpath = dB.rpath
+        LEFT JOIN tmp_changedA cA USING (rpath)
         WHERE cA.rpath IS NULL
       `,
       )
@@ -611,9 +527,9 @@ export async function runMerge({
         SELECT dB.rpath
         FROM tmp_deletedB dB
         JOIN tmp_changedA cA USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dB.rpath
-        LEFT JOIN base_rel  br ON br.rpath = dB.rpath
+        LEFT JOIN alpha_rel a USING (rpath)
+        LEFT JOIN beta_rel  b USING (rpath)
+        LEFT JOIN base_rel  br USING (rpath)
         WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
            OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
       `,
@@ -627,9 +543,9 @@ export async function runMerge({
         SELECT dB.rpath
         FROM tmp_deletedB dB
         JOIN tmp_changedA cA USING (rpath)
-        LEFT JOIN alpha_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_rel  b ON b.rpath = dB.rpath
-        LEFT JOIN base_rel  br ON br.rpath = dB.rpath
+        LEFT JOIN alpha_rel a USING (rpath)
+        LEFT JOIN beta_rel  b USING (rpath)
+        LEFT JOIN base_rel  br USING (rpath)
         WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
            OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
@@ -639,6 +555,7 @@ export async function runMerge({
 
     let delInAlpha = uniq([...delInAlpha_noConflict, ...delInAlpha_conflict]);
     toBeta = uniq([...toBeta, ...toBeta_conflict]);
+    done();
 
     // ---------- DIR plans with LWW (presence-based) ----------
     // create-only
@@ -646,8 +563,8 @@ export async function runMerge({
       .prepare(
         `
         SELECT rpath FROM tmp_dirs_changedA
-        WHERE rpath NOT IN (SELECT rpath FROM tmp_dirs_changedB)
-          AND ( ? <> 'beta' OR rpath NOT IN (SELECT rpath FROM tmp_dirs_deletedB))
+        WHERE NOT EXISTS (SELECT 1 FROM tmp_dirs_changedB WHERE rpath = tmp_dirs_changedA.rpath)
+          AND ( ? <> 'beta' OR NOT EXISTS (SELECT 1 FROM tmp_dirs_deletedB WHERE rpath = tmp_dirs_changedA.rpath))
       `,
       )
       .all(prefer)
@@ -657,22 +574,21 @@ export async function runMerge({
       .prepare(
         `
         SELECT rpath FROM tmp_dirs_changedB
-        WHERE rpath NOT IN (SELECT rpath FROM tmp_dirs_changedA)
-          AND ( ? <> 'alpha' OR rpath NOT IN (SELECT rpath FROM tmp_dirs_deletedA))
+        WHERE NOT EXISTS (SELECT 1 FROM tmp_dirs_changedA WHERE rpath = tmp_dirs_changedB.rpath)
+          AND ( ? <> 'alpha' OR NOT EXISTS (SELECT 1 FROM tmp_dirs_deletedA WHERE rpath = tmp_dirs_changedB.rpath))
       `,
       )
       .all(prefer)
       .map((r) => r.rpath as string);
 
-    // both created dir → LWW via op_ts (dir op_ts)
     const bothDirsToBeta = db
       .prepare(
         `
         SELECT cA.rpath
         FROM tmp_dirs_changedA cA
         JOIN tmp_dirs_changedB cB USING (rpath)
-        JOIN alpha_dirs_rel a ON a.rpath = cA.rpath
-        JOIN beta_dirs_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_dirs_rel a USING (rpath)
+        JOIN beta_dirs_rel  b USING (rpath)
         WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
       `,
       )
@@ -685,8 +601,8 @@ export async function runMerge({
         SELECT cA.rpath
         FROM tmp_dirs_changedA cA
         JOIN tmp_dirs_changedB cB USING (rpath)
-        JOIN alpha_dirs_rel a ON a.rpath = cA.rpath
-        JOIN beta_dirs_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_dirs_rel a USING (rpath)
+        JOIN beta_dirs_rel  b USING (rpath)
         WHERE COALESCE(b.op_ts,0) > COALESCE(a.op_ts,0) + ?
       `,
       )
@@ -699,15 +615,13 @@ export async function runMerge({
         SELECT cA.rpath
         FROM tmp_dirs_changedA cA
         JOIN tmp_dirs_changedB cB USING (rpath)
-        JOIN alpha_dirs_rel a ON a.rpath = cA.rpath
-        JOIN beta_dirs_rel  b ON b.rpath = cB.rpath
+        JOIN alpha_dirs_rel a USING (rpath)
+        JOIN beta_dirs_rel  b USING (rpath)
         WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts,0)) <= ?
       `,
       )
       .all(EPS)
       .map((r) => r.rpath as string);
-    done();
-    done = t("to alpha/beta uniq");
 
     if (prefer === "alpha") {
       toBetaDirs = uniq([...toBetaDirs, ...bothDirsToBeta, ...bothDirsTie]);
@@ -716,18 +630,15 @@ export async function runMerge({
       toBetaDirs = uniq([...toBetaDirs, ...bothDirsToBeta]);
       toAlphaDirs = uniq([...toAlphaDirs, ...bothDirsToAlpha, ...bothDirsTie]);
     }
-    done();
 
     // dir deletions with LWW
     done = t("dir LWW");
-
-    // no-conflict
     const delDirsInBeta_noConflict = db
       .prepare(
         `
         SELECT dA.rpath
         FROM tmp_dirs_deletedA dA
-        LEFT JOIN tmp_dirs_changedB cB ON cB.rpath = dA.rpath
+        LEFT JOIN tmp_dirs_changedB cB USING (rpath)
         WHERE cB.rpath IS NULL
       `,
       )
@@ -739,23 +650,22 @@ export async function runMerge({
         `
         SELECT dB.rpath
         FROM tmp_dirs_deletedB dB
-        LEFT JOIN tmp_dirs_changedA cA ON cA.rpath = dB.rpath
+        LEFT JOIN tmp_dirs_changedA cA USING (rpath)
         WHERE cA.rpath IS NULL
       `,
       )
       .all()
       .map((r) => r.rpath as string);
 
-    // conflict: A deleted dir vs B created dir
     const delDirsInBeta_conflict = db
       .prepare(
         `
         SELECT dA.rpath
         FROM tmp_dirs_deletedA dA
         JOIN tmp_dirs_changedB cB USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        LEFT JOIN base_dirs_rel br ON br.rpath = dA.rpath
+        LEFT JOIN alpha_dirs_rel a USING (rpath)
+        LEFT JOIN beta_dirs_rel  b USING (rpath)
+        LEFT JOIN base_dirs_rel br USING (rpath)
         WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
            OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
@@ -769,9 +679,9 @@ export async function runMerge({
         SELECT dA.rpath
         FROM tmp_dirs_deletedA dA
         JOIN tmp_dirs_changedB cB USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dA.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dA.rpath
-        LEFT JOIN base_dirs_rel br ON br.rpath = dA.rpath
+        LEFT JOIN alpha_dirs_rel a USING (rpath)
+        LEFT JOIN beta_dirs_rel  b USING (rpath)
+        LEFT JOIN base_dirs_rel br USING (rpath)
         WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
            OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
       `,
@@ -779,16 +689,15 @@ export async function runMerge({
       .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    // conflict: B deleted dir vs A created dir
     const delDirsInAlpha_conflict = db
       .prepare(
         `
         SELECT dB.rpath
         FROM tmp_dirs_deletedB dB
         JOIN tmp_dirs_changedA cA USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        LEFT JOIN base_dirs_rel br ON br.rpath = dB.rpath
+        LEFT JOIN alpha_dirs_rel a USING (rpath)
+        LEFT JOIN beta_dirs_rel  b USING (rpath)
+        LEFT JOIN base_dirs_rel br USING (rpath)
         WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
            OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
       `,
@@ -802,9 +711,9 @@ export async function runMerge({
         SELECT dB.rpath
         FROM tmp_dirs_deletedB dB
         JOIN tmp_dirs_changedA cA USING (rpath)
-        LEFT JOIN alpha_dirs_rel a ON a.rpath = dB.rpath
-        LEFT JOIN beta_dirs_rel  b ON b.rpath = dB.rpath
-        LEFT JOIN base_dirs_rel br ON br.rpath = dB.rpath
+        LEFT JOIN alpha_dirs_rel a USING (rpath)
+        LEFT JOIN beta_dirs_rel  b USING (rpath)
+        LEFT JOIN base_dirs_rel br USING (rpath)
         WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
            OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
       `,
@@ -824,48 +733,39 @@ export async function runMerge({
     toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
     done();
 
+    // ---------- TYPE-FLIP (file vs dir) conflicts ----------
     done = t("type flips");
 
-    // ---------- TYPE-FLIP (file vs dir) conflicts ----------
-    // If alpha has a dir and beta has a file at same rpath -> delete file in beta
     const fileConflictsInBeta = db
       .prepare(
         `
         SELECT b.rpath
         FROM beta_rel b
-        JOIN alpha_dirs_rel d ON d.rpath = b.rpath
+        JOIN alpha_dirs_rel d USING (rpath)
         WHERE b.deleted = 0 AND (d.deleted = 0 OR d.deleted IS NULL)
       `,
       )
       .all()
       .map((r) => r.rpath as string);
 
-    // If beta has a dir and alpha has a file -> delete file in alpha
     const fileConflictsInAlpha = db
       .prepare(
         `
         SELECT a.rpath
         FROM alpha_rel a
-        JOIN beta_dirs_rel d ON d.rpath = a.rpath
+        JOIN beta_dirs_rel d USING (rpath)
         WHERE a.deleted = 0 AND (d.deleted = 0 OR d.deleted IS NULL)
       `,
       )
       .all()
       .map((r) => r.rpath as string);
 
-    // If alpha has a dir and beta has a file:
-    // - prefer "alpha": delete beta's file
-    // - prefer "beta": keep beta's file; remove any accidental scheduling
     if (prefer === "alpha") {
       delInBeta = uniq([...delInBeta, ...fileConflictsInBeta]);
     } else {
       const keep = new Set(fileConflictsInBeta);
       delInBeta = delInBeta.filter((r) => !keep.has(r));
     }
-
-    // If beta has a dir and alpha has a file:
-    // - prefer "beta": delete alpha's file
-    // - prefer "alpha": keep alpha's file; remove any accidental scheduling
     if (prefer === "beta") {
       delInAlpha = uniq([...delInAlpha, ...fileConflictsInAlpha]);
     } else {
@@ -873,50 +773,41 @@ export async function runMerge({
       delInAlpha = delInAlpha.filter((r) => !keep.has(r));
     }
 
-    // --- Pre-copy dir→file cleanup sets (only used if that side is preferred) ---
-    // If beta has a file and alpha has a dir at the same rpath → when prefer=beta,
-    // we must remove the dir on alpha before copying files to alpha.
+    // Pre-copy dir→file cleanup sets (only used if that side is preferred)
     let preDeleteDirsOnAlphaForBetaFiles: string[] = db
       .prepare(
         `
-    SELECT a.rpath
-    FROM alpha_dirs_rel a
-    JOIN beta_rel b USING (rpath)
-    WHERE a.deleted = 0 AND b.deleted = 0
-  `,
+        SELECT a.rpath
+        FROM alpha_dirs_rel a
+        JOIN beta_rel b USING (rpath)
+        WHERE a.deleted = 0 AND b.deleted = 0
+      `,
       )
       .all()
       .map((r) => (r as any).rpath as string);
 
-    // If alpha has a file and beta has a dir → when prefer=alpha,
-    // remove the dir on beta before copying files to beta.
     let preDeleteDirsOnBetaForAlphaFiles: string[] = db
       .prepare(
         `
-    SELECT b.rpath
-    FROM beta_dirs_rel b
-    JOIN alpha_rel a USING (rpath)
-    WHERE b.deleted = 0 AND a.deleted = 0
-  `,
+        SELECT b.rpath
+        FROM beta_dirs_rel b
+        JOIN alpha_rel a USING (rpath)
+        WHERE b.deleted = 0 AND a.deleted = 0
+      `,
       )
       .all()
       .map((r) => (r as any).rpath as string);
 
-    // De-dupe and deepest-first so parent dirs are removed last.
     preDeleteDirsOnAlphaForBetaFiles = sortDeepestFirst(
       nonRoot(uniq(preDeleteDirsOnAlphaForBetaFiles)),
     );
     preDeleteDirsOnBetaForAlphaFiles = sortDeepestFirst(
       nonRoot(uniq(preDeleteDirsOnBetaForAlphaFiles)),
     );
-
     done();
 
-    done = t("safety rails");
-
     // ---------- SAFETY RAILS ----------
-    // These are not "just" safety -- they are important since doing them
-    // in sql is slow.
+    done = t("safety rails");
     toBeta = uniq(toBeta);
     toAlpha = uniq(toAlpha);
     delInBeta = uniq(delInBeta);
@@ -926,9 +817,7 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    // --- JS guard to block copies into a side that deleted a parent dir (by preference) ---
     function makePrefixChecker(dirs: string[]) {
-      // Normalize and sort longest-first for early exits
       const ps = dirs
         .map((d) => (d.endsWith("/") ? d.slice(0, -1) : d))
         .filter((d) => d && d !== ".")
@@ -941,7 +830,6 @@ export async function runMerge({
       };
     }
 
-    // We only need the raw deleted-dir *candidates* from the tmp tables:
     const deletedDirsA = db
       .prepare(`SELECT rpath FROM tmp_dirs_deletedA`)
       .all()
@@ -953,19 +841,15 @@ export async function runMerge({
 
     if (prefer === "alpha" && deletedDirsA.length) {
       const underADeleted = makePrefixChecker(deletedDirsA);
-      // Block beta→alpha copies that land under a dir alpha deleted
       toAlpha = toAlpha.filter((r) => !underADeleted(r));
     }
     if (prefer === "beta" && deletedDirsB.length) {
       const underBDeleted = makePrefixChecker(deletedDirsB);
-      // Block alpha→beta copies that land under a dir beta deleted
       toBeta = toBeta.filter((r) => !underBDeleted(r));
     }
     done();
 
     // ---------- APPLY IGNORES ----------
-    // Drop any rpaths that are ignored on either side. This makes ignores local-only:
-    // we do not copy *or* delete ignored paths, and we do not update base for them.
     done = t("ignores");
     const before = verbose
       ? {
@@ -1008,43 +892,41 @@ export async function runMerge({
       );
       console.log("Ignores filtered plan counts (dropped):", delta);
     }
+
     const dropInternal = (xs: string[]) =>
       xs.filter((r) => r.split("/").pop() !== IGNORE_FILE);
-
     toBeta = dropInternal(toBeta);
     toAlpha = dropInternal(toAlpha);
     delInBeta = dropInternal(delInBeta);
     delInAlpha = dropInternal(delInAlpha);
     done();
 
+    // ---------- overlaps + dir delete safety ----------
     done = t("overlaps");
     const delInBetaSet = asSet(delInBeta);
     const delInAlphaSet = asSet(delInAlpha);
-    /** -------- 1) copy/delete overlap (files) in O(n) using Sets -------- */
+
     if (toBeta.length && delInBeta.length) {
       const toBetaSet = new Set(toBeta);
-      const before = delInBeta.length;
+      const beforeN = delInBeta.length;
       delInBeta = delInBeta.filter((r) => !toBetaSet.has(r));
-      const dropped = before - delInBeta.length;
-      if (dropped && verbose) {
+      if (verbose && beforeN !== delInBeta.length) {
         console.warn(
-          `planner safety: alpha→beta file overlap dropped=${dropped}`,
+          `planner safety: alpha→beta file overlap dropped=${beforeN - delInBeta.length}`,
         );
       }
     }
     if (toAlpha.length && delInAlpha.length) {
       const toAlphaSet = new Set(toAlpha);
-      const before = delInAlpha.length;
+      const beforeN = delInAlpha.length;
       delInAlpha = delInAlpha.filter((r) => !toAlphaSet.has(r));
-      const dropped = before - delInAlpha.length;
-      if (dropped && verbose) {
+      if (verbose && beforeN !== delInAlpha.length) {
         console.warn(
-          `planner safety: beta→alpha file overlap dropped=${dropped}`,
+          `planner safety: beta→alpha file overlap dropped=${beforeN - delInAlpha.length}`,
         );
       }
     }
 
-    /** -------- 2) dir delete safety in O(m log n) via binary search -------- */
     function normalizeDir(d: string) {
       return d.endsWith("/") ? d.slice(0, -1) : d;
     }
@@ -1058,55 +940,44 @@ export async function runMerge({
       }
       return lo;
     }
-    /**
-     * Returns true if any incoming path is the dir itself or lies under it.
-     * incomingSorted must be lexicographically sorted.
-     */
     function anyIncomingUnderDir(
       incomingSorted: string[],
       dir: string,
     ): boolean {
       const d = normalizeDir(dir);
-      if (!d) return incomingSorted.length > 0; // conservative for root
-
-      // 1) exact match at the same path (e.g., file replacing dir)
+      if (!d) return incomingSorted.length > 0;
       const j = lowerBound(incomingSorted, d);
       if (j < incomingSorted.length && incomingSorted[j] === d) return true;
-
-      // 2) descendant under d/
       const prefix = d + "/";
       const i = lowerBound(incomingSorted, prefix);
       return i < incomingSorted.length && incomingSorted[i].startsWith(prefix);
     }
 
-    // Additional safety: if a side is preferred and we are COPYING OUT of a dir on that side,
-    // don't delete that dir there. (Protects "prefer beta → keep & restore".)
     if (prefer === "beta" && delDirsInBeta.length) {
       const outgoingFromBetaSorted = [...toAlpha, ...toAlphaDirs].sort();
-      const before = delDirsInBeta.length;
+      const beforeN = delDirsInBeta.length;
       delDirsInBeta = delDirsInBeta.filter(
         (d) => !anyIncomingUnderDir(outgoingFromBetaSorted, d),
       );
-      if (verbose && before !== delDirsInBeta.length) {
+      if (verbose && beforeN !== delDirsInBeta.length) {
         console.warn(
-          `planner safety: kept ${before - delDirsInBeta.length} beta dirs (preferred source has outgoing under them)`,
+          `planner safety: kept ${beforeN - delDirsInBeta.length} beta dirs (preferred source has outgoing under them)`,
         );
       }
     }
     if (prefer === "alpha" && delDirsInAlpha.length) {
       const outgoingFromAlphaSorted = [...toBeta, ...toBetaDirs].sort();
-      const before = delDirsInAlpha.length;
+      const beforeN = delDirsInAlpha.length;
       delDirsInAlpha = delDirsInAlpha.filter(
         (d) => !anyIncomingUnderDir(outgoingFromAlphaSorted, d),
       );
-      if (verbose && before !== delDirsInAlpha.length) {
+      if (verbose && beforeN !== delDirsInAlpha.length) {
         console.warn(
-          `planner safety: kept ${before - delDirsInAlpha.length} alpha dirs (preferred source has outgoing under them)`,
+          `planner safety: kept ${beforeN - delDirsInAlpha.length} alpha dirs (preferred source has outgoing under them)`,
         );
       }
     }
 
-    // Sort once; merging files + dirs keeps semantics you had before
     const betaIncomingSorted = [...toBeta, ...toBetaDirs].sort();
     const alphaIncomingSorted = [...toAlpha, ...toAlphaDirs].sort();
 
@@ -1127,10 +998,8 @@ export async function runMerge({
         `planner safety: dir-delete clamped (beta=${droppedBetaDirs}, alpha=${droppedAlphaDirs})`,
       );
     }
-
     done();
 
-    // Assert (verbose only)
     if (verbose) {
       const againBeta = toBeta.filter((r) => delInBetaSet.has(r)).length;
       const againAlpha = toAlpha.filter((r) => delInAlphaSet.has(r)).length;
@@ -1145,7 +1014,6 @@ export async function runMerge({
     const tmp = await mkdtemp(path.join(tmpdir(), "sync-plan-"));
     try {
       done = t("files lists");
-      // ---------- files-from (NUL-separated) ----------
       const listToBeta = path.join(tmp, "toBeta.list");
       const listToAlpha = path.join(tmp, "toAlpha.list");
       const listDelInBeta = path.join(tmp, "delInBeta.list");
@@ -1156,7 +1024,6 @@ export async function runMerge({
       const listDelDirsInBeta = path.join(tmp, "delInBeta.dirs.list");
       const listDelDirsInAlpha = path.join(tmp, "delInAlpha.dirs.list");
 
-      // don't try to delete non-empty folder
       delDirsInBeta = sortDeepestFirst(nonRoot(delDirsInBeta));
       delDirsInAlpha = sortDeepestFirst(nonRoot(delDirsInAlpha));
 
@@ -1188,10 +1055,10 @@ export async function runMerge({
       }
 
       // ---------- rsync ----------
-      let copyAlphaBetaZero = false;
-      let copyBetaAlphaZero = false;
-      let copyDirsAlphaBetaZero = false;
-      let copyDirsBetaAlphaZero = false;
+      let copyAlphaBetaOk = false;
+      let copyBetaAlphaOk = false;
+      let copyDirsAlphaBetaOk = false;
+      let copyDirsBetaAlphaOk = false;
 
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
@@ -1223,10 +1090,9 @@ export async function runMerge({
       );
       done();
 
-      // 1b) dir→file cleanup (remove conflicting dirs on the side where files will land)
+      // 1b) dir→file cleanup
       done = t("rsync: 1b) dir→file cleanup");
       if (prefer === "beta" && preDeleteDirsOnAlphaForBetaFiles.length) {
-        // Delete dirs on alpha so beta's files can be copied over
         await rsyncDeleteChunked(
           tmp,
           alpha,
@@ -1246,12 +1112,11 @@ export async function runMerge({
           { forceEmptySource: true },
         );
       }
-
       done();
 
-      // 2) create dirs (so file copies won't fail due to missing parents)
+      // 2) create dirs
       done = t("rsync: 2) create dirs");
-      copyDirsAlphaBetaZero = (
+      copyDirsAlphaBetaOk = (
         await rsyncCopyDirs(
           alpha,
           beta,
@@ -1259,8 +1124,8 @@ export async function runMerge({
           "alpha→beta",
           rsyncOpts,
         )
-      ).zero;
-      copyDirsBetaAlphaZero = (
+      ).ok;
+      copyDirsBetaAlphaOk = (
         await rsyncCopyDirs(
           beta,
           alpha,
@@ -1268,32 +1133,30 @@ export async function runMerge({
           "beta→alpha",
           rsyncOpts,
         )
-      ).zero;
+      ).ok;
       done();
 
       // 3) copy files
       done = t("rsync: 3) copy files");
-      copyAlphaBetaZero = (
+      copyAlphaBetaOk = (
         await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
-      ).zero;
-      copyBetaAlphaZero = (
+      ).ok;
+      copyBetaAlphaOk = (
         await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
-      ).zero;
+      ).ok;
       done();
 
       // 4) delete dirs last (after files removed so dirs are empty)
       done = t("rsync: 4) delete dirs");
-      // Guard: never delete a dir on a side that *also* reports it as created/changed this round
-      // when that side is preferred. This protects the “prefer beta keeps & restore” case.
       if (prefer === "beta" && delDirsInBeta.length) {
         const isChangedB = db.prepare<[string], { one?: number }>(
           `SELECT 1 AS one FROM tmp_dirs_changedB WHERE rpath = ?`,
         );
-        const before = delDirsInBeta.length;
+        const beforeN = delDirsInBeta.length;
         delDirsInBeta = delDirsInBeta.filter((d) => !isChangedB.get(d)?.one);
-        if (verbose && before !== delDirsInBeta.length) {
+        if (verbose && beforeN !== delDirsInBeta.length) {
           console.warn(
-            `clamped ${before - delDirsInBeta.length} dir deletions in beta (dir existed on beta & prefer=beta)`,
+            `clamped ${beforeN - delDirsInBeta.length} dir deletions in beta (dir existed on beta & prefer=beta)`,
           );
         }
       }
@@ -1301,11 +1164,11 @@ export async function runMerge({
         const isChangedA = db.prepare<[string], { one?: number }>(
           `SELECT 1 AS one FROM tmp_dirs_changedA WHERE rpath = ?`,
         );
-        const before = delDirsInAlpha.length;
+        const beforeN = delDirsInAlpha.length;
         delDirsInAlpha = delDirsInAlpha.filter((d) => !isChangedA.get(d)?.one);
-        if (verbose && before !== delDirsInAlpha.length) {
+        if (verbose && beforeN !== delDirsInAlpha.length) {
           console.warn(
-            `clamped ${before - delDirsInAlpha.length} dir deletions in alpha (dir existed on alpha & prefer=alpha)`,
+            `clamped ${beforeN - delDirsInAlpha.length} dir deletions in alpha (dir existed on alpha & prefer=alpha)`,
           );
         }
       }
@@ -1334,9 +1197,7 @@ export async function runMerge({
       );
       done();
 
-      if (verbose) {
-        console.log("rsync's all done, now updating database");
-      }
+      if (verbose) console.log("rsync's all done, now updating database");
 
       if (dryRun) {
         console.log("(dry-run) skipping base updates");
@@ -1344,8 +1205,8 @@ export async function runMerge({
         return;
       }
 
-      done = t("post rsync database update");
       // ---------- set-based base updates (fast) ----------
+      done = t("post rsync database update");
       db.exec(`
         DROP TABLE IF EXISTS plan_to_beta;
         DROP TABLE IF EXISTS plan_to_alpha;
@@ -1368,9 +1229,6 @@ export async function runMerge({
         CREATE TEMP TABLE plan_dirs_del_alpha(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
       `);
 
-      // Insert many rpaths in one statement (chunked to avoid param limits).
-      // The param limit in sqlite is by default 32766, so chunk should be less
-      // than that.
       function bulkInsert(table: string, rows: string[], chunk = 5000) {
         if (!rows.length) return;
         for (let i = 0; i < rows.length; i += chunk) {
@@ -1382,12 +1240,8 @@ export async function runMerge({
         }
       }
 
-      // (Optional) tiny timer wrapper to see wins
       function timed(label: string, fn: () => void) {
-        if (!verbose) {
-          fn();
-          return;
-        }
+        if (!verbose) return void fn();
         const t0 = Date.now();
         fn();
         const dt = Date.now() - t0;
@@ -1409,7 +1263,6 @@ export async function runMerge({
         tx();
       });
 
-      // Index plan tables for faster joins on big sets
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_plan_to_beta_rpath        ON plan_to_beta(rpath);
         CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_rpath       ON plan_to_alpha(rpath);
@@ -1422,150 +1275,128 @@ export async function runMerge({
         CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_alpha_rpath ON plan_dirs_del_alpha(rpath);
       `);
 
-      // Show plan table sizes in verbose mode
       if (verbose) {
         const c = (t: string) =>
           (db.prepare(`SELECT COUNT(*) n FROM ${t}`).get() as any).n;
         console.log(
-          `Plan table counts: to_beta=${c("plan_to_beta")} to_alpha=${c(
-            "plan_to_alpha",
-          )} del_beta=${c("plan_del_beta")} del_alpha=${c("plan_del_alpha")}`,
+          `Plan table counts: to_beta=${c("plan_to_beta")} to_alpha=${c("plan_to_alpha")} del_beta=${c(
+            "plan_del_beta",
+          )} del_alpha=${c("plan_del_alpha")}`,
         );
         console.log(
-          `Plan dir counts   : d_to_beta=${c(
-            "plan_dirs_to_beta",
-          )} d_to_alpha=${c("plan_dirs_to_alpha")} d_del_beta=${c(
-            "plan_dirs_del_beta",
-          )} d_del_alpha=${c("plan_dirs_del_alpha")}`,
+          `Plan dir counts   : d_to_beta=${c("plan_dirs_to_beta")} d_to_alpha=${c(
+            "plan_dirs_to_alpha",
+          )} d_del_beta=${c("plan_dirs_del_beta")} d_del_alpha=${c("plan_dirs_del_alpha")}`,
         );
       }
 
-      // Now set-based updates in a single transaction (preserve op_ts)
+      // set-based updates (preserve op_ts of chosen side); gate on rsync success
       db.transaction(() => {
-        // files copied A->B
-        if (copyAlphaBetaZero && toBeta.length) {
+        if (copyAlphaBetaOk && toBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
             SELECT p.rpath, a.hash, 0, a.op_ts
             FROM plan_to_beta p
-            JOIN alpha_rel a ON a.rpath = p.rpath;
+            JOIN alpha_rel a USING (rpath);
           `);
         }
-
-        // files copied B->A
-        if (copyBetaAlphaZero && toAlpha.length) {
+        if (copyBetaAlphaOk && toAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
             SELECT p.rpath, b.hash, 0, b.op_ts
             FROM plan_to_alpha p
-            JOIN beta_rel b ON b.rpath = p.rpath;
+            JOIN beta_rel b USING (rpath);
           `);
         }
-
-        // file deletions in beta (alpha won)
         if (delInBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, NULL, 1,
-                   COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+            SELECT p.rpath, NULL, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
             FROM plan_del_beta p
-            LEFT JOIN alpha_rel a ON a.rpath = p.rpath
-            LEFT JOIN beta_rel  b ON b.rpath  = p.rpath
-            LEFT JOIN base_rel  br ON br.rpath = p.rpath;
+            LEFT JOIN alpha_rel a USING (rpath)
+            LEFT JOIN beta_rel  b USING (rpath)
+            LEFT JOIN base_rel  br USING (rpath);
           `);
         }
-
-        // file deletions in alpha (beta won)
         if (delInAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, NULL, 1,
-                   COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+            SELECT p.rpath, NULL, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
             FROM plan_del_alpha p
-            LEFT JOIN beta_rel  b ON b.rpath  = p.rpath
-            LEFT JOIN alpha_rel a ON a.rpath = p.rpath
-            LEFT JOIN base_rel  br ON br.rpath = p.rpath;
+            LEFT JOIN beta_rel  b USING (rpath)
+            LEFT JOIN alpha_rel a USING (rpath)
+            LEFT JOIN base_rel  br USING (rpath);
           `);
         }
 
-        // Directories
-        if (copyDirsAlphaBetaZero && toBetaDirs.length) {
+        if (copyDirsAlphaBetaOk && toBetaDirs.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
             SELECT p.rpath, 0, a.op_ts, a.hash
             FROM plan_dirs_to_beta p
-            JOIN alpha_dirs_rel a ON a.rpath = p.rpath;
+            JOIN alpha_dirs_rel a USING (rpath);
           `);
         }
-        if (copyDirsBetaAlphaZero && toAlphaDirs.length) {
+        if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
             SELECT p.rpath, 0, b.op_ts, b.hash
             FROM plan_dirs_to_alpha p
-            JOIN beta_dirs_rel b ON b.rpath = p.rpath;
+            JOIN beta_dirs_rel b USING (rpath);
           `);
         }
         if (delDirsInBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
-            SELECT p.rpath, 1,
-                   COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
+            SELECT p.rpath, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
             FROM plan_dirs_del_beta p
-            LEFT JOIN alpha_dirs_rel a ON a.rpath = p.rpath
-            LEFT JOIN beta_dirs_rel  b ON b.rpath  = p.rpath
-            LEFT JOIN base_dirs_rel  br ON br.rpath = p.rpath;
+            LEFT JOIN alpha_dirs_rel a USING (rpath)
+            LEFT JOIN beta_dirs_rel  b USING (rpath)
+            LEFT JOIN base_dirs_rel  br USING (rpath);
           `);
         }
         if (delDirsInAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
-            SELECT p.rpath, 1,
-                   COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
+            SELECT p.rpath, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
             FROM plan_dirs_del_alpha p
-            LEFT JOIN beta_dirs_rel  b ON b.rpath  = p.rpath
-            LEFT JOIN alpha_dirs_rel a ON a.rpath = p.rpath
-            LEFT JOIN base_dirs_rel  br ON br.rpath = p.rpath;
+            LEFT JOIN beta_dirs_rel  b USING (rpath)
+            LEFT JOIN alpha_dirs_rel a USING (rpath)
+            LEFT JOIN base_dirs_rel  br USING (rpath);
           `);
         }
       })();
       done();
 
+      // ---------- prune tombstones now that alpha/beta are RELATIVE ----------
       done = t("drop tombstones");
-      // [ ] TODO: this doesn't work because of absolute versus relative paths.
-      // Files: drop tombstones now reflected in base, which saves a LOT of
-      // disk space, makes indexes smaller/faster, etc.
       db.exec(`
-          DELETE FROM alpha.files
-          WHERE deleted = 1
-            AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1);
+        DELETE FROM alpha.files
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1);
 
-          DELETE FROM beta.files
-          WHERE deleted = 1
-            AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1);
+        DELETE FROM beta.files
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1);
 
-          -- Dirs:
-          DELETE FROM alpha.dirs
-          WHERE deleted = 1
-            AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = alpha.dirs.path AND base_dirs.deleted = 1);
+        DELETE FROM alpha.dirs
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = alpha.dirs.path AND base_dirs.deleted = 1);
 
-          DELETE FROM beta.dirs
-          WHERE deleted = 1
-            AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = beta.dirs.path AND base_dirs.deleted = 1);
+        DELETE FROM beta.dirs
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = beta.dirs.path AND base_dirs.deleted = 1);
       `);
       done();
 
       done = t("sqlite hygiene");
-      // Hygiene on big runs
       db.exec("PRAGMA optimize");
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       done();
 
-      if (verbose) {
-        console.log("Merge complete.");
-      }
+      if (verbose) console.log("Merge complete.");
 
-      // Persist current side digests so we can early-out next time.
-      // (Only after successful non-dry-run merge.)
+      // Persist digests (after successful non-dry-run merge)
       const up = db.prepare(`REPLACE INTO merge_meta(key,value) VALUES(?,?)`);
       up.run("alpha_digest", digestAlpha);
       up.run("beta_digest", digestBeta);
@@ -1576,11 +1407,10 @@ export async function runMerge({
     }
   }
 
-  // files = absolute paths
-  // root = they should all be in root
+  // files = (now) RELATIVE rpaths; keep this to be resilient if a caller passes absolute paths later
   function makeRelative(files: string[], root: string) {
     return files.map((file) =>
-      file.startsWith(root) ? file.slice(root.length + 1) : file,
+      file.startsWith(root + "/") ? file.slice(root.length + 1) : file,
     );
   }
 
