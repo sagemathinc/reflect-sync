@@ -193,7 +193,7 @@ export class HotWatchManager {
       if (base === IGNORE_FILE) return;
 
       // Determine if this is a directory event
-      const isDir = ev === "addDir" || ev === "unlinkDir";
+      const isDir = ev?.endsWith("Dir");
 
       // Honor ignores: if ignored, drop event and stop descending
       if (this.isIgnored(r, isDir)) {

@@ -682,7 +682,7 @@ export async function runScheduler({
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
       watcher.on(evt as any, async (p: string) => {
         const r = rel(root, p);
-        if (mgr.isIgnored(r, evt)) {
+        if (mgr.isIgnored(r, evt?.endsWith("Dir"))) {
           return;
         }
 
