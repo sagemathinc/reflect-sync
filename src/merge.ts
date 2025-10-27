@@ -144,13 +144,13 @@ export async function runMerge({
       // Include files, links, and dirs; include 'deleted' so
       // removes affect the digest.
       const stmt = db.prepare(`
-        SELECT path, COALESCE(hash, '') AS hash, COALESCE(deleted, 0) AS deleted
+        SELECT path, COALESCE(hash, '') AS hash
         FROM (
-          SELECT path, hash, deleted FROM ${side}.files
+          SELECT path, hash FROM ${side}.files WHERE deleted = 0
           UNION ALL
-          SELECT path, hash, deleted FROM ${side}.links
+          SELECT path, hash FROM ${side}.links WHERE deleted = 0
           UNION ALL
-          SELECT path, hash, deleted FROM ${side}.dirs
+          SELECT path, hash FROM ${side}.dirs WHERE deleted = 0
         )
         ORDER BY path
       `);
@@ -1528,11 +1528,37 @@ export async function runMerge({
           `);
         }
       })();
-
       done();
-      // Optional hygiene on big runs
+
+      done = t("drop tombstones");
+      // [ ] TODO: this doesn't work because of absolute versus relative paths.
+      // Files: drop tombstones now reflected in base, which saves a LOT of
+      // disk space, makes indexes smaller/faster, etc.
+      db.exec(`
+          DELETE FROM alpha.files
+          WHERE deleted = 1
+            AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1);
+
+          DELETE FROM beta.files
+          WHERE deleted = 1
+            AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1);
+
+          -- Dirs:
+          DELETE FROM alpha.dirs
+          WHERE deleted = 1
+            AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = alpha.dirs.path AND base_dirs.deleted = 1);
+
+          DELETE FROM beta.dirs
+          WHERE deleted = 1
+            AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = beta.dirs.path AND base_dirs.deleted = 1);
+      `);
+      done();
+
+      done = t("sqlite hygiene");
+      // Hygiene on big runs
       db.exec("PRAGMA optimize");
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      done();
 
       if (verbose) {
         console.log("Merge complete.");

@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS files (
   last_seen INTEGER,
   hashed_ctime INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
 `);
 
   db.exec(`
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS files (
     deleted    INTEGER DEFAULT 0,
     last_seen  INTEGER
   );
+
+  CREATE INDEX IF NOT EXISTS dirs_live_idx  ON dirs(deleted, path);
 `);
 
   db.exec(`
@@ -58,7 +62,7 @@ CREATE TABLE IF NOT EXISTS files (
     deleted    INTEGER DEFAULT 0,
     last_seen  INTEGER
   );
-  CREATE INDEX IF NOT EXISTS idx_links_path ON links(path);
+CREATE INDEX IF NOT EXISTS links_live_idx ON links(deleted, path);
   `);
 
   return db;
