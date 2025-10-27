@@ -2,18 +2,6 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-/*
-function hasColumn(db: Database, table: string, col: string): boolean {
-  return db.prepare(`PRAGMA table_info(${table})`).all()
-    .some((r: any) => r.name === col);
-}
-
-function addColumnIfMissing(db: Database, table: string, col: string, spec: string) {
-  if (!hasColumn(db, table, col)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${spec}`);
-  }
-}*/
-
 export function getDb(dbPath: string): Database {
   // ----------------- SQLite setup -----------------
   mkdirSync(dirname(dbPath), { recursive: true });
@@ -34,9 +22,6 @@ CREATE TABLE IF NOT EXISTS files (
   op_ts INTEGER,
   hash TEXT,
   deleted INTEGER DEFAULT 0,
-  mode    INTEGER DEFAULT 0,
-  uid     INTEGER DEFAULT 0,
-  gid     INTEGER DEFAULT 0,
   last_seen INTEGER,
   hashed_ctime INTEGER
 );
@@ -49,9 +34,6 @@ CREATE TABLE IF NOT EXISTS files (
     mtime      INTEGER,
     op_ts      INTEGER,  -- operation timestamp for last write wins
     deleted    INTEGER DEFAULT 0,
-    mode      INTEGER DEFAULT 0,
-    uid       INTEGER DEFAULT 0,
-    gid       INTEGER DEFAULT 0,
     last_seen  INTEGER
   );
 `);
