@@ -39,8 +39,7 @@ program
   .command("ingest")
   .description("Ingest NDJSON deltas from stdin into a local files table")
   .requiredOption("--db <path>", "sqlite db file")
-  .option("--root <path>", "absolute root to accept")
-  .action(async (opts: { db: string; root: string }, command) => {
+  .action(async (opts: { db: string }, command) => {
     const { runIngestDelta } = await import("./ingest-delta.js");
     await runIngestDelta({ ...command.optsWithGlobals(), ...opts });
   });

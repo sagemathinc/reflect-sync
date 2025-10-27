@@ -53,13 +53,9 @@ async function runScanOverSshIntoIngest(opts: {
   const ssh = spawnSshLocal(keyPath, remoteCmd, "pipe");
 
   // Local ingest
-  const ingest = spawn(
-    nodeExe,
-    [dist("ingest-delta.js"), "--db", localDb, "--root", remoteRoot],
-    {
-      stdio: ["pipe", "inherit", "inherit"],
-    },
-  );
+  const ingest = spawn(nodeExe, [dist("ingest-delta.js"), "--db", localDb], {
+    stdio: ["pipe", "inherit", "inherit"],
+  });
 
   ssh.stdout!.pipe(ingest.stdin!);
 
@@ -136,12 +132,11 @@ const sshEnabled = process.env.CCSYNC_SKIP_SSH_TEST === undefined;
       const db = new Database(aDbLocal);
       const row = db
         .prepare(`SELECT path, hash, deleted FROM files WHERE path = ?`)
-        .get(f);
+        .get('hello.txt');
       db.close();
 
       expect(row).toBeTruthy();
       expect(row.deleted).toBe(0);
-      expect(row.path).toBe(f);
     });
   },
 );

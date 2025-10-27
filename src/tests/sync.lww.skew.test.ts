@@ -28,10 +28,9 @@ function runIngestWithPreface(
   prefaceLines: any[],
   payload: string,
   db: string,
-  root: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, [INGEST, "--db", db, "--root", root], {
+    const p = spawn(process.execPath, [INGEST, "--db", db], {
       stdio: ["pipe", "inherit", "inherit"],
     });
     const preface = prefaceLines.map((o) => JSON.stringify(o) + "\n").join("");
@@ -82,7 +81,6 @@ describe("LWW with clock skew (beta considered remote via ingest)", () => {
       [{ kind: "time", now: fakeRemoteNow }],
       delta,
       r.bDb,
-      r.bRoot,
     );
 
     // 2) alpha modifies *after* beta, in real time

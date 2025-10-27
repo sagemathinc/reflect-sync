@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scan.ts
+// src/scan.ts
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
@@ -9,7 +9,8 @@ import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { modeHash, xxh128String } from "./hash.js";
 import path from "node:path";
-import { loadIgnoreFile, normalizeR } from "./ignore.js";
+import { loadIgnoreFile } from "./ignore.js";
+import { toRel } from "./path-rel.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -33,8 +34,9 @@ type ScanOptions = {
 export async function runScan(opts: ScanOptions): Promise<void> {
   const { root, db: DB_PATH, emitDelta, verbose } = opts;
 
+  // Rows written to DB always use rpaths now.
   type Row = {
-    path: string;
+    path: string; // rpath
     size: number;
     ctime: number;
     mtime: number;
@@ -75,7 +77,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     touchBatch.length = 0;
   }
 
-  // for directory metadata
+  // for directory metadata (paths are rpaths)
   const upsertDir = db.prepare(`
 INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
 VALUES (@path, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
@@ -93,7 +95,7 @@ ON CONFLICT(path) DO UPDATE SET
 `);
 
   type DirRow = {
-    path: string;
+    path: string; // rpath
     ctime: number;
     mtime: number;
     op_ts: number;
@@ -102,11 +104,10 @@ ON CONFLICT(path) DO UPDATE SET
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
-    for (const r of rows) {
-      upsertDir.run(r);
-    }
+    for (const r of rows) upsertDir.run(r);
   });
 
+  // Files meta (paths are rpaths)
   const upsertMeta = db.prepare(`
 INSERT INTO files (path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
 VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, 0, @last_seen, @hashed_ctime)
@@ -121,26 +122,24 @@ ON CONFLICT(path) DO UPDATE SET
 `);
 
   const applyMetaBatch = db.transaction((rows: Row[]) => {
-    for (const r of rows) {
-      upsertMeta.run(r);
-    }
+    for (const r of rows) upsertMeta.run(r);
   });
 
+  // Hashes (paths are rpaths)
   const applyHashBatch = db.transaction(
     (rows: { path: string; hash: string; ctime: number }[]) => {
       const stmt = db.prepare(
         `UPDATE files
-       SET hash = ?, hashed_ctime = ?, deleted = 0
-       WHERE path = ?`,
+         SET hash = ?, hashed_ctime = ?, deleted = 0
+         WHERE path = ?`,
       );
-      for (const r of rows) {
-        stmt.run(r.hash, r.ctime, r.path);
-      }
+      for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
     },
   );
 
+  // Links (paths are rpaths)
   type LinkRow = {
-    path: string;
+    path: string; // rpath
     target: string;
     ctime: number;
     mtime: number;
@@ -153,26 +152,25 @@ ON CONFLICT(path) DO UPDATE SET
 INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
 VALUES (@path, @target, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
 ON CONFLICT(path) DO UPDATE SET
-target=excluded.target,
-ctime=excluded.ctime,
-mtime=excluded.mtime,
-op_ts=excluded.op_ts,
-hash=excluded.hash,
-deleted=0,
-last_seen=excluded.last_seen
+  target=excluded.target,
+  ctime=excluded.ctime,
+  mtime=excluded.mtime,
+  op_ts=excluded.op_ts,
+  hash=excluded.hash,
+  deleted=0,
+  last_seen=excluded.last_seen
 `);
 
   const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
-    for (const r of rows) {
-      upsertLink.run(r);
-    }
+    for (const r of rows) upsertLink.run(r);
   });
 
   // ----------------- Worker pool ------------------
-  type Job = { path: string; size: number; ctime: number; mtime: number };
+  // Worker accepts ABS paths for hashing; we convert the results to rpaths here.
+  type Job = { path: string; size: number; ctime: number; mtime: number }; // ABS path
   type JobBatch = { jobs: Job[] };
   type Result =
-    | { path: string; hash: string; ctime: number }
+    | { path: string; hash: string; ctime: number } // ABS path echoed back
     | { path: string; error: string };
 
   const workers = Array.from(
@@ -190,7 +188,7 @@ last_seen=excluded.last_seen
     });
   }
 
-  // Buffer for hash results (to batch DB writes)
+  // Buffer for hash results (rpaths) to batch DB writes
   const hashResults: { path: string; hash: string; ctime: number }[] = [];
   const touchBatch: [string, number][] = [];
 
@@ -198,7 +196,7 @@ last_seen=excluded.last_seen
   const deltaBuf: string[] = [];
   const emitObj = (o: {
     kind?: "dir" | "link";
-    path: string;
+    path: string; // rpath
     op_ts: number;
     deleted: number;
     size?: number;
@@ -217,14 +215,17 @@ last_seen=excluded.last_seen
     deltaBuf.length = 0;
   }
 
-  // Keep minimal metadata for paths that will be hashed so we can emit a full row
+  // We keep meta keyed by ABS path (because worker replies with ABS),
+  // then translate to rpath when emitting/applying results.
   const pendingMeta = new Map<
-    string,
+    string, // ABS
     { size: number; ctime: number; mtime: number }
   >();
 
   let dispatched = 0;
   let received = 0;
+
+  const absRoot = path.resolve(root);
 
   // Handle worker replies (batched)
   for (const w of workers) {
@@ -235,18 +236,17 @@ last_seen=excluded.last_seen
       const arr = msg.done || [];
       received += arr.length;
 
-      // Collect successful ones for batched DB write and emit deltas
       for (const r of arr) {
         if ("error" in r) {
           // ignore per-file hash errors in this pass
         } else {
-          hashResults.push({ path: r.path, hash: r.hash, ctime: r.ctime });
-          touchBatch.push([r.path, Date.now()]);
-          // Emit delta line with full metadata if we have it
-          const meta = pendingMeta.get(r.path);
+          const rpath = toRel(r.path, absRoot);
+          hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
+          touchBatch.push([rpath, Date.now()]);
+          const meta = pendingMeta.get(r.path); // ABS key
           if (meta) {
             emitObj({
-              path: r.path,
+              path: rpath,
               size: meta.size,
               ctime: meta.ctime,
               mtime: meta.mtime,
@@ -268,12 +268,9 @@ last_seen=excluded.last_seen
   }
 
   // --------------- Walk + incremental logic ---------------
-  async function scan(root: string) {
+  async function scan() {
     const t0 = Date.now();
     const scan_id = Date.now();
-
-    const absRoot = path.resolve(root);
-    const toR = (abs: string) => normalizeR(path.relative(absRoot, abs));
 
     // Load per-root ignore matcher (gitignore semantics)
     const ig = await loadIgnoreFile(absRoot);
@@ -286,14 +283,14 @@ last_seen=excluded.last_seen
       // Do not descend into ignored directories
       deepFilter: (e) => {
         if (e.dirent.isDirectory()) {
-          const r = toR(e.path);
+          const r = toRel(e.path, absRoot);
           return !ig.ignoresDir(r);
         }
         return true;
       },
       // Do not emit ignored directories/files/links as entries
       entryFilter: (e) => {
-        const r = toR(e.path);
+        const r = toRel(e.path, absRoot);
         if (e.dirent.isDirectory()) {
           return !ig.ignoresDir(r);
         }
@@ -319,7 +316,7 @@ last_seen=excluded.last_seen
     const linksBuf: LinkRow[] = [];
     let jobBuf: Job[] = [];
 
-    // Prepare a fast fetch of existing meta to check ctime change
+    // Existing-meta lookup by rpath
     const getExisting = db.prepare<
       [string],
       | {
@@ -333,10 +330,11 @@ last_seen=excluded.last_seen
 
     for await (const entry of stream as AsyncIterable<{
       dirent;
-      path: string;
+      path: string; // ABS
       stats: import("fs").Stats;
     }>) {
-      const full = entry.path; // absolute
+      const abs = entry.path; // absolute on filesystem
+      const rpath = toRel(abs, absRoot);
       const st = entry.stats!;
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
@@ -345,13 +343,12 @@ last_seen=excluded.last_seen
         // directory ops don't bump mtime reliably, so we use op time.
         const op_ts = Date.now();
         const hash = modeHash(st.mode);
-        dirMetaBuf.push({ path: full, ctime, mtime, hash, scan_id, op_ts });
+        dirMetaBuf.push({ path: rpath, ctime, mtime, hash, scan_id, op_ts });
 
-        // emit-delta: dir ensure
         if (emitDelta) {
           emitObj({
             kind: "dir",
-            path: full,
+            path: rpath,
             ctime,
             mtime,
             hash,
@@ -367,9 +364,10 @@ last_seen=excluded.last_seen
       } else if (entry.dirent.isFile()) {
         const size = st.size;
         const op_ts = mtime;
+
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
-          path: full,
+          path: rpath,
           size,
           ctime,
           mtime,
@@ -384,15 +382,14 @@ last_seen=excluded.last_seen
           metaBuf.length = 0;
         }
 
-        // Decide if we need to hash: only when ctime changed since last time (or brand new)
-        const row = getExisting.get(full);
+        // Decide if we need to hash: only when ctime changed (or brand new)
+        const row = getExisting.get(rpath);
         const needsHash = !row || row.hashed_ctime !== ctime;
 
         if (needsHash) {
-          // remember minimal meta so we can emit a full delta row when the hash arrives
-          pendingMeta.set(full, { size, ctime, mtime });
-          jobBuf.push({ path: full, size, ctime, mtime });
-          // Dispatch in batches to minimize IPC
+          // keep ABS key here; worker replies with ABS and we’ll map to rpath
+          pendingMeta.set(abs, { size, ctime, mtime });
+          jobBuf.push({ path: abs, size, ctime, mtime }); // ABS for worker
           if (jobBuf.length >= DISPATCH_BATCH) {
             const w = await nextWorker();
             (w as any).postMessage({ jobs: jobBuf } as JobBatch);
@@ -403,15 +400,13 @@ last_seen=excluded.last_seen
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";
         try {
-          target = await readlink(full);
+          target = await readlink(abs);
         } catch {}
-        const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
-        const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
         const op_ts = mtime; // LWW uses op_ts consistently
         const hash = xxh128String(target);
 
         linksBuf.push({
-          path: full,
+          path: rpath,
           target,
           ctime,
           mtime,
@@ -423,7 +418,7 @@ last_seen=excluded.last_seen
         // emit-delta for remote ingestion
         emitObj({
           kind: "link",
-          path: full,
+          path: rpath,
           ctime,
           mtime,
           op_ts,
@@ -436,7 +431,6 @@ last_seen=excluded.last_seen
           applyLinksBatch(linksBuf);
           linksBuf.length = 0;
         }
-        continue;
       }
     }
 
@@ -487,15 +481,13 @@ last_seen=excluded.last_seen
     const op_ts = Date.now();
     db.prepare(
       `UPDATE files
-      SET deleted = 1, op_ts = ?
-      WHERE last_seen <> ? AND deleted = 0`,
+       SET deleted = 1, op_ts = ?
+       WHERE last_seen <> ? AND deleted = 0`,
     ).run(op_ts, scan_id);
 
-    // emit-delta: Emit deletions
+    // emit-delta: file deletions (rpaths)
     if (emitDelta && toDelete.length) {
-      for (const r of toDelete) {
-        emitObj({ path: r.path, deleted: 1, op_ts });
-      }
+      for (const r of toDelete) emitObj({ path: r.path, deleted: 1, op_ts });
       flushDeltaBuf();
     }
 
@@ -504,14 +496,12 @@ last_seen=excluded.last_seen
       `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
     ).run(op_ts, scan_id);
 
-    // emit-delta: Emit dir deletions
     if (emitDelta) {
       const gone = db
         .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
         .all(scan_id);
-      for (const r of gone) {
+      for (const r of gone)
         emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts });
-      }
       flushDeltaBuf();
     }
 
@@ -542,11 +532,10 @@ last_seen=excluded.last_seen
     }
   }
 
-  await scan(root);
+  await scan();
 }
 
 // ---------- CLI entry (preserved) ----------
-
 cliEntrypoint<ScanOptions>(import.meta.url, buildProgram, runScan, {
   label: "scan",
 });

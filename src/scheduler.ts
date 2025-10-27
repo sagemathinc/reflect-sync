@@ -433,13 +433,7 @@ export async function runScheduler({
       stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
     });
 
-    const ingestArgs = [
-      "ingest",
-      "--db",
-      params.localDb,
-      "--root",
-      params.root,
-    ];
+    const ingestArgs = ["ingest", "--db", params.localDb];
     if (verbose) {
       console.log("ccsync", ingestArgs.join(" "));
     }
@@ -488,7 +482,7 @@ export async function runScheduler({
       stdio: ["ignore", "pipe", "inherit"],
     });
 
-    const ingestArgs = ["ingest", "--db", localDb, "--root", root];
+    const ingestArgs = ["ingest", "--db", localDb];
     const ingestP = spawn("ccsync", ingestArgs, {
       stdio: [
         "pipe",
