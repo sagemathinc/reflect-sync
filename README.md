@@ -2,11 +2,12 @@
 
 Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Designed for very large trees, low RAM, and observability.
 
-- **Rsync transport** (latest rsync recommended)
-- **SQLite indexes** per side (alpha / beta) + base snapshot for true 3-way merges
-- **Incremental scans** with content hashes using [XXH3](https://www.npmjs.com/package/@node-rs/xxhash) only when needed (based on ctime)
-- **Realtime micro-sync** for hot files (debounced, safe on partial edits)
-- **SSH-friendly**: stream remote deltas over stdin
+- **Rsync transport** \(latest rsync recommended\)
+- **SQLite indexes** per side \(alpha / beta\) \+ base snapshot for true 3\-way merges
+- **Incremental scans** with content hashes using [XXH3](https://www.npmjs.com/package/@node-rs/xxhash) only when needed \(based on ctime\)
+- **Realtime micro\-sync** for hot files \(debounced, safe on partial edits\)
+- **SSH\-friendly**: stream remote deltas over stdin
+- **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
 
 > Requires **Node.js 24+**.
 

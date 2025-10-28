@@ -13,6 +13,7 @@ import { IGNORE_FILE } from "./constants.js";
 import { rsyncCopy, rsyncCopyDirs, rsyncDeleteChunked } from "./rsync.js";
 import { xxh3 } from "@node-rs/xxhash";
 import { hex128 } from "./hash.js";
+import { cpReflinkFromList, sameDevice } from "./reflink.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -166,37 +167,13 @@ export async function runMerge({
     }
     done();
 
-    const lastAlpha =
-      (
-        db
-          .prepare(`SELECT value FROM merge_meta WHERE key='alpha_digest'`)
-          .get() as any
-      )?.value ?? null;
-    const lastBeta =
-      (
-        db
-          .prepare(`SELECT value FROM merge_meta WHERE key='beta_digest'`)
-          .get() as any
-      )?.value ?? null;
-
-    if (
-      lastAlpha !== null &&
-      lastBeta !== null &&
-      digestAlpha === lastAlpha &&
-      digestBeta === lastBeta
-    ) {
-      if (verbose) {
-        console.log(
-          "[merge] no-op: catalogs unchanged since last scan; skipping planning/rsync",
-        );
-      }
-      return;
-    }
     if (digestAlpha == digestBeta) {
       // if both sides are identical the 3-way merge isn't going to do
-      // anything. We're in sync.
+      // anything. We're definitely in sync.
       if (verbose) {
-        console.log("[merge] no-op: catalogs equal; skipping planning/rsync");
+        console.log(
+          "[merge] no-op: both sides are equal; skipping planning/rsync",
+        );
       }
       return;
     }
@@ -1182,15 +1159,43 @@ export async function runMerge({
       ).ok;
       done();
 
-      // 3) copy files
-      done = t("rsync: 3) copy files");
-      copyAlphaBetaOk = (
-        await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
-      ).ok;
-      copyBetaAlphaOk = (
-        await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
-      ).ok;
-      done();
+      const canReflink =
+        !alphaHost && !betaHost && (await sameDevice(alphaRoot, betaRoot));
+      if (canReflink) {
+        done = t("cp: 3) copy files -- using copy on write, if possible");
+        try {
+          await cpReflinkFromList(alphaRoot, betaRoot, listToBeta);
+          await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
+          copyAlphaBetaOk = toBeta.length === 0 || true;
+          copyBetaAlphaOk = toAlpha.length === 0 || true;
+          done();
+        } catch (e) {
+          // Fallback: if any cp --reflink failed (e.g., subtrees on different filesystems),
+          // fall back to your current rsync path for the affected direction(s).
+          if (verbose) {
+            console.warn("reflink copy failed; falling back to rsync:", e);
+          }
+          done();
+          done = t("rsync: 3) copy files -- falling back to rsync");
+          // run your existing rsyncCopy(...) calls here
+          copyAlphaBetaOk = (
+            await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
+          ).ok;
+          copyBetaAlphaOk = (
+            await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
+          ).ok;
+        }
+      } else {
+        // 3) copy files
+        done = t("rsync: 3) copy files");
+        copyAlphaBetaOk = (
+          await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
+        ).ok;
+        copyBetaAlphaOk = (
+          await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
+        ).ok;
+        done();
+      }
 
       // 4) delete dirs last (after files removed so dirs are empty)
       done = t("rsync: 4) delete dirs");
