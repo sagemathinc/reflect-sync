@@ -496,7 +496,7 @@ ON CONFLICT(path) DO UPDATE SET
        WHERE last_seen <> ? AND deleted = 0`,
     ).run(op_ts, scan_id);
 
-    // emit-delta: file deletions (rpaths)
+    // emit-delta: file deletions
     if (emitDelta && toDelete.length) {
       for (const r of toDelete) {
         emitObj({ path: r.path, deleted: 1, op_ts });

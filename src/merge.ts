@@ -6,8 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
-import { getDb } from "./db.js";
-import Database from "better-sqlite3";
+import { getBaseDb, getDb } from "./db.js";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 import { IGNORE_FILE } from "./constants.js";
 import { rsyncCopy, rsyncCopyDirs, rsyncDeleteChunked } from "./rsync.js";
@@ -104,27 +103,7 @@ export async function runMerge({
     // ensure alpha/beta exist (creates schema if missing)
     getDb(alphaDb);
     getDb(betaDb);
-
-    const db = new Database(baseDb);
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    db.pragma("temp_store = MEMORY"); // keep temp tables in RAM for speed
-
-    // base (files) and base_dirs (directories) — relative paths; include op_ts for LWW
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS base (
-        path    TEXT PRIMARY KEY,  -- RELATIVE file path
-        hash    TEXT,
-        deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS base_dirs (
-        path    TEXT PRIMARY KEY,  -- RELATIVE dir path
-        hash    TEXT DEFAULT '',
-        deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER
-      );
-    `);
+    const db = getBaseDb(baseDb);
 
     db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
@@ -1495,11 +1474,17 @@ export async function runMerge({
       done();
 
       done = t("sqlite hygiene");
-      db.exec("PRAGMA optimize");
-      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      db.exec("VACUUM;");
-      db.exec("VACUUM alpha;");
-      db.exec("VACUUM beta;");
+      db.pragma("optimize");
+      db.pragma("wal_checkpoint(TRUNCATE)");
+      db.pragma("incremental_vacuum");
+      db.pragma("optimize");
+      done();
+      done = t("sqlite full vacuum");
+      // sometimes we do a potentially much more expensive full vacuum;
+      // this can save a LOT more space than incremental vacu
+      if (Math.random() <= 0.25) {
+        db.exec("vacuum; vacuum alpha; vacuum beta;");
+      }
       done();
 
       if (verbose) console.log("Merge complete.");

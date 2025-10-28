@@ -6,9 +6,10 @@ export function getDb(dbPath: string): Database {
   // ----------------- SQLite setup -----------------
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
+  db.pragma("auto_vacuum = INCREMENTAL");
+  db.pragma("temp_store = MEMORY");
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
-  db.pragma("temp_store = MEMORY");
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS files (
@@ -66,6 +67,43 @@ CREATE INDEX IF NOT EXISTS files_pdo ON files(path, deleted, op_ts);
 CREATE INDEX IF NOT EXISTS links_live_idx ON links(deleted, path);
 CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
   `);
+
+  return db;
+}
+
+export function getBaseDb(dbPath: string): Database {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
+  db.pragma("auto_vacuum = INCREMENTAL");
+  db.pragma("temp_store = MEMORY");
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+
+  // base (files) and base_dirs (directories) — relative paths; include op_ts for LWW
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS base (
+        path    TEXT PRIMARY KEY,  -- RELATIVE file path
+        hash    TEXT,
+        deleted INTEGER DEFAULT 0,
+        op_ts   INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS base_dirs (
+        path    TEXT PRIMARY KEY,  -- RELATIVE dir path
+        hash    TEXT DEFAULT '',
+        deleted INTEGER DEFAULT 0,
+        op_ts   INTEGER
+      );
+
+     CREATE TABLE IF NOT EXISTS events(
+      id INTEGER PRIMARY KEY,
+      ts INTEGER,
+      level TEXT,
+      source TEXT,
+      msg TEXT,
+      details TEXT
+    );
+    `);
 
   return db;
 }

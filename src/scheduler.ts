@@ -9,7 +9,6 @@
 
 import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
 import chokidar from "chokidar";
-import Database from "better-sqlite3";
 import path from "node:path";
 import { Command, Option } from "commander";
 import readline from "node:readline";
@@ -25,6 +24,7 @@ import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { MAX_WATCHERS } from "./defaults.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
+import { getBaseDb, getDb } from "./db.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -197,19 +197,7 @@ export async function runScheduler({
   }
 
   // ---------- logging ----------
-  const db = new Database(baseDb);
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS events(
-      id INTEGER PRIMARY KEY,
-      ts INTEGER,
-      level TEXT,
-      source TEXT,
-      msg TEXT,
-      details TEXT
-    );
-  `);
+  const db = getBaseDb(baseDb);
   const logStmt = db.prepare(
     `INSERT INTO events(ts,level,source,msg,details) VALUES (?,?,?,?,?)`,
   );
@@ -695,7 +683,7 @@ export async function runScheduler({
     maxDirs = MAX_WATCHERS,
   ) {
     if (disableHotWatch) return;
-    const sdb = new Database(dbPath);
+    const sdb = getDb(dbPath);
     try {
       const rows = sdb
         .prepare(
