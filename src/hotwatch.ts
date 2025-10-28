@@ -218,7 +218,9 @@ export class HotWatchManager {
 
       // refresh TTL & LRU
       const st = this.map.get(anchorAbs);
-      if (st) st.expiresAt = Date.now() + this.opts.ttlMs;
+      if (st) {
+        st.expiresAt = Date.now() + this.opts.ttlMs;
+      }
       this.bump(anchorAbs);
     };
 

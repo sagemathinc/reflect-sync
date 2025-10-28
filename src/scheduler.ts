@@ -1,30 +1,18 @@
 #!/usr/bin/env node
-// scheduler.ts
-//
 // - Commander-based CLI
 // - Exported runScheduler(opts) API for programmatic use
 // - Optional SSH micro-sync: remote watch -> tee to ingest + realtime push
 //
 // Notes:
 // * Local watchers only; remote changes arrive via remote watch stream.
-// * Full-cycle still uses "ccsync merge" (your merge.ts).
-// * Test knobs are env-based: SCHED_MIN_MS, MICRO_DEBOUNCE_MS, etc.
+// * Full-cycle still uses "ccsync merge" (see merge.ts).
 
 import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
 import chokidar from "chokidar";
 import Database from "better-sqlite3";
 import path from "node:path";
-import { tmpdir } from "node:os";
-import {
-  mkdtemp,
-  rm,
-  writeFile,
-  stat as fsStat,
-  lstat as fsLstat,
-} from "node:fs/promises";
 import { Command, Option } from "commander";
 import readline from "node:readline";
-import { PassThrough } from "node:stream";
 import { cliEntrypoint } from "./cli-util.js";
 import {
   HotWatchManager,
@@ -35,6 +23,8 @@ import {
 } from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { MAX_WATCHERS } from "./defaults.js";
+import { makeMicroSync } from "./micro-sync.js";
+import { PassThrough } from "node:stream";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -112,7 +102,7 @@ function buildProgram(): Command {
   return program;
 }
 
-function cliOptsToSchedulerOptions(opts: any): SchedulerOptions {
+function cliOptsToSchedulerOptions(opts): SchedulerOptions {
   const out: SchedulerOptions = {
     alphaRoot: String(opts.alphaRoot),
     betaRoot: String(opts.betaRoot),
@@ -151,7 +141,6 @@ const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
 
 const MICRO_DEBOUNCE_MS = envNum("MICRO_DEBOUNCE_MS", 200);
-const COOLDOWN_MS = envNum("COOLDOWN_MS", 300);
 
 const MIN_INTERVAL_MS = envNum("SCHED_MIN_MS", 7_500);
 const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
@@ -178,14 +167,12 @@ export async function runScheduler({
   sessionDb,
   sessionId,
 }: SchedulerOptions): Promise<void> {
-  if (!alphaRoot || !betaRoot) {
+  if (!alphaRoot || !betaRoot)
     throw new Error("Need --alpha-root and --beta-root");
-  }
-  if (alphaHost && betaHost) {
+  if (alphaHost && betaHost)
     throw new Error(
       "Both sides remote is not supported yet (rsync two-remote).",
     );
-  }
 
   // ---------- scheduler state ----------
   let running = false,
@@ -197,7 +184,7 @@ export async function runScheduler({
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
 
-  // heartbeat interval (ms); keep configurable:
+  // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
   let sessionWriter: SessionWriter | null = null;
   let hbTimer: NodeJS.Timeout | null = null;
@@ -261,9 +248,7 @@ export async function runScheduler({
     ok: boolean;
     lastZero: boolean;
   }> {
-    if (verbose) {
-      console.log(`${cmd} ${args.join(" ")}`);
-    }
+    if (verbose) console.log(`${cmd} ${args.join(" ")}`);
     return new Promise((resolve) => {
       const t0 = Date.now();
       let lastZero = false;
@@ -289,15 +274,6 @@ export async function runScheduler({
 
   const clamp = (x: number, lo: number, hi: number) =>
     Math.max(lo, Math.min(hi, x));
-  async function fileNonEmpty(p: string) {
-    try {
-      return (await fsStat(p)).size > 0;
-    } catch {
-      return false;
-    }
-  }
-  const join0 = (items: string[]) =>
-    Buffer.from(items.filter(Boolean).join("\0") + (items.length ? "\0" : ""));
 
   function rel(root: string, full: string): string {
     let r = path.relative(root, full);
@@ -319,14 +295,12 @@ export async function runScheduler({
     side: WatchSide;
     host: string;
     root: string;
-    remoteWatchCmd: string; // e.g. "ccsync watch"
+    remoteWatchCmd: string;
     verbose?: boolean;
   }) {
-    // pick target set and logger tag
     const targetSet = side === "alpha" ? hotAlpha : hotBeta;
     const tag = side === "alpha" ? "remote-watch-alpha" : "remote-watch-beta";
 
-    // Split the configured command and append args
     const parts = remoteWatchCmd.trim().split(/\s+/);
     const cmd = parts.shift()!;
     const cmdArgs = [...parts, "--root", root];
@@ -336,15 +310,10 @@ export async function runScheduler({
 
     const launch = () => {
       const sshArgs = ["-o", "BatchMode=yes", host, cmd, ...cmdArgs];
-      if (verbose) {
-        console.log("$ ssh", sshArgs.join(" "));
-      }
+      if (verbose) console.log("$ ssh", sshArgs.join(" "));
 
-      proc = spawn("ssh", sshArgs, {
-        stdio: ["pipe", "ignore", "inherit"],
-      });
+      proc = spawn("ssh", sshArgs, { stdio: ["pipe", "ignore", "inherit"] });
 
-      // Read NDJSON lines from stdout
       if (proc.stdout) {
         const rl = readline.createInterface({ input: proc.stdout });
         rl.on("line", (line: string) => {
@@ -360,19 +329,14 @@ export async function runScheduler({
           const isDir = ev.endsWith("Dir");
           if (!isDir) {
             targetSet.add(rpath);
-            // Run a micro pass soon
             scheduleHotFlush();
           }
         });
-        rl.on("close", () => {
-          // no-op; exit handler will decide restart
-        });
+        rl.on("close", () => {});
       }
 
       proc.on("exit", (code, sig) => {
-        if (verbose) {
-          console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
-        }
+        if (verbose) console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
         if (!restarting) {
           restarting = true;
           setTimeout(() => {
@@ -399,9 +363,7 @@ export async function runScheduler({
         }
       },
       add: (dirs: string[]) => {
-        if (dirs.length == 0) {
-          return;
-        }
+        if (dirs.length == 0) return;
         proc?.stdin?.write(JSON.stringify({ op: "add", dirs }) + "\n");
       },
     };
@@ -434,21 +396,18 @@ export async function runScheduler({
       params.root,
       "--emit-delta",
       // use same path as local DB, but on remote:
+      // [ ] TODO: this isn't going to be right in general!
       "--db",
       params.localDb,
     ];
-    if (verbose) {
-      console.log("$ ssh", sshArgs.join(" "));
-    }
+    if (verbose) console.log("$ ssh", sshArgs.join(" "));
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
     });
 
     const ingestArgs = ["ingest", "--db", params.localDb];
-    if (verbose) {
-      console.log("ccsync", ingestArgs.join(" "));
-    }
+    if (verbose) console.log("ccsync", ingestArgs.join(" "));
     const ingestP = spawn("ccsync", ingestArgs, {
       stdio: [
         "pipe",
@@ -457,13 +416,10 @@ export async function runScheduler({
       ],
     });
 
-    if (sshP.stdout && ingestP.stdin) {
-      sshP.stdout.pipe(ingestP.stdin);
-    }
+    if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
 
     const wait = (p: ChildProcess) =>
       new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
-
     const [sshCode, ingestCode] = await Promise.all([
       wait(sshP),
       wait(ingestP),
@@ -556,20 +512,6 @@ export async function runScheduler({
     return { sshP, ingestP, kill };
   }
 
-  // Build rsync endpoints + transport
-  function rsyncRoots(
-    fromRoot: string,
-    fromHost: string | undefined,
-    toRoot: string,
-    toHost: string | undefined,
-  ) {
-    const slash = (s: string) => (s.endsWith("/") ? s : s + "/");
-    const from = fromHost ? `${fromHost}:${slash(fromRoot)}` : slash(fromRoot);
-    const to = toHost ? `${toHost}:${slash(toRoot)}` : slash(toRoot);
-    const transport = fromHost || toHost ? (["-e", "ssh"] as string[]) : [];
-    return { from, to, transport };
-  }
-
   function requestSoon(reason: string) {
     pending = true;
     nextDelayMs = clamp(
@@ -581,17 +523,28 @@ export async function runScheduler({
   }
 
   // ---------- hot (realtime) sets ----------
-  const hotAlpha = new Set<string>(); // rpaths relative to alphaRoot
-  const hotBeta = new Set<string>(); // rpaths relative to betaRoot
+  const hotAlpha = new Set<string>();
+  const hotBeta = new Set<string>();
   let hotTimer: NodeJS.Timeout | null = null;
+
+  // create the microSync closure
+  const microSync = makeMicroSync({
+    alphaRoot,
+    betaRoot,
+    alphaHost,
+    betaHost,
+    prefer,
+    dryRun,
+    verbose,
+    spawnTask,
+    log,
+  });
 
   function scheduleHotFlush() {
     if (hotTimer) return;
     hotTimer = setTimeout(async () => {
       hotTimer = null;
-      if (hotAlpha.size === 0 && hotBeta.size === 0) {
-        return;
-      }
+      if (hotAlpha.size === 0 && hotBeta.size === 0) return;
       const rpathsAlpha = Array.from(hotAlpha);
       const rpathsBeta = Array.from(hotBeta);
       hotAlpha.clear();
@@ -603,26 +556,11 @@ export async function runScheduler({
           err: String(e?.message || e),
         });
       } finally {
-        if (hotAlpha.size || hotBeta.size) {
-          scheduleHotFlush(); // run another micro pass if more landed
-        }
+        // run another micro pass if more landed
+        if (hotAlpha.size || hotBeta.size) scheduleHotFlush();
         requestSoon("micro-sync complete");
       }
     }, MICRO_DEBOUNCE_MS);
-  }
-
-  const lastPush = new Map<string, number>(); // rpath -> ts
-  function keepFresh(rpaths: string[]) {
-    const now = Date.now();
-    const out: string[] = [];
-    for (const r of rpaths) {
-      const t = lastPush.get(r) || 0;
-      if (now - t >= COOLDOWN_MS) {
-        out.push(r);
-        lastPush.set(r, now);
-      }
-    }
-    return out;
   }
 
   // ---------- root watchers (locals only) ----------
@@ -688,21 +626,12 @@ export async function runScheduler({
 
   function enableWatch({ watcher, root, mgr, hot }) {
     handleWatchErrors(watcher);
-
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
       watcher.on(evt as any, async (p: string) => {
         const r = rel(root, p);
-        if (mgr.isIgnored(r, evt?.endsWith("Dir"))) {
-          return;
-        }
-
+        if (mgr.isIgnored(r, (evt as string)?.endsWith("Dir"))) return;
         const rdir = parentDir(r);
-        // Seed/bump a hot watcher for the directory
-        if (rdir) {
-          await mgr.add(rdir);
-        }
-
-        // Promote the *first* event directly to microSync too
+        if (rdir) await mgr.add(rdir);
         if (r && (evt === "add" || evt === "change" || evt === "unlink")) {
           hot.add(r);
           scheduleHotFlush();
@@ -719,7 +648,6 @@ export async function runScheduler({
       hot: hotAlpha,
     });
   }
-
   if (shallowBeta && hotBetaMgr) {
     enableWatch({
       watcher: shallowBeta,
@@ -740,19 +668,18 @@ export async function runScheduler({
       side: "alpha",
       host: alphaHost,
       root: alphaRoot,
-      remoteWatchCmd, // from your parsed options, e.g. "ccsync watch"
+      remoteWatchCmd,
       verbose,
     });
     stopRemoteAlphaWatch = h.stop;
     addRemoteAlphaHotDirs = h.add;
   }
-
   if (betaIsRemote && betaHost && !disableHotWatch) {
     const h = startSshRemoteWatch({
       side: "beta",
       host: betaHost,
       root: betaRoot,
-      remoteWatchCmd, // from your parsed options, e.g. "ccsync watch"
+      remoteWatchCmd,
       verbose,
     });
     stopRemoteBetaWatch = h.stop;
@@ -767,12 +694,9 @@ export async function runScheduler({
     sinceTs: number,
     maxDirs = MAX_WATCHERS,
   ) {
-    if (disableHotWatch) {
-      return;
-    }
+    if (disableHotWatch) return;
     const sdb = new Database(dbPath);
     try {
-      // get recently touched paths (with some limit)
       const rows = sdb
         .prepare(
           `SELECT path FROM recent_touch WHERE ts >= ? ORDER BY ts DESC LIMIT ?`,
@@ -784,9 +708,7 @@ export async function runScheduler({
         .map((r: any) => parentDir(norm(r.path)))
         .filter(Boolean);
       const covered = minimalCover(dirs).slice(0, maxDirs);
-      if (mgr != null) {
-        covered.forEach((d) => mgr.add(d));
-      }
+      if (mgr != null) covered.forEach((d) => mgr.add(d));
       remoteAdd?.(covered);
       if (verbose)
         log(
@@ -795,120 +717,9 @@ export async function runScheduler({
           `seeded ${covered.length} hot dirs from ${dbPath}`,
         );
     } catch {
-      // table may not exist yet; ignore
+      // may not exist yet
     } finally {
       sdb.close();
-    }
-  }
-
-  // ---------- realtime micro-sync (SSH-aware endpoints) ----------
-  async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
-    const setA = new Set(rpathsAlpha);
-    const setB = new Set(rpathsBeta);
-
-    const toBeta: string[] = [];
-    const toAlpha: string[] = [];
-
-    const touched = new Set<string>([...setA, ...setB]);
-    for (const r of touched) {
-      const aTouched = setA.has(r);
-      const bTouched = setB.has(r);
-      if (aTouched && bTouched) {
-        if (prefer === "alpha") toBeta.push(r);
-        else toAlpha.push(r);
-      } else if (aTouched) {
-        toBeta.push(r);
-      } else {
-        toAlpha.push(r);
-      }
-    }
-
-    async function keepFilesLocal(root: string, rpaths: string[]) {
-      const out: string[] = [];
-      for (const r of rpaths) {
-        try {
-          const st = await fsLstat(path.join(root, r));
-          if (st.isFile()) {
-            out.push(r);
-          }
-        } catch {
-          /* file might have vanished; ignore */
-        }
-      }
-      return out;
-    }
-
-    // For remote side we cannot lstat; push as-is (rsync will handle).
-    const toBetaFiles = alphaIsRemote
-      ? keepFresh(toBeta)
-      : keepFresh(await keepFilesLocal(alphaRoot, toBeta));
-    const toAlphaFiles = betaIsRemote
-      ? keepFresh(toAlpha)
-      : keepFresh(await keepFilesLocal(betaRoot, toAlpha));
-
-    if (toBetaFiles.length === 0 && toAlphaFiles.length === 0) {
-      return;
-    }
-
-    const tmp = await mkdtemp(path.join(tmpdir(), "micro-plan-"));
-    try {
-      const listToBeta = path.join(tmp, "toBeta.list");
-      const listToAlpha = path.join(tmp, "toAlpha.list");
-
-      await writeFile(listToBeta, join0(toBetaFiles));
-      await writeFile(listToAlpha, join0(toAlphaFiles));
-
-      if (await fileNonEmpty(listToBeta)) {
-        log("info", "realtime", `alpha→beta ${toBetaFiles.length} paths`);
-        const { from, to, transport } = rsyncRoots(
-          alphaRoot,
-          alphaHost,
-          betaRoot,
-          betaHost,
-        );
-        await spawnTask(
-          "rsync",
-          [
-            ...(dryRun ? ["-n"] : []),
-            ...transport,
-            "-a",
-            "-I",
-            "--relative",
-            "--from0",
-            `--files-from=${listToBeta}`,
-            from,
-            to,
-          ],
-          [0, 23, 24],
-        );
-      }
-
-      if (await fileNonEmpty(listToAlpha)) {
-        log("info", "realtime", `beta→alpha ${toAlphaFiles.length} paths`);
-        const { from, to, transport } = rsyncRoots(
-          betaRoot,
-          betaHost,
-          alphaRoot,
-          alphaHost,
-        );
-        await spawnTask(
-          "rsync",
-          [
-            ...(dryRun ? ["-n"] : []),
-            ...transport,
-            "-a",
-            "-I",
-            "--relative",
-            "--from0",
-            `--files-from=${listToAlpha}`,
-            from,
-            to,
-          ],
-          [0, 23, 24],
-        );
-      }
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
     }
   }
 
@@ -917,8 +728,8 @@ export async function runScheduler({
     running = true;
     const t0 = Date.now();
 
-    // Scan alpha
-    let a;
+    // Scan alpha & beta in parallel
+    let a: any, b: any;
     const scanAlpha = async () => {
       const tAlphaStart = Date.now();
       log(
@@ -939,7 +750,6 @@ export async function runScheduler({
               verbose ? ["--verbose"] : [],
             ),
           );
-
       seedHotFromDb(
         alphaDb,
         hotAlphaMgr,
@@ -948,9 +758,6 @@ export async function runScheduler({
         MAX_WATCHERS,
       );
     };
-
-    // Scan beta
-    let b;
     const scanBeta = async () => {
       const tBetaStart = Date.now();
       log(
@@ -971,7 +778,6 @@ export async function runScheduler({
               verbose ? ["--verbose"] : [],
             ),
           );
-
       seedHotFromDb(
         betaDb,
         hotBetaMgr,
@@ -1050,13 +856,9 @@ export async function runScheduler({
     });
   }
 
-  // --- Flush helpers (drain micro + force cycles) ---
-
+  // --- Flush helpers ---
   async function microFlushOnce(): Promise<boolean> {
-    // snapshot current touch sets, clear them, run a one-off microSync
-    if (hotAlpha.size === 0 && hotBeta.size === 0) {
-      return false;
-    }
+    if (hotAlpha.size === 0 && hotBeta.size === 0) return false;
     const a = Array.from(hotAlpha);
     const b = Array.from(hotBeta);
     hotAlpha.clear();
@@ -1064,31 +866,25 @@ export async function runScheduler({
     try {
       await microSync(a, b);
     } catch (err) {
-      log("warn", "flush", "microSync during flush failed", {
-        err: `${err}`,
-      });
+      log("warn", "flush", "microSync during flush failed", { err: `${err}` });
     }
     return true;
   }
 
   async function drainMicro(timeoutMs = 1500): Promise<void> {
     const t0 = Date.now();
-    // kick a scheduled flush if timer was pending
     scheduleHotFlush();
     while (Date.now() - t0 < timeoutMs) {
       const did = await microFlushOnce();
       if (!did) {
-        // allow a tiny window for in-flight events to land
         await new Promise((r) => setTimeout(r, 50));
         if (hotAlpha.size === 0 && hotBeta.size === 0) break;
       }
     }
   }
 
-  /** Run a conservative 'flush' sequence: drain micro, full cycle, drain, full cycle. */
   async function performFlush(): Promise<void> {
     const startedAt = Date.now();
-    // mark state (if sessions are enabled)
     try {
       if (sessionDb && sessionId) {
         ensureSessionDb(sessionDb)
@@ -1138,7 +934,6 @@ export async function runScheduler({
           )
           .run(String(e?.stack || e), sessionId);
       }
-      // rethrow so the caller can decide what to do
       throw e;
     }
   }
@@ -1179,8 +974,6 @@ export async function runScheduler({
          WHERE id=?
       `,
         ).run(Date.now(), row.id);
-
-        // delete old session commands
         db.exec(`
   DELETE FROM session_commands
    WHERE acked = 1
@@ -1196,14 +989,11 @@ export async function runScheduler({
   }
 
   const CMD_POLL_MS = envNum("SESSION_CMD_POLL_MS", 500);
-
   async function idleWaitWithCommandPolling(totalMs: number) {
     let remaining = totalMs;
     while (remaining > 0) {
-      // poll commands; if we executed one (e.g., flush), stop idling to recompute schedule
       const executed = await processSessionCommands();
       if (executed) return;
-
       const slice = Math.min(CMD_POLL_MS, remaining);
       await new Promise((r) => setTimeout(r, slice));
       remaining -= slice;
@@ -1213,7 +1003,6 @@ export async function runScheduler({
   let remoteStreams: Array<{ kill: () => void }> = [];
 
   async function loop() {
-    // Start remote micro-streams (if any) once, before the loop
     const alphaStream = alphaIsRemote ? startRemoteDeltaStream("alpha") : null;
     const betaStream = betaIsRemote ? startRemoteDeltaStream("beta") : null;
     remoteStreams = [alphaStream, betaStream].filter(Boolean) as any[];
@@ -1234,7 +1023,7 @@ export async function runScheduler({
       if (pending) {
         nextDelayMs = clamp(1500, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
         pending = false;
-        continue; // loop immediately
+        continue;
       }
 
       log(
@@ -1268,7 +1057,6 @@ export async function runScheduler({
     HOT_DEPTH,
   });
 
-  // Exit/cleanup
   const cleanup = async () => {
     try {
       await hotAlphaMgr?.closeAll();
@@ -1312,7 +1100,5 @@ cliEntrypoint<SchedulerOptions>(
   import.meta.url,
   buildProgram,
   async (opts) => await runScheduler(cliOptsToSchedulerOptions(opts)),
-  {
-    label: "scheduler",
-  },
+  { label: "scheduler" },
 );
