@@ -123,18 +123,12 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     ignoreInitial: true,
     depth: shallowDepth,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    followSymlinks: false,
+    alwaysStat: false,
   });
-  shallow.on(
-    "error",
-    verbose
-      ? (err) => {
-          console.log("WARNING: shallow watch error", err);
-        }
-      : () => {},
-  );
 
   function wireShallow() {
-    const handle = async (evt: HotWatchEvent, abs: string, _stats?) => {
+    const handle = async (evt: HotWatchEvent, abs: string) => {
       // Send the event immediately (so microSync can act quickly)
       emitEvent(abs, evt, rootAbs);
 
@@ -153,7 +147,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     };
 
     for (const evt of HOT_EVENTS) {
-      shallow.on(evt, (p, stats) => handle(evt, p, stats));
+      shallow.on(evt, (p) => handle(evt, p));
     }
     handleWatchErrors(shallow);
   }

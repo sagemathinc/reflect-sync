@@ -126,5 +126,4 @@ describe("ccsync: more symlink edge case tests", () => {
     await expect(linkExists(join(r.aRoot, "x.link")));
     await expect(linkExists(join(r.bRoot, "x.link")));
   });
-
 });

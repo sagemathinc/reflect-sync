@@ -173,12 +173,15 @@ export class HotWatchManager {
       ignoreInitial: true,
       depth: this.opts.hotDepth,
       awaitWriteFinish: this.opts.awaitWriteFinish,
-      // (We filter precisely in the handler; leaving this unset avoids extra stats.)
+      // critical: do not follow symlinks (otherwise they may get turned into directories)
+      followSymlinks: false,
+      // lets us cheaply re-check with lstat if needed
+      alwaysStat: false,
     });
 
     handleWatchErrors(watcher);
 
-    const handler = async (ev: HotWatchEvent, abs: string, _stats?) => {
+    const handler = async (ev: HotWatchEvent, abs: string) => {
       const absN = norm(abs);
 
       // Compute rpath relative to this.root
@@ -220,9 +223,7 @@ export class HotWatchManager {
     };
 
     HOT_EVENTS.forEach((evt) => {
-      watcher.on(evt as any, (p: string, stats?) =>
-        handler(evt as HotWatchEvent, p, stats),
-      );
+      watcher.on(evt as any, (p: string) => handler(evt as HotWatchEvent, p));
     });
 
     this.map.set(anchorAbs, { watcher, expiresAt: now + this.opts.ttlMs });

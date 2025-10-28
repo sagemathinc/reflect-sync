@@ -671,6 +671,8 @@ export async function runScheduler({
           ignoreInitial: true,
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+          followSymlinks: false,
+          alwaysStat: false,
         });
   const shallowBeta =
     betaIsRemote || disableHotWatch
@@ -680,13 +682,15 @@ export async function runScheduler({
           ignoreInitial: true,
           depth: SHALLOW_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+          followSymlinks: false,
+          alwaysStat: false,
         });
 
   function enableWatch({ watcher, root, mgr, hot }) {
     handleWatchErrors(watcher);
 
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-      watcher.on(evt as any, async (p: string, _stats) => {
+      watcher.on(evt as any, async (p: string) => {
         const r = rel(root, p);
         if (mgr.isIgnored(r, evt?.endsWith("Dir"))) {
           return;
