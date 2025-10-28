@@ -190,7 +190,7 @@ Not a perfect fit if you need:
 | **Mutagen**   | Source-available (see project docs) | Dev-focused low-latency sync | Modes incl. “prefer side”         | Very fast for dev trees; custom protocol      |
 | **lsyncd**    | GPL-2.0+                            | One-way (event → rsync)      | N/A                               | Simple near-real-time mirroring               |
 
-> Philosophy difference: **ccsync** favors _determinism without duplicates_ (LWW + preference). Tools like Syncthing/Dropbox prefer _never lose data_ (create conflict files), which is ideal for less controlled, multi-party edits.
+> Philosophy difference: **ccsync** favors _determinism without duplicates or "conflict" files_ \(LWW \+ preference\). Tools like Syncthing/Dropbox prefer _never lose data_ \(create conflict files\), which is ideal for less controlled, multi\-party edits.
 
 ---
 
@@ -201,6 +201,8 @@ Not a perfect fit if you need:
 - **Type changes:** File ↔ symlink ↔ dir follow the same LWW rule \(so type can change if the winner differs\).
 - **Deletes:** Deletions are first\-class operations and replicate per LWW.
 - **Symlinks:** Stored with target string and hashed as `link:<target>`; preserved by rsync.
+- **Permission modes:** are always fully sync'd on posix systems.
+- **UID/GID:** fully sync'd as numeric ids when the user is root; ignored otherwise.
 
 ---
 
@@ -258,3 +260,4 @@ Here’s a concise, copy-pasteable matrix for your README.
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+
