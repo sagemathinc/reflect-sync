@@ -500,16 +500,20 @@ ON CONFLICT(path) DO UPDATE SET
     }
 
     // Mark deletions: dirs
+    const toDeleteDirs = db
+      .prepare(`SELECT path FROM dirs WHERE last_seen <> ? AND deleted = 0`)
+      .all(scan_id) as { path: string }[];
+
+    const op_ts_dirs = Date.now();
+
     db.prepare(
       `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
-    ).run(op_ts, scan_id);
+    ).run(op_ts_dirs, scan_id);
 
-    if (emitDelta) {
-      const gone = db
-        .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
-        .all(scan_id);
-      for (const r of gone) {
-        emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts });
+    // emit-delta: Emit dir deletions (use the snapshot we captured BEFORE the update)
+    if (emitDelta && toDeleteDirs.length) {
+      for (const r of toDeleteDirs) {
+        emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts: op_ts_dirs });
       }
       flushDeltaBuf();
     }
