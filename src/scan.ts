@@ -60,6 +60,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const DB_BATCH_SIZE = 2000;
   const DISPATCH_BATCH = 256; // files per worker message
 
+  const isRoot = process.geteuid?.() === 0;
+
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
 
@@ -348,7 +350,10 @@ ON CONFLICT(path) DO UPDATE SET
       if (entry.dirent.isDirectory()) {
         // directory ops don't bump mtime reliably, so we use op time.
         const op_ts = Date.now();
-        const hash = modeHash(st.mode);
+        let hash = modeHash(st.mode);
+        if (isRoot) {
+          hash += `|${st.uid}:${st.gid}`;
+        }
         dirMetaBuf.push({ path: rpath, ctime, mtime, hash, scan_id, op_ts });
 
         if (emitDelta) {

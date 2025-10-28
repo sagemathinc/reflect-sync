@@ -31,12 +31,7 @@ function isLocal(p: string) {
 
 function numericIdsFlag(): string[] {
   try {
-    // When running as root, preserve numeric owner/group IDs exactly.
-    // Safe to pass even locally.
-    return typeof (process as any).getuid === "function" &&
-      (process as any).getuid() === 0
-      ? ["--numeric-ids"]
-      : [];
+    return process.geteuid?.() === 0 ? ["--numeric-ids"] : [];
   } catch {
     return [];
   }
