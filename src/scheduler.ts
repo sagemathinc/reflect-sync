@@ -918,58 +918,69 @@ export async function runScheduler({
     const t0 = Date.now();
 
     // Scan alpha
-    const tAlphaStart = Date.now();
-    log(
-      "info",
-      "scan",
-      `alpha: ${alphaRoot}${alphaHost ? ` @ ${alphaHost}` : ""}`,
-    );
-    const a = alphaIsRemote
-      ? await sshScanIntoMirror({
-          host: alphaHost!,
-          remoteScanCmd,
-          root: alphaRoot,
-          localDb: alphaDb,
-        })
-      : await spawnTask(
-          "ccsync",
-          ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
-            verbose ? ["--verbose"] : [],
-          ),
-        );
+    let a;
+    const scanAlpha = async () => {
+      const tAlphaStart = Date.now();
+      log(
+        "info",
+        "scan",
+        `alpha: ${alphaRoot}${alphaHost ? ` @ ${alphaHost}` : ""}`,
+      );
+      a = alphaIsRemote
+        ? await sshScanIntoMirror({
+            host: alphaHost!,
+            remoteScanCmd,
+            root: alphaRoot,
+            localDb: alphaDb,
+          })
+        : await spawnTask(
+            "ccsync",
+            ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
+              verbose ? ["--verbose"] : [],
+            ),
+          );
 
-    seedHotFromDb(
-      alphaDb,
-      hotAlphaMgr,
-      addRemoteAlphaHotDirs,
-      tAlphaStart,
-      MAX_WATCHERS,
-    );
+      seedHotFromDb(
+        alphaDb,
+        hotAlphaMgr,
+        addRemoteAlphaHotDirs,
+        tAlphaStart,
+        MAX_WATCHERS,
+      );
+    };
 
     // Scan beta
-    const tBetaStart = Date.now();
-    log("info", "scan", `beta: ${betaRoot}${betaHost ? ` @ ${betaHost}` : ""}`);
-    const b = betaIsRemote
-      ? await sshScanIntoMirror({
-          host: betaHost!,
-          remoteScanCmd,
-          root: betaRoot,
-          localDb: betaDb,
-        })
-      : await spawnTask(
-          "ccsync",
-          ["scan", "--root", betaRoot, "--db", betaDb].concat(
-            verbose ? ["--verbose"] : [],
-          ),
-        );
+    let b;
+    const scanBeta = async () => {
+      const tBetaStart = Date.now();
+      log(
+        "info",
+        "scan",
+        `beta: ${betaRoot}${betaHost ? ` @ ${betaHost}` : ""}`,
+      );
+      b = betaIsRemote
+        ? await sshScanIntoMirror({
+            host: betaHost!,
+            remoteScanCmd,
+            root: betaRoot,
+            localDb: betaDb,
+          })
+        : await spawnTask(
+            "ccsync",
+            ["scan", "--root", betaRoot, "--db", betaDb].concat(
+              verbose ? ["--verbose"] : [],
+            ),
+          );
 
-    seedHotFromDb(
-      betaDb,
-      hotBetaMgr,
-      addRemoteBetaHotDirs,
-      tBetaStart,
-      MAX_WATCHERS,
-    );
+      seedHotFromDb(
+        betaDb,
+        hotBetaMgr,
+        addRemoteBetaHotDirs,
+        tBetaStart,
+        MAX_WATCHERS,
+      );
+    };
+    await Promise.all([scanAlpha(), scanBeta()]);
 
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
