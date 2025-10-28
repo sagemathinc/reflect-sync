@@ -205,12 +205,18 @@ ON CONFLICT(path) DO UPDATE SET
     hash?: string;
     target?: string; // for links
   }) => {
-    if (!emitDelta) return;
+    if (!emitDelta) {
+      return;
+    }
     deltaBuf.push(JSON.stringify(o));
-    if (deltaBuf.length >= 1000) flushDeltaBuf();
+    if (deltaBuf.length >= 1000) {
+      flushDeltaBuf();
+    }
   };
   function flushDeltaBuf() {
-    if (!emitDelta || deltaBuf.length === 0) return;
+    if (!emitDelta || deltaBuf.length === 0) {
+      return;
+    }
     process.stdout.write(deltaBuf.join("\n") + "\n");
     deltaBuf.length = 0;
   }
@@ -487,7 +493,9 @@ ON CONFLICT(path) DO UPDATE SET
 
     // emit-delta: file deletions (rpaths)
     if (emitDelta && toDelete.length) {
-      for (const r of toDelete) emitObj({ path: r.path, deleted: 1, op_ts });
+      for (const r of toDelete) {
+        emitObj({ path: r.path, deleted: 1, op_ts });
+      }
       flushDeltaBuf();
     }
 
@@ -500,8 +508,9 @@ ON CONFLICT(path) DO UPDATE SET
       const gone = db
         .prepare(`SELECT path FROM dirs WHERE deleted=1 AND last_seen = ?`)
         .all(scan_id);
-      for (const r of gone)
+      for (const r of gone) {
         emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts });
+      }
       flushDeltaBuf();
     }
 

@@ -166,7 +166,7 @@ export class HotWatchManager {
     }
 
     if (this.opts.verbose) {
-      console.log("hot-watcher: watch ", { rdir, anchorAbs });
+      console.log("hot-watcher: watch ", anchorAbs);
     }
     const watcher = chokidar.watch(anchorAbs, {
       persistent: true,

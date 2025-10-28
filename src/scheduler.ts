@@ -589,7 +589,9 @@ export async function runScheduler({
     if (hotTimer) return;
     hotTimer = setTimeout(async () => {
       hotTimer = null;
-      if (hotAlpha.size === 0 && hotBeta.size === 0) return;
+      if (hotAlpha.size === 0 && hotBeta.size === 0) {
+        return;
+      }
       const rpathsAlpha = Array.from(hotAlpha);
       const rpathsBeta = Array.from(hotBeta);
       hotAlpha.clear();
@@ -822,7 +824,9 @@ export async function runScheduler({
       for (const r of rpaths) {
         try {
           const st = await fsLstat(path.join(root, r));
-          if (st.isFile()) out.push(r);
+          if (st.isFile()) {
+            out.push(r);
+          }
         } catch {
           /* file might have vanished; ignore */
         }
@@ -838,7 +842,9 @@ export async function runScheduler({
       ? keepFresh(toAlpha)
       : keepFresh(await keepFilesLocal(betaRoot, toAlpha));
 
-    if (toBetaFiles.length === 0 && toAlphaFiles.length === 0) return;
+    if (toBetaFiles.length === 0 && toAlphaFiles.length === 0) {
+      return;
+    }
 
     const tmp = await mkdtemp(path.join(tmpdir(), "micro-plan-"));
     try {

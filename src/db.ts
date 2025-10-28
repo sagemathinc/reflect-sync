@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
+CREATE INDEX IF NOT EXISTS files_pdo ON files(path, deleted, op_ts);
 `);
 
   db.exec(`
@@ -63,6 +64,7 @@ CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
     last_seen  INTEGER
   );
 CREATE INDEX IF NOT EXISTS links_live_idx ON links(deleted, path);
+CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
   `);
 
   return db;

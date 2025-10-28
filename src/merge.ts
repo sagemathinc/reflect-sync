@@ -185,10 +185,19 @@ export async function runMerge({
       digestAlpha === lastAlpha &&
       digestBeta === lastBeta
     ) {
-      if (verbose)
+      if (verbose) {
         console.log(
-          "[merge] no-op: catalogs unchanged; skipping planning/rsync",
+          "[merge] no-op: catalogs unchanged since last scan; skipping planning/rsync",
         );
+      }
+      return;
+    }
+    if (digestAlpha == digestBeta) {
+      // if both sides are identical the 3-way merge isn't going to do
+      // anything. We're in sync.
+      if (verbose) {
+        console.log("[merge] no-op: catalogs equal; skipping planning/rsync");
+      }
       return;
     }
     // ---------- END EARLY-OUT FAST PATH ----------
