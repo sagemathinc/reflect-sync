@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
