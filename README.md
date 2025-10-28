@@ -196,37 +196,34 @@ Not a perfect fit if you need:
 
 ## Semantics (brief)
 
-- **Change detection:** By **content hash**. Pure mtime bumps don’t count as edits.
+- **Change detection:** By **content hash, permissions and \(for root\) uid/gid**. Pure mtime or ctime changes do NOT count as edits.  However, when there is an edit, the file is transfered with the mtime properly synced.
 - **Last write wins \(LWW\) resolution:** The newer op timestamp wins; within `--lww-epsilon-ms`, the **preferred side** wins.
 - **Type changes:** File ↔ symlink ↔ dir follow the same LWW rule \(so type can change if the winner differs\).
 - **Deletes:** Deletions are first\-class operations and replicate per LWW.
-- **Symlinks:** Stored with target string and hashed as `link:<target>`; preserved by rsync.
+- **Symlinks:** Stored with target string and hashed as `<target>`; preserved by rsync.
 - **Permission modes:** are always fully sync'd on posix systems.
-- **UID/GID:** fully sync'd as numeric ids when the user is root; ignored otherwise.
+- **UID/GID:** sync'd as numeric ids when the user is root; ignored otherwise.
 
 ---
 
 ## Performance notes
 
-- **Large files / small edits:** Excellent (rsync rolling checksums).
-- **Many small files:** Competitive when watch-driven; initial cold scans take longer than always-on indexers.
-- **High-latency links:** rsync is single-stream; consider batching file lists or running a few parallel rsyncs for huge trees.
-- **Observability:** Plans are explicit (`toAlpha`, `toBeta`, delete lists) and replayable.
+- **Large files / small edits:** Excellent even for high latency links \(rsync rolling checksums\).
+- **Many small files:** Competitive when watch\-driven; initial cold scans take longer than always\-on indexers.
+- **Observability:** Plans are explicit \(`toAlpha`, `toBeta`, delete lists\) and replayable. State is visible in sqlite tables. After each scan a hash of each directory tree is computed, so you can be certain the state has converged.
 
 ---
 
 ## Platform support
 
-- **Linux/macOS:** Fully supported (Node.js 24+). Uses `lutimes` where available for precise symlink mtimes.
-- **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions.
+- **Linux / macOS:** Fully supported \(Node.js 24\+\). Uses `lutimes` where available for precise symlink mtimes.
+- **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions.  Not yet tested for native Windows, but planned.
 
 ---
 
 ## Open Source
 
 The MIT license is maximally permissive: embed, modify, and redistribute with minimal friction. This makes **ccsync** easy to adopt in both open\-source stacks and commercial tooling.
-
-Here’s a concise, copy-pasteable matrix for your README.
 
 ---
 

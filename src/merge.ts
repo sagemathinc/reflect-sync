@@ -1415,15 +1415,16 @@ export async function runMerge({
       done();
 
       // ---------- prune tombstones now that alpha/beta are RELATIVE ----------
+      // we also drop entries where the hash never got computed -- sometimes those can get left around
       done = t("drop tombstones");
       db.exec(`
         DELETE FROM alpha.files
-        WHERE deleted = 1
-          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1);
+        WHERE (deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1)) OR (alpha.files.hash is NULL);
 
         DELETE FROM beta.files
-        WHERE deleted = 1
-          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1);
+        WHERE (deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1)) OR (beta.files.hash is NULL);
 
         DELETE FROM alpha.dirs
         WHERE deleted = 1
