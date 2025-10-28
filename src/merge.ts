@@ -87,7 +87,7 @@ export async function runMerge({
     const t0 = Date.now();
     return () => {
       const dt = Date.now() - t0;
-      if (dt > 20) console.log(`[phase] ${label}: ${dt} ms`);
+      console.log(`[phase] ${label}: ${dt} ms`);
     };
   };
 
@@ -120,9 +120,9 @@ export async function runMerge({
       );
       CREATE TABLE IF NOT EXISTS base_dirs (
         path    TEXT PRIMARY KEY,  -- RELATIVE dir path
+        hash    TEXT DEFAULT '',
         deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER,
-        hash    TEXT DEFAULT ''
+        op_ts   INTEGER
       );
     `);
 
@@ -143,11 +143,11 @@ export async function runMerge({
       const stmt = db.prepare(`
         SELECT path, COALESCE(hash, '') AS hash
         FROM (
-          SELECT path, hash FROM ${side}.files WHERE deleted = 0
+          SELECT path, hash FROM ${side}.files WHERE deleted = 0 AND hash IS NOT NULL
           UNION ALL
-          SELECT path, hash FROM ${side}.links WHERE deleted = 0
+          SELECT path, hash FROM ${side}.links WHERE deleted = 0 AND hash IS NOT NULL
           UNION ALL
-          SELECT path, hash FROM ${side}.dirs  WHERE deleted = 0
+          SELECT path, hash FROM ${side}.dirs  WHERE deleted = 0 AND hash IS NOT NULL
         )
         ORDER BY path
       `);
@@ -181,16 +181,33 @@ export async function runMerge({
 
     // ---------- Build rel tables (already RELATIVE paths in alpha/beta) ----------
     db.exec(
-      `DROP VIEW IF EXISTS alpha_entries; DROP VIEW IF EXISTS beta_entries;`,
+      `
+      DROP VIEW IF EXISTS alpha_entries;
+      DROP VIEW IF EXISTS beta_entries;
+      DROP VIEW IF EXISTS all_paths;
+      DROP VIEW IF EXISTS coalesced_pairs;
+      `,
     );
-    // this is complicated because a path may occur in both alpha.files
-    // and alpha.links, e.g., if it was recently a file, then replaced
-    // by a symlink with the same name.  Hence we dedup buy taking
-    // the non-deleted one (say).  The paths must be unique for
-    // creating alpha_rel and beta_rel below, where the path is the
-    // primary key.
+    /*
+    The alpha_entries/beta_entries queries below are complicated for many reasons:
+     - a path may occur in both alpha.files
+       and alpha.links, e.g., if it was recently a file, then replaced
+       by a symlink with the same name.  Hence we dedup by taking
+       the non-deleted one (say).  The paths must be unique for
+       creating alpha_rel and beta_rel below, where the path is the
+       primary key.
+     - if a file is created on alpha and scan'd so in the database,
+       then copied to beta, then quickly deleted on beta, it will not
+       be in the database for beta at all (not marked as a delete).
+       Thus after the scan we expand the tables for both sides
+       so that the paths are the same, defaulting to a delete happening
+       if there is nothing on one side (so we are obviously assuming
+       that scanning fully works).
+     */
     db.exec(`
-      -- alpha
+      -- =========================
+      -- alpha_entries (ranked)
+      -- =========================
       CREATE TEMP VIEW alpha_entries AS
       WITH unioned AS (
         SELECT path, hash, deleted, op_ts FROM alpha.files
@@ -201,8 +218,9 @@ export async function runMerge({
         SELECT path, hash, deleted, op_ts,
                ROW_NUMBER() OVER (
                  PARTITION BY path
-                 ORDER BY deleted ASC,  -- prefer deleted=0
-                          op_ts  DESC  -- then newest op_ts
+                 ORDER BY
+                   deleted ASC,  -- prefer non-deleted
+                   op_ts  DESC   -- then newest op_ts
                ) AS rn
         FROM unioned
       )
@@ -210,7 +228,9 @@ export async function runMerge({
       FROM ranked
       WHERE rn = 1;
 
-      -- beta
+      -- =========================
+      -- beta_entries (ranked)
+      -- =========================
       CREATE TEMP VIEW beta_entries AS
       WITH unioned AS (
         SELECT path, hash, deleted, op_ts FROM beta.files
@@ -221,7 +241,9 @@ export async function runMerge({
         SELECT path, hash, deleted, op_ts,
                ROW_NUMBER() OVER (
                  PARTITION BY path
-                 ORDER BY deleted ASC, op_ts DESC
+                 ORDER BY
+                   deleted ASC,
+                   op_ts  DESC
                ) AS rn
         FROM unioned
       )
@@ -229,6 +251,13 @@ export async function runMerge({
       FROM ranked
       WHERE rn = 1;
 
+      -- =========================
+      -- Superset of paths
+      -- =========================
+      CREATE TEMP VIEW all_paths AS
+      SELECT path FROM alpha_entries
+      UNION
+      SELECT path FROM beta_entries;
     `);
 
     db.exec(
@@ -1419,17 +1448,16 @@ export async function runMerge({
       })();
       done();
 
-      // ---------- prune tombstones now that alpha/beta are RELATIVE ----------
-      // we also drop entries where the hash never got computed -- sometimes those can get left around
+      // ---------- prune tombstones ----------
       done = t("drop tombstones");
       db.exec(`
         DELETE FROM alpha.files
-        WHERE (deleted = 1
-          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1)) OR (alpha.files.hash is NULL);
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.files.path AND base.deleted = 1);
 
         DELETE FROM beta.files
-        WHERE (deleted = 1
-          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1)) OR (beta.files.hash is NULL);
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.files.path AND base.deleted = 1);
 
         DELETE FROM alpha.dirs
         WHERE deleted = 1
@@ -1438,12 +1466,40 @@ export async function runMerge({
         DELETE FROM beta.dirs
         WHERE deleted = 1
           AND EXISTS (SELECT 1 FROM base_dirs WHERE base_dirs.path = beta.dirs.path AND base_dirs.deleted = 1);
-      `);
+
+        DELETE FROM alpha.links
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = alpha.links.path AND base.deleted = 1);
+
+        DELETE FROM beta.links
+        WHERE deleted = 1
+          AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.links.path AND base.deleted = 1);
+
+        -- delete anything deleted in base that doesn't exist in either alpha or beta
+        WITH live_paths AS (
+          SELECT path FROM alpha_entries WHERE deleted = 0
+          UNION
+          SELECT path FROM beta_entries  WHERE deleted = 0
+        )
+        DELETE FROM base
+        WHERE NOT EXISTS (SELECT 1 FROM live_paths lp WHERE lp.path = base.path);
+
+        -- live dirs
+        WITH live_dir_paths AS (
+          SELECT path FROM alpha.dirs WHERE deleted = 0
+          UNION
+          SELECT path FROM beta.dirs  WHERE deleted = 0
+        )
+        DELETE FROM base_dirs
+        WHERE NOT EXISTS (SELECT 1 FROM live_dir_paths lp WHERE lp.path = base_dirs.path);      `);
       done();
 
       done = t("sqlite hygiene");
       db.exec("PRAGMA optimize");
       db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      db.exec("VACUUM;");
+      db.exec("VACUUM alpha;");
+      db.exec("VACUUM beta;");
       done();
 
       if (verbose) console.log("Merge complete.");
