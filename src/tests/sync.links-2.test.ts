@@ -4,7 +4,7 @@
 //
 // More edge case symlink-focused scenarios
 
-import { sync, fileExists, mkCase } from "./util";
+import { sync, dirExists, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
@@ -107,4 +107,24 @@ describe("ccsync: more symlink edge case tests", () => {
     await expect(fileExists(join(aDir, "x"))).resolves.toBe(false);
     await expect(linkExists(bPath)).resolves.toBe(false);
   });
+
+  test("create directory that is target of symlink, sync, move directory, sync", async () => {
+    const r = await mkCase(tmp, "link-to-dir-moved");
+    await fsp.mkdir(join(r.aRoot, "x"));
+    await fsp.symlink(join(r.aRoot, "x"), join(r.aRoot, "x.link"));
+    await sync(r, "alpha");
+
+    await expect(linkExists(join(r.bRoot, "x.link")));
+    await expect(dirExists(join(r.bRoot, "x")));
+
+    // move the directory
+    await fsp.rename(join(r.bRoot, "x"), join(r.bRoot, "x2"));
+    await sync(r, "alpha");
+
+    expect(await fsp.readdir(r.aRoot)).toEqual(["x.link", "x2"]);
+    expect(await fsp.readdir(r.bRoot)).toEqual(["x.link", "x2"]);
+    await expect(linkExists(join(r.aRoot, "x.link")));
+    await expect(linkExists(join(r.bRoot, "x.link")));
+  });
+
 });

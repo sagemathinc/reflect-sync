@@ -10,8 +10,7 @@ import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { IGNORE_FILE } from "../constants";
-
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { wait } from "./util";
 
 describe("HotWatchManager + ignores", () => {
   let tmp: string;

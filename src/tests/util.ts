@@ -8,6 +8,10 @@ const VERBOSE = false;
 
 const DIST = resolve(__dirname, "../../dist");
 
+export function wait(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export function runDist(
   scriptRel: string,
   args: string[] = [],

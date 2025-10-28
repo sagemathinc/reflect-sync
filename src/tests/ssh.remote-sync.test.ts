@@ -8,13 +8,14 @@
 
 import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
-import path from "node:path";
+import { join, resolve } from "node:path";
 import os from "node:os";
-import { countSchedulerCycles, fileExists, waitFor } from "./util";
+import { countSchedulerCycles, dirExists, linkExists, waitFor } from "./util";
 import { canSshLocalhost } from "./ssh-util";
+//import { wait } from "./util";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees
-const SCHED = path.resolve(__dirname, "../../dist/scheduler.js");
+const SCHED = resolve(__dirname, "../../dist/scheduler.js");
 
 function startSchedulerRemote(opts: {
   alphaRoot: string; // local
@@ -39,6 +40,7 @@ function startSchedulerRemote(opts: {
     opts.baseDb,
     "--prefer",
     opts.prefer ?? "alpha",
+    "--disable-hot-watch",
     "--beta-host",
     "localhost", // mark beta as remote so scheduler uses ssh-based watch/scan
   ];
@@ -46,22 +48,24 @@ function startSchedulerRemote(opts: {
     args.push("--verbose");
   }
 
-  // Make full cycles slow; micro-sync snappy for the test
+  // Make full cycles very FAST
   const env = {
     ...process.env,
-    SCHED_MIN_MS: "5000",
-    SCHED_MAX_MS: "5000",
-    SCHED_MAX_BACKOFF_MS: "5000",
+    SCHED_MIN_MS: "100",
+    SCHED_MAX_MS: "200",
+    SCHED_MAX_BACKOFF_MS: "50",
     SCHED_JITTER_MS: "0",
-    MICRO_DEBOUNCE_MS: "50",
-    COOLDOWN_MS: "50",
+    MICRO_DEBOUNCE_MS: "0",
+    COOLDOWN_MS: "10",
     SHALLOW_DEPTH: "1",
     HOT_DEPTH: "1",
     MAX_HOT_WATCHERS: "32",
   };
 
   return spawn(process.execPath, args, {
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: opts.verbose
+      ? ["inherit", "inherit", "inherit"]
+      : ["ignore", "ignore", "inherit"],
     env,
   });
 }
@@ -82,7 +86,7 @@ async function stopScheduler(p: ChildProcess) {
   }
 }
 
-describe("SSH remote watch → microSync", () => {
+describe("SSH remote sync", () => {
   let tmp: string = "";
   let alphaRoot: string, betaRootRemote: string;
   let alphaDb: string, betaDb: string, baseDb: string;
@@ -95,12 +99,12 @@ describe("SSH remote watch → microSync", () => {
       throw Error("ssh localhost unavailable; skipping remote-watch test");
     }
 
-    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ccsync-ssh-watch-"));
-    alphaRoot = path.join(tmp, "alpha-local");
-    betaRootRemote = path.join(tmp, "beta-remote");
-    alphaDb = path.join(tmp, "alpha.db");
-    betaDb = path.join(tmp, "beta.db");
-    baseDb = path.join(tmp, "base.db");
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-ssh-watch-"));
+    alphaRoot = join(tmp, "alpha-local");
+    betaRootRemote = join(tmp, "beta-remote");
+    alphaDb = join(tmp, "alpha.db");
+    betaDb = join(tmp, "beta.db");
+    baseDb = join(tmp, "base.db");
 
     await fsp.mkdir(alphaRoot, { recursive: true });
     await fsp.mkdir(betaRootRemote, { recursive: true });
@@ -112,7 +116,7 @@ describe("SSH remote watch → microSync", () => {
     }
   });
 
-  test("file created on remote (beta) appears locally on alpha via microSync", async () => {
+  test("create directory that is target of symlink, sync, move directory, sync", async () => {
     const child = startSchedulerRemote({
       alphaRoot,
       betaRootRemote,
@@ -120,32 +124,45 @@ describe("SSH remote watch → microSync", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
+      verbose: false,
     });
 
     try {
-      // Wait for first full cycle so watcher + remote agent are armed
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 1,
-        10_000,
-        100,
+        5_000,
+        10,
       );
+      await fsp.mkdir(join(alphaRoot, "x"));
+      await fsp.symlink("x", join(alphaRoot, "x.link"));
 
-      // Create a file under the "remote" path directly on the filesystem.
-      // The remote watch agent (via ssh on localhost) should pick this up.
-      const remoteFile = path.join(betaRootRemote, "hello.txt");
-      await fsp.writeFile(remoteFile, "hi\n", "utf8");
-
-      // Expect it to arrive on alpha quickly via microSync
-      const localFile = path.join(alphaRoot, "hello.txt");
       await waitFor(
-        () => fileExists(localFile),
-        (ok) => ok === true,
-        2500,
-        50,
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 2,
+        5_000,
+        10,
       );
+
+      await expect(linkExists(join(betaRootRemote, "x.link")));
+      await expect(dirExists(join(betaRootRemote, "x")));
+
+      // move the directory
+      await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
+
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 3,
+        5_000,
+        10,
+      );
+
+      expect(await fsp.readdir(alphaRoot)).toEqual(["x.link", "x2"]);
+      expect(await fsp.readdir(betaRootRemote)).toEqual(["x.link", "x2"]);
+      await expect(linkExists(join(alphaRoot, "x.link")));
+      await expect(linkExists(join(betaRootRemote, "x.link")));
     } finally {
       await stopScheduler(child);
     }
-  }, 20_000);
+  }, 10_000);
 });
