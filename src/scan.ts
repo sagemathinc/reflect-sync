@@ -22,7 +22,12 @@ function buildProgram(): Command {
     .requiredOption("--root <path>", "directory to scan")
     .requiredOption("--db <file>", "path to sqlite database")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
-    .option("--verbose", "enable verbose logging", false);
+    .option("--verbose", "enable verbose logging", false)
+    .option("--vacuum", "vacuum the database after doing the scan", false)
+    .option(
+      "--prune-ms <milliseconds>",
+      "prune deleted entries at least this old *before* doing the scan",
+    );
 }
 
 type ScanOptions = {
@@ -30,10 +35,12 @@ type ScanOptions = {
   emitDelta: boolean;
   verbose: boolean;
   root: string;
+  vacuum?: boolean;
+  pruneMs?: string;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
-  const { root, db: DB_PATH, emitDelta, verbose } = opts;
+  const { root, db: DB_PATH, emitDelta, verbose, vacuum, pruneMs } = opts;
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -65,6 +72,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
+
+  if (pruneMs) {
+    const olderThanTs = Date.now() - Number(pruneMs);
+    for (const table of ["files", "dirs", "links"]) {
+      db.prepare(`DELETE FROM ${table} WHERE deleted=1 AND op_ts < ?`).run(
+        olderThanTs,
+      );
+    }
+  }
 
   const insTouch = db.prepare(
     `INSERT OR REPLACE INTO recent_touch(path, ts) VALUES (?, ?)`,
@@ -545,6 +561,10 @@ ON CONFLICT(path) DO UPDATE SET
 
     clearInterval(periodicFlush);
     await Promise.all(workers.map((w) => w.terminate()));
+
+    if (vacuum) {
+      db.exec("vacuum");
+    }
 
     if (verbose) {
       console.log(

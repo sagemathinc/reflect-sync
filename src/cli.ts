@@ -28,8 +28,22 @@ program
   .requiredOption("--root <path>", "directory to scan")
   .option("--db <path>", "sqlite db file", "alpha.db")
   .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
+  .option("--vacuum", "vacuum the database after doing the scan", false)
+  .option(
+    "--prune-ms <milliseconds>",
+    "prune deleted entries at least this old *before* doing the scan",
+  )
   .action(
-    async (opts: { root: string; db: string; emitDelta: boolean }, command) => {
+    async (
+      opts: {
+        root: string;
+        db: string;
+        emitDelta: boolean;
+        vacume: boolean;
+        pruneMs: string;
+      },
+      command,
+    ) => {
       const { runScan } = await import("./scan.js");
       await runScan({ ...command.optsWithGlobals(), ...opts });
     },
