@@ -74,14 +74,25 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
 VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, @deleted, @now, @hashed_ctime)
 ON CONFLICT(path) DO UPDATE SET
-  size=COALESCE(excluded.size, files.size),
-  ctime=COALESCE(excluded.ctime, files.ctime),
-  mtime=COALESCE(excluded.mtime, files.mtime),
-  op_ts=COALESCE(excluded.op_ts, files.op_ts),
-  hash=COALESCE(excluded.hash, files.hash),
-  hashed_ctime=COALESCE(excluded.hashed_ctime, files.hashed_ctime),
-  deleted=excluded.deleted,
-  last_seen=excluded.last_seen
+  -- apply only if the incoming event is as new or newer:
+  size         = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN COALESCE(excluded.size, files.size) ELSE files.size END,
+  ctime        = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN COALESCE(excluded.ctime, files.ctime) ELSE files.ctime END,
+  mtime        = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN COALESCE(excluded.mtime, files.mtime) ELSE files.mtime END,
+  op_ts        = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN excluded.op_ts ELSE files.op_ts END,
+  hash         = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN COALESCE(excluded.hash, files.hash) ELSE files.hash END,
+  hashed_ctime = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN COALESCE(excluded.hashed_ctime, files.hashed_ctime)
+                      ELSE files.hashed_ctime END,
+  deleted      = CASE WHEN excluded.op_ts >= files.op_ts
+                      THEN excluded.deleted ELSE files.deleted END,
+  -- always keep the freshest sighting time:
+  last_seen    = CASE WHEN excluded.last_seen > files.last_seen
+                      THEN excluded.last_seen ELSE files.last_seen END
 `);
 
   // Directories: presence/meta only (hash typically carries mode bits etc.)
@@ -89,12 +100,18 @@ ON CONFLICT(path) DO UPDATE SET
 INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
 VALUES (@path, @ctime, @mtime, @op_ts, @hash, @deleted, @now)
 ON CONFLICT(path) DO UPDATE SET
-  ctime=COALESCE(excluded.ctime, dirs.ctime),
-  mtime=COALESCE(excluded.mtime, dirs.mtime),
-  op_ts=COALESCE(excluded.op_ts, dirs.op_ts),
-  hash=excluded.hash,
-  deleted=excluded.deleted,
-  last_seen=excluded.last_seen
+  ctime     = CASE WHEN excluded.op_ts >= dirs.op_ts
+                   THEN COALESCE(excluded.ctime, dirs.ctime) ELSE dirs.ctime END,
+  mtime     = CASE WHEN excluded.op_ts >= dirs.op_ts
+                   THEN COALESCE(excluded.mtime, dirs.mtime) ELSE dirs.mtime END,
+  op_ts     = CASE WHEN excluded.op_ts >= dirs.op_ts
+                   THEN excluded.op_ts ELSE dirs.op_ts END,
+  hash      = CASE WHEN excluded.op_ts >= dirs.op_ts
+                   THEN excluded.hash ELSE dirs.hash END,
+  deleted   = CASE WHEN excluded.op_ts >= dirs.op_ts
+                   THEN excluded.deleted ELSE dirs.deleted END,
+  last_seen = CASE WHEN excluded.last_seen > dirs.last_seen
+                   THEN excluded.last_seen ELSE dirs.last_seen END
 `);
 
   // Symlinks: store target + hash of target string for change detection
@@ -102,13 +119,20 @@ ON CONFLICT(path) DO UPDATE SET
 INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
 VALUES (@path, @target, @ctime, @mtime, @op_ts, @hash, @deleted, @now)
 ON CONFLICT(path) DO UPDATE SET
-  target=COALESCE(excluded.target, links.target),
-  ctime=COALESCE(excluded.ctime, links.ctime),
-  mtime=COALESCE(excluded.mtime, links.mtime),
-  op_ts=COALESCE(excluded.op_ts, links.op_ts),
-  hash=COALESCE(excluded.hash, links.hash),
-  deleted=excluded.deleted,
-  last_seen=excluded.last_seen
+  target    = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN COALESCE(excluded.target, links.target) ELSE links.target END,
+  ctime     = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN COALESCE(excluded.ctime, links.ctime) ELSE links.ctime END,
+  mtime     = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN COALESCE(excluded.mtime, links.mtime) ELSE links.mtime END,
+  op_ts     = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN excluded.op_ts ELSE links.op_ts END,
+  hash      = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN COALESCE(excluded.hash, links.hash) ELSE links.hash END,
+  deleted   = CASE WHEN excluded.op_ts >= links.op_ts
+                   THEN excluded.deleted ELSE links.deleted END,
+  last_seen = CASE WHEN excluded.last_seen > links.last_seen
+                   THEN excluded.last_seen ELSE links.last_seen END
 `);
 
   const insTouch = db.prepare(
@@ -165,21 +189,40 @@ ON CONFLICT(path) DO UPDATE SET
         });
       } else {
         // default: file row
-        upsertFile.run({
-          path: r.path,
-          size: isDelete ? null : (r.size ?? null),
-          ctime: isDelete ? null : (r.ctime ?? null),
-          mtime: isDelete ? null : (r.mtime ?? null),
-          op_ts,
-          hash: isDelete ? null : (r.hash ?? null),
-          deleted: isDelete ? 1 : 0,
-          now,
-          // When scan emits file deltas, it includes a hash; we can safely set hashed_ctime.
-          // If hash is missing, hashed_ctime should be null so COALESCE keeps the old one.
-          hashed_ctime: isDelete ? null : r.hash ? (r.ctime ?? null) : null,
-        });
-        // consider this path as active
-        insTouch.run(r.path, now);
+        if (isDelete) {
+          // always apply deletes
+          upsertFile.run({
+            path: r.path,
+            size: null,
+            ctime: null,
+            mtime: null,
+            op_ts,
+            hash: null,
+            deleted: 1,
+            now,
+            hashed_ctime: null,
+          });
+          insTouch.run(r.path, now);
+        } else if (r.hash == null) {
+          // came from watch without a hash: don't poison the DB with NULL hashes
+          // still mark as touched so hot watching favors this area
+          insTouch.run(r.path, now);
+          // (intentionally skip upsertFile)
+        } else {
+          // proper hashed file delta (from scan, or hashed watch)
+          upsertFile.run({
+            path: r.path,
+            size: r.size ?? null,
+            ctime: r.ctime ?? null,
+            mtime: r.mtime ?? r.op_ts ?? null,
+            op_ts,
+            hash: r.hash,
+            deleted: 0,
+            now,
+            hashed_ctime: r.ctime ?? null,
+          });
+          insTouch.run(r.path, now);
+        }
       }
     }
   });
