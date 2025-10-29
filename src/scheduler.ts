@@ -17,12 +17,12 @@ import {
   HotWatchManager,
   minimalCover,
   norm,
+  enableWatch,
   parentDir,
-  handleWatchErrors,
 } from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { MAX_WATCHERS } from "./defaults.js";
-import { makeMicroSync } from "./micro-sync.js";
+import { makeMicroSync, type Move } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
 
@@ -513,6 +513,8 @@ export async function runScheduler({
   // ---------- hot (realtime) sets ----------
   const hotAlpha = new Set<string>();
   const hotBeta = new Set<string>();
+  const hotAlphaMoves: Move[] = [];
+  const hotBetaMoves: Move[] = [];
   let hotTimer: NodeJS.Timeout | null = null;
 
   // create the microSync closure
@@ -532,20 +534,35 @@ export async function runScheduler({
     if (hotTimer) return;
     hotTimer = setTimeout(async () => {
       hotTimer = null;
-      if (hotAlpha.size === 0 && hotBeta.size === 0) return;
+      if (
+        hotAlpha.size === 0 &&
+        hotBeta.size === 0 &&
+        hotAlphaMoves.length === 0 &&
+        hotBetaMoves.length === 0
+      ) {
+        return;
+      }
       const rpathsAlpha = Array.from(hotAlpha);
       const rpathsBeta = Array.from(hotBeta);
+      const movesAlpha = hotAlphaMoves.splice(0, hotAlphaMoves.length);
+      const movesBeta = hotBetaMoves.splice(0, hotBetaMoves.length);
       hotAlpha.clear();
       hotBeta.clear();
       try {
-        await microSync(rpathsAlpha, rpathsBeta);
+        await microSync(rpathsAlpha, rpathsBeta, movesAlpha, movesBeta);
       } catch (e: any) {
         log("warn", "realtime", "microSync failed", {
           err: String(e?.message || e),
         });
       } finally {
-        // run another micro pass if more landed
-        if (hotAlpha.size || hotBeta.size) scheduleHotFlush();
+        if (
+          hotAlpha.size ||
+          hotBeta.size ||
+          hotAlphaMoves.length ||
+          hotBetaMoves.length
+        ) {
+          scheduleHotFlush();
+        }
         requestSoon("micro-sync complete");
       }
     }, MICRO_DEBOUNCE_MS);
@@ -612,28 +629,14 @@ export async function runScheduler({
           alwaysStat: false,
         });
 
-  function enableWatch({ watcher, root, mgr, hot }) {
-    handleWatchErrors(watcher);
-    ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-      watcher.on(evt as any, async (p: string) => {
-        const r = rel(root, p);
-        if (mgr.isIgnored(r, (evt as string)?.endsWith("Dir"))) return;
-        const rdir = parentDir(r);
-        if (rdir) await mgr.add(rdir);
-        if (r && (evt === "add" || evt === "change" || evt === "unlink")) {
-          hot.add(r);
-          scheduleHotFlush();
-        }
-      });
-    });
-  }
-
   if (shallowAlpha && hotAlphaMgr) {
     enableWatch({
       watcher: shallowAlpha,
       root: alphaRoot,
       mgr: hotAlphaMgr,
       hot: hotAlpha,
+      scheduleHotFlush,
+      moves: hotAlphaMoves,
     });
   }
   if (shallowBeta && hotBetaMgr) {
@@ -642,6 +645,8 @@ export async function runScheduler({
       root: betaRoot,
       mgr: hotBetaMgr,
       hot: hotBeta,
+      scheduleHotFlush,
+      moves: hotBetaMoves,
     });
   }
 

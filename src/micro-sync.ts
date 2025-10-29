@@ -1,15 +1,27 @@
 // micro-sync.ts
 import path from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, cpus } from "node:os";
 import {
   mkdtemp,
   rm,
   writeFile,
   lstat as fsLstat,
   stat as fsStat,
+  mkdir as fsMkdir,
+  access as fsAccess,
+  constants as FsC,
 } from "node:fs/promises";
 import type { SpawnOptions } from "node:child_process";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
+
+// Optional move description passed in from the hot watcher.
+// When provided, we try to replay the same move on the opposite side first.
+export type Move = {
+  from: string; // rpath
+  to: string; // rpath
+  isDir?: boolean;
+  isLink?: boolean;
+};
 
 export type MicroSyncDeps = {
   alphaRoot: string;
@@ -61,11 +73,30 @@ export function makeMicroSync(deps: MicroSyncDeps) {
   // immediately after we ourselves copied the file to that side.
   const ECHO_SUPPRESS_MS = Number(process.env.MICRO_ECHO_SUPPRESS_MS ?? 2500);
 
+  // Light loop-suppression for applied moves to avoid ping-pong immediately after a mirrored mv.
+  const MOVE_SUPPRESS_MS = Number(process.env.MOVE_SUPPRESS_MS ?? 2000);
+
   // Last time we pushed a path in a given direction.
   const lastA2B = new Map<string, number>();
   const lastB2A = new Map<string, number>();
   // Generic cooldown (direction-agnostic).
   const lastPush = new Map<string, number>();
+
+  // Suppression for mirrored moves: `${side}:${from}->${to}` -> ts
+  const appliedMoveSeen = new Map<string, number>();
+  const moveKey = (side: "alpha" | "beta", m: Move) =>
+    `${side}:${m.from}->${m.to}`;
+  const seenMove = (side: "alpha" | "beta", m: Move) =>
+    Date.now() - (appliedMoveSeen.get(moveKey(side, m)) || 0) <
+    MOVE_SUPPRESS_MS;
+  const rememberMove = (side: "alpha" | "beta", m: Move) =>
+    appliedMoveSeen.set(moveKey(side, m), Date.now());
+  function gcMoves() {
+    const now = Date.now();
+    for (const [k, t] of appliedMoveSeen) {
+      if (now - t > MOVE_SUPPRESS_MS * 4) appliedMoveSeen.delete(k);
+    }
+  }
 
   function keepFresh(rpaths: string[]) {
     const now = Date.now();
@@ -170,7 +201,114 @@ export function makeMicroSync(deps: MicroSyncDeps) {
     }
   }
 
-  return async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
+  // --- Helpers for applying local moves first ---------------------------------
+
+  async function pathExists(abs: string) {
+    try {
+      await fsAccess(abs, FsC.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function ensureParent(abs: string) {
+    await fsMkdir(path.dirname(abs), { recursive: true });
+  }
+
+  // Try to apply a move on the DEST side. Local↔Local only. Best effort.
+  async function applyLocalMove(
+    destSide: "alpha" | "beta",
+    m: Move,
+  ): Promise<boolean> {
+    const destRoot = destSide === "alpha" ? alphaRoot : betaRoot;
+    const srcAbs = path.join(destRoot, m.from);
+    const dstAbs = path.join(destRoot, m.to);
+
+    if (dryRun) return true;
+
+    if (!(await pathExists(srcAbs))) {
+      // Source hasn't landed yet; skip. Full cycle will reconcile.
+      return false;
+    }
+    await ensureParent(dstAbs);
+
+    // Use mv; works for files, dirs, symlinks. -T treats dst as a path, not a directory to enter.
+    const r = await deps.spawnTask("mv", ["-f", "-T", srcAbs, dstAbs], [0]);
+    return r.ok === true;
+  }
+
+  async function tryMoves(
+    originSide: "alpha" | "beta",
+    moves: Move[],
+  ): Promise<void> {
+    gcMoves();
+
+    // Only replicate when both endpoints are local; otherwise skip (keep simple & safe).
+    const localLocal = !alphaIsRemote && !betaIsRemote;
+    if (!localLocal || moves.length === 0) return;
+
+    const destSide = originSide === "alpha" ? "beta" : "alpha";
+
+    // Filter out moves we've just mirrored to avoid ping-pong loops.
+    const work = moves.filter((m) => !seenMove(destSide, m));
+    if (work.length === 0) return;
+
+    const PAR = Math.max(2, Math.min(8, cpus().length));
+    let i = 0;
+
+    await Promise.all(
+      Array.from({ length: Math.min(PAR, work.length) }, async () => {
+        while (true) {
+          const idx = i++;
+          if (idx >= work.length) break;
+          const m = work[idx];
+          try {
+            const applied = await applyLocalMove(destSide, m);
+            if (applied) {
+              rememberMove(destSide, m);
+              // Damp down micro copies on both endpoints of the move for a short time.
+              const t = Date.now();
+              lastPush.set(m.from, t);
+              lastPush.set(m.to, t);
+              if (verbose) {
+                log(
+                  "info",
+                  "realtime",
+                  `applied move ${originSide}→${destSide}`,
+                  {
+                    from: m.from,
+                    to: m.to,
+                  },
+                );
+              }
+            }
+          } catch (e: any) {
+            if (verbose) {
+              log("warn", "realtime", "move apply failed; will rely on cycle", {
+                side: destSide,
+                from: m.from,
+                to: m.to,
+                err: String(e?.message || e),
+              });
+            }
+          }
+        }
+      }),
+    );
+  }
+
+  // Accept optional move arrays; defaults keep backward-compat with callers that don't pass them.
+  return async function microSync(
+    rpathsAlpha: string[],
+    rpathsBeta: string[],
+    movesAlpha: Move[] = [],
+    movesBeta: Move[] = [],
+  ) {
+    // First, attempt to mirror moves (best effort). If these fail, the normal merge/scan will still converge.
+    if (movesAlpha.length) await tryMoves("alpha", movesAlpha);
+    if (movesBeta.length) await tryMoves("beta", movesBeta);
+
     const setA = new Set(rpathsAlpha);
     const setB = new Set(rpathsBeta);
 

@@ -1,10 +1,11 @@
 // src/hotwatch.ts
-import chokidar, { FSWatcher } from "chokidar";
+import chokidar, { type FSWatcher } from "chokidar";
 import path from "node:path";
 import { MAX_WATCHERS } from "./defaults.js";
 import ignore from "ignore";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, lstat } from "node:fs/promises";
 import { IGNORE_FILE } from "./constants.js";
+import { type Move } from "./micro-sync.js";
 
 export type HotWatchEvent =
   | "add"
@@ -293,6 +294,140 @@ export function handleWatchErrors(watch) {
     } else {
       // serious problem, but don't throw uncaught exception
       console.error("Watch error", err);
+    }
+  });
+}
+
+export function enableWatch({
+  watcher,
+  root,
+  mgr,
+  hot,
+  moves,
+  scheduleHotFlush,
+}: {
+  watcher: FSWatcher;
+  root: string;
+  mgr: HotWatchManager;
+  hot: Set<string>;
+  moves: Move[];
+  scheduleHotFlush: () => void;
+}) {
+  handleWatchErrors(watcher);
+
+  // inode-based pairing within a time window
+  const MOVE_WINDOW_MS = process.env.MOVE_WINDOW_MS
+    ? Number(process.env.MOVE_WINDOW_MS)
+    : 1500;
+
+  // abs -> {ino,isDir,isLink}
+  const pathMeta = new Map<
+    string,
+    { ino: number; isDir: boolean; isLink: boolean }
+  >();
+  // ino -> unlink info
+  const recentlyUnlinked = new Map<
+    number,
+    { abs: string; ts: number; isDir: boolean; isLink: boolean }
+  >();
+
+  function rel(root: string, full: string): string {
+    let r = path.relative(root, full);
+    if (r === "" || r === ".") return "";
+    if (path.sep !== "/") r = r.split(path.sep).join("/");
+    return r;
+  }
+
+  function gcUnlinks() {
+    const now = Date.now();
+    for (const [ino, rec] of recentlyUnlinked) {
+      if (now - rec.ts > MOVE_WINDOW_MS) recentlyUnlinked.delete(ino);
+    }
+  }
+
+  async function onAddish(abs: string, isDirEvent: boolean) {
+    const r = rel(root, abs);
+    if (mgr.isIgnored(r, isDirEvent)) return;
+
+    // Try to lstat to grab inode info
+    let st: any = null;
+    try {
+      st = await lstat(abs);
+    } catch {
+      // transient; treat as plain add
+      st = null;
+    }
+    const ino = st?.ino as number | undefined;
+    const isDir = !!st?.isDirectory?.();
+    const isLink = !!st?.isSymbolicLink?.();
+    console.log({ ino, s: st != null });
+
+    if (ino != null) {
+      gcUnlinks();
+      const cand = recentlyUnlinked.get(ino);
+      console.log({ ino, cand });
+      if (cand && Date.now() - cand.ts <= MOVE_WINDOW_MS) {
+        // Found a likely move/rename
+        const fromR = rel(root, cand.abs);
+        const toR = r;
+        console.log("found move/rename", { fromR, toR });
+        if (fromR && toR && fromR !== toR) {
+          moves.push({
+            from: fromR,
+            to: toR,
+            isDir: isDirEvent || isDir,
+            isLink,
+          });
+        }
+        recentlyUnlinked.delete(ino);
+        // Refresh cache for new path
+        pathMeta.set(abs, { ino, isDir: isDirEvent || isDir, isLink });
+        // Do NOT add to hot set here; the move will be replicated explicitly.
+        return;
+      }
+      // No pairing → cache normal “add”
+      pathMeta.set(abs, { ino, isDir: isDirEvent || isDir, isLink });
+    }
+
+    // Normal hot path
+    if (r) {
+      hot.add(r);
+      scheduleHotFlush();
+    }
+  }
+
+  function onUnlinkish(abs: string, isDirEvent: boolean) {
+    const r = rel(root, abs);
+    if (mgr.isIgnored(r, isDirEvent)) return;
+
+    const meta = pathMeta.get(abs);
+    if (meta) {
+      recentlyUnlinked.set(meta.ino, {
+        abs,
+        ts: Date.now(),
+        isDir: isDirEvent || meta.isDir,
+        isLink: meta.isLink,
+      });
+      pathMeta.delete(abs);
+    }
+    if (r) {
+      hot.add(r);
+      scheduleHotFlush();
+    }
+  }
+
+  watcher.on("add", (p: string) => onAddish(p, false));
+  watcher.on("addDir", (p: string) => onAddish(p, true));
+  watcher.on("unlink", (p: string) => onUnlinkish(p, false));
+  watcher.on("unlinkDir", (p: string) => onUnlinkish(p, true));
+
+  // Changes still go through as content updates
+  watcher.on("change", (p: string) => {
+    const r = rel(root, p);
+    if (mgr.isIgnored(r, false)) return;
+    if (r) {
+      hot.add(r);
+      scheduleHotFlush();
     }
   });
 }
