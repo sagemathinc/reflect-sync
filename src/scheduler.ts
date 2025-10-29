@@ -137,7 +137,6 @@ function cliOptsToSchedulerOptions(opts): SchedulerOptions {
 const envNum = (k: string, def: number) =>
   process.env[k] ? Number(process.env[k]) : def;
 
-const MAX_HOT_WATCHERS = envNum("MAX_HOT_WATCHERS", 16);
 const HOT_TTL_MS = envNum("HOT_TTL_MS", 30 * 60_000);
 const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
@@ -547,7 +546,7 @@ export async function runScheduler({
     alphaIsRemote || disableHotWatch
       ? null
       : new HotWatchManager(alphaRoot, onAlphaHot, {
-          maxWatchers: MAX_HOT_WATCHERS,
+          maxWatchers: MAX_WATCHERS,
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
@@ -558,7 +557,7 @@ export async function runScheduler({
     betaIsRemote || disableHotWatch
       ? null
       : new HotWatchManager(betaRoot, onBetaHot, {
-          maxWatchers: MAX_HOT_WATCHERS,
+          maxWatchers: MAX_WATCHERS,
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
@@ -1016,7 +1015,7 @@ export async function runScheduler({
     betaRemoteDb,
     remoteScanCmd,
     remoteWatchCmd,
-    MAX_HOT_WATCHERS,
+    MAX_WATCHERS,
     HOT_TTL_MS,
     SHALLOW_DEPTH,
     HOT_DEPTH,
