@@ -1208,7 +1208,7 @@ export async function runMerge({
       // 4) delete dirs last (after files removed so dirs are empty)
       done = t("rsync: 4) delete dirs");
       if (prefer === "beta" && delDirsInBeta.length) {
-        const isChangedB = db.prepare<[string], { one?: number }>(
+        const isChangedB = db.prepare(
           `SELECT 1 AS one FROM tmp_dirs_changedB WHERE rpath = ?`,
         );
         const beforeN = delDirsInBeta.length;
@@ -1220,7 +1220,7 @@ export async function runMerge({
         }
       }
       if (prefer === "alpha" && delDirsInAlpha.length) {
-        const isChangedA = db.prepare<[string], { one?: number }>(
+        const isChangedA = db.prepare(
           `SELECT 1 AS one FROM tmp_dirs_changedA WHERE rpath = ?`,
         );
         const beforeN = delDirsInAlpha.length;

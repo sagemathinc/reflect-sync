@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -12,43 +12,26 @@
   },
   "types": "dist/index.d.ts",
   "bin": {
-    "ccsync": "dist/cli.js"
+    "ccsync": "bin/ccsync.mjs"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "dev:scan": "tsx src/scan.ts",
-    "dev:ingest": "tsx src/ingest-delta.ts",
-    "dev:merge": "tsx src/merge-rsync.ts",
-    "dev:scheduler": "tsx src/scheduler.ts",
     "prepare": "pnpm run build",
-    "test": "pnpm build && jest",
-    "test:watch": "pnpm build && jest --watch"
+    "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest",
+    "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch"
   },
   "engines": {
     "node": ">=24"
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "rsync",
-    "sqlite",
-    "sync",
-    "watch",
-    "ssh",
-    "mutagen",
-    "backup"
-  ],
+  "files": ["dist", "README.md", "LICENSE"],
+  "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "MIT",
   "packageManager": "pnpm@10.19.0",
   "dependencies": {
     "@node-rs/xxhash": "^1.7.6",
     "@nodelib/fs.walk": "^3.0.1",
     "ascii-table3": "^1.0.1",
-    "better-sqlite3": "^12.4.1",
     "chokidar": "^4.0.3",
     "commander": "^14.0.2",
     "ignore": "^7.0.5"

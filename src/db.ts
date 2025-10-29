@@ -1,6 +1,27 @@
-import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+export class Database extends DatabaseSync {
+  transaction = <A extends any[]>(fn: (...args: A) => void) => {
+    return (...args: A) => {
+      this.exec("BEGIN IMMEDIATE");
+      try {
+        fn(...args);
+        this.exec("COMMIT");
+      } catch (e) {
+        try {
+          this.exec("ROLLBACK");
+        } catch {}
+        throw e;
+      }
+    };
+  };
+
+  pragma = (s: string) => {
+    this.exec(`PRAGMA ${s}`);
+  };
+}
 
 export function getDb(dbPath: string): Database {
   // ----------------- SQLite setup -----------------

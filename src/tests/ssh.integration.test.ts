@@ -16,7 +16,7 @@ It:
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
-import Database from "better-sqlite3";
+import { Database } from "../db";
 import { spawn } from "node:child_process";
 import {
   canSshLocalhost,
@@ -132,11 +132,11 @@ const sshEnabled = process.env.CCSYNC_SKIP_SSH_TEST === undefined;
       const db = new Database(aDbLocal);
       const row = db
         .prepare(`SELECT path, hash, deleted FROM files WHERE path = ?`)
-        .get('hello.txt');
+        .get("hello.txt");
       db.close();
 
       expect(row).toBeTruthy();
-      expect(row.deleted).toBe(0);
+      expect(row?.deleted).toBe(0);
     });
   },
 );

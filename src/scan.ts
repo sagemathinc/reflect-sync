@@ -473,36 +473,19 @@ ON CONFLICT(path) DO UPDATE SET
     let jobBuf: Job[] = [];
 
     // Existing-meta lookup by rpath
-    const getExisting = db.prepare<
-      [string],
-      | {
-          size: number;
-          ctime: number;
-          mtime: number;
-          hashed_ctime: number | null;
-        }
-      | undefined
-    >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
+    const getExisting = db.prepare(
+      `SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`,
+    );
 
     // Existing-dir lookup by rpath (to decide whether to emit NDJSON)
-    const getExistingDir = db.prepare<
-      [string],
-      | { ctime: number; mtime: number; hash: string; deleted: number }
-      | undefined
-    >(`SELECT ctime, mtime, hash, deleted FROM dirs WHERE path = ?`);
+    const getExistingDir = db.prepare(
+      `SELECT ctime, mtime, hash, deleted FROM dirs WHERE path = ?`,
+    );
 
     // Existing-link lookup by rpath (to decide whether to emit NDJSON)
-    const getExistingLink = db.prepare<
-      [string],
-      | {
-          ctime: number;
-          mtime: number;
-          hash: string;
-          target: string;
-          deleted: number;
-        }
-      | undefined
-    >(`SELECT ctime, mtime, hash, target, deleted FROM links WHERE path = ?`);
+    const getExistingLink = db.prepare(
+      `SELECT ctime, mtime, hash, target, deleted FROM links WHERE path = ?`,
+    );
 
     for await (const entry of stream as AsyncIterable<{
       dirent;

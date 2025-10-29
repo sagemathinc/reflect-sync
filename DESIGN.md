@@ -14,11 +14,11 @@ Why? In large deployments we’ve seen in-memory file indexes ramp to multiple G
 
 ## Architecture at a glance
 
-- **Databases**: `alpha.db`, `beta.db` (one per root), and `base.db` (3-way merge base).
-- **scan**: walks a tree, stores/refreshes `files(path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime)` and **only rehashes when ctime changed**.
-- **merge**: builds **relative-path** temp views of alpha/beta/base, computes the 3-way plan (changed A, changed B, deletions), resolves conflicts by `--prefer`, and then feeds rsync with NUL-separated `--files-from` lists. On success, it updates `base.db` to the merged state.
-- **scheduler**: adaptive loop that (1) runs a full scan/merge at a dynamic interval, (2) runs **micro-sync** immediately for hot files, and (3) uses shallow + bounded deep watchers to avoid inotify/fsevents explosions.
-- **SSH mode**: remote scan streams NDJSON deltas (`--emit-delta`) over stdout; a local **ingest** process mirrors them into a local SQLite DB for planning.
+- **Databases**: `alpha.db`, `beta.db` \(one per root\), and `base.db` \(3\-way merge base\).
+- **scan**: walks a tree, stores/refreshes `files(relative path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime, ...)` and **only rehashes when ctime changed**.
+- **merge**: builds **relative\-path** temp views of alpha/beta/base, computes the 3\-way plan \(changed A, changed B, deletions\), resolves conflicts by `--prefer`, and then feeds rsync with NUL\-separated `--files-from` lists. On success, it updates `base.db` to the merged state.
+- **scheduler**: adaptive loop that \(1\) runs a full scan/merge at a dynamic interval, \(2\) runs **micro\-sync** immediately for hot files, and \(3\) uses shallow \+ bounded deep watchers to avoid inotify/fsevents explosions.
+- **SSH mode**: remote scan streams NDJSON deltas \(`--emit-delta`\) over stdout; a local **ingest** process mirrors them into a local SQLite DB for planning.
 
 ---
 
@@ -27,54 +27,16 @@ Why? In large deployments we’ve seen in-memory file indexes ramp to multiple G
 - **Walker**: `@nodelib/fs.walk` streaming API with `stats: true` and tuned concurrency. This avoids allocating a giant list; we stream entries as they arrive.
 - **Hashing**: a worker pool (up to 8 threads by default). Each worker streams file content (large `highWaterMark`) and returns `{path, hash, ctime}` results in batches.
 - **Rehash gating**: we only hash when `files.hashed_ctime !== current ctime`. This turns full rescans into mostly metadata refreshes for unchanged trees.
-- **DB writes**: metadata upserts and hash updates are **batched** inside SQLite transactions (`better-sqlite3`) to minimize journaling overhead. `WAL` + `synchronous=NORMAL` hit a great perf/safety balance.
+- **DB writes**: metadata upserts and hash updates are **batched** inside SQLite transactions [node:sqlite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html) to minimize journaling overhead. `WAL` + `synchronous=NORMAL` hit a great perf/safety balance.
 - **Deletions**: each scan sets `last_seen = scan_id`; anything not seen this pass is marked `deleted=1`.
 
 This yields scan times that largely scale with **“bytes changed”**, not “files present”.
 
 ---
 
-## SQLite schema & “recent touch”
-
-Core table:
-
-```sql
-CREATE TABLE files (
-  path TEXT PRIMARY KEY,
-  size INTEGER,
-  ctime INTEGER,
-  mtime INTEGER,
-  hash TEXT,
-  deleted INTEGER DEFAULT 0,
-  last_seen INTEGER,
-  hashed_ctime INTEGER,
-);
-CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
-```
-
-For realtime/watcher seeding:
-
-```sql
-CREATE TABLE IF NOT EXISTS recent_touch (
-  path TEXT PRIMARY KEY,
-  ts   INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_recent_touch_ts ON recent_touch(ts);
-```
-
-Workers add to `recent_touch` when a fresh hash completes, and scans can seed “hot” watchers from the most-recently touched paths.
-
----
-
 ## Three-way merge planner (SQL)
 
-Three\-way merge is accomplished by simply doing SQL queries.   For files, we attach alpha/beta DBs and build **temporary** relative\-path tables:
-
-- `alpha_rel(rpath, hash, deleted)`
-- `beta_rel(rpath, hash, deleted)`
-- `base_rel(rpath, hash, deleted)`
-
-then do a bunch of indexed queries to obtain the merge plan.  This is nice because it's just declarative SQL, hence easy to read and understand.  The queries deal with merge conflicts using last write wins, with tie breaking via a preference.
+Three\-way merge is accomplished by simply doing SQL queries.  This is nice because it's just declarative SQL, hence easy to read and understand.  The queries deal with merge conflicts using **last write wins**, with tie breaking via a preference.
 
 ---
 
@@ -146,54 +108,20 @@ Typical large-tree outcomes we’ve seen:
 
 ---
 
-## Disk-usage & “recent files” reporting (bonus)
-
-Because metadata lives in SQLite, **du-like** and “recent changes” features become **simple queries**:
-
-```sql
--- Bytes under a subtree (fast if path is normalized):
-SELECT SUM(size) AS bytes
-FROM files
-WHERE deleted=0
-  AND path >= '/srv/alpha/project/'
-  AND path <  '/srv/alpha/project0';
-
--- Recently changed:
-SELECT path, mtime
-FROM files
-WHERE deleted=0
-ORDER BY mtime DESC
-LIMIT 200;
-
--- Search-as-you-type (prefix):
-SELECT path FROM files
-WHERE deleted=0
-  AND path >= '/srv/alpha/proj/sub/'
-  AND path <  '/srv/alpha/proj/sub0'
-ORDER BY path
-LIMIT 200;
-```
-
-You can materialize helpers (e.g., a `path_norm` column with `/` separators, or store precomputed parent directory columns) to avoid slow `LIKE '%…%'` scans.
-
----
-
 ## Tradeoffs & known limitations (current)
 
-- **Dirs/links/attrs**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.  Directories and symlinks are sync'd, just not immediately.
+- **Dirs/links**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.  Directories and symlinks are sync'd, just not immediately.
 - **Base updates & verification**: we update `base.db` after rsync; the next full cycle **verifies** the result end\-to\-end. In high\-churn cases you may see rsync 23/24 warnings—by design.
 - **ctime reliance**: ctime is an excellent gate for rehashing but can vary across FS types or be coarser than you like; you can switch to an `(mtime, size)` policy if desired \(configurable in future\).
 
 ---
 
-## Roadmap (high-impact next steps)
+## Roadmap
 
 - **Full metadata parity**: xattrs/ACLs, uid/gid numeric IDs, symlink strategies, and precise permission diffs.
 - **Robust micro\-sync for dirs** \(create/remove/move at small scale\) with conflict\-safe base updates.
-- **Policy knobs**: mtime/size hashing gates; ignore globs; include\-only “whitelists” for star topologies.
-- **Out\-of\-space guardrails**: coordinated backoff across scheduler \+ rsync \+ telemetry to prevent expensive retry loops.
-- **Programmatic API**: expose planner and scan/ingest as functions for embedding in higher\-level orchestrators.
-- **SEA/Docker/systemd** packs for easier deployment.
+- **Policy knobs**: mtime/size hashing gates
+- **SEA** \(single executable binary\) packs for easier deployment.
 
 ---
 

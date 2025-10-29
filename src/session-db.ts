@@ -1,5 +1,5 @@
 // session-db.ts
-import Database from "better-sqlite3";
+import { Database } from "./db.js";
 import fs from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
@@ -238,7 +238,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
 
 // Core helpers (open/close per call to keep usage simple)
 
-function open(sessionDbPath = getSessionDbPath()): Database.Database {
+function open(sessionDbPath = getSessionDbPath()): Database {
   const db = new Database(sessionDbPath);
   db.pragma("foreign_keys = ON");
   return db;
@@ -512,8 +512,8 @@ export function selectSessions(
       WHERE ${where}
       ORDER BY s.id ASC
     `;
-    const rows = db.prepare(sql).all(...params) as SessionRow[];
-    return rows;
+    const rows = db.prepare(sql).all(...params);
+    return rows as any[];
   } finally {
     db.close();
   }
@@ -562,7 +562,7 @@ export class SessionWriter {
   private stopStmt;
 
   constructor(
-    private db: Database.Database,
+    private db: Database,
     private id: number,
   ) {
     this.upsertState = this.db.prepare(`

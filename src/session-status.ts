@@ -1,7 +1,7 @@
 // src/session-status.ts
 import { Command, Option } from "commander";
 import { ensureSessionDb, getSessionDbPath } from "./session-db.js";
-import type Database from "better-sqlite3";
+import { type Database } from "./db.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 
 type AnyRow = Record<string, any>;
@@ -30,7 +30,7 @@ function fmtAgo(ts?: number | null): string {
 }
 
 function tryGetLabels(
-  db: Database.Database,
+  db: Database,
   sessionId: number,
 ): Record<string, string> {
   try {
@@ -47,7 +47,7 @@ function tryGetLabels(
   }
 }
 
-function getSession(db: Database.Database, sessionId: number): AnyRow | null {
+function getSession(db: Database, sessionId: number): AnyRow | null {
   try {
     const row = db
       .prepare(`SELECT * FROM sessions WHERE id = ?`)
@@ -58,7 +58,7 @@ function getSession(db: Database.Database, sessionId: number): AnyRow | null {
   }
 }
 
-function getState(db: Database.Database, sessionId: number): AnyRow | null {
+function getState(db: Database, sessionId: number): AnyRow | null {
   try {
     const row = db
       .prepare(`SELECT * FROM session_state WHERE session_id = ?`)
@@ -70,7 +70,7 @@ function getState(db: Database.Database, sessionId: number): AnyRow | null {
 }
 
 function getLastHeartbeat(
-  db: Database.Database,
+  db: Database,
   sessionId: number,
 ): AnyRow | null {
   try {

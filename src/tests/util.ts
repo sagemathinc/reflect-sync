@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../db";
 
 // Toggle for noisy child output while debugging, by default.
 const VERBOSE = false;

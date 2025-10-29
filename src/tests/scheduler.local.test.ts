@@ -10,7 +10,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import Database from "better-sqlite3";
+import { Database } from "../db";
 import { countSchedulerCycles, fileExists, waitFor } from "./util";
 
 // Resolve SCHED once (safer than relying on PATH)
