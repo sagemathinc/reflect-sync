@@ -270,93 +270,6 @@ export async function runScheduler({
     return r;
   }
 
-  // ---------- Remote watch (SSH) ----------
-  type WatchSide = "alpha" | "beta";
-
-  function startSshRemoteWatch({
-    side,
-    host,
-    root,
-    remoteWatchCmd,
-    verbose,
-  }: {
-    side: WatchSide;
-    host: string;
-    root: string;
-    remoteWatchCmd: string;
-    verbose?: boolean;
-  }) {
-    const targetSet = side === "alpha" ? hotAlpha : hotBeta;
-    const tag = side === "alpha" ? "remote-watch-alpha" : "remote-watch-beta";
-
-    const parts = remoteWatchCmd.trim().split(/\s+/);
-    const cmd = parts.shift()!;
-    const cmdArgs = [...parts, "--root", root];
-
-    let restarting = false;
-    let proc: ChildProcess | null = null;
-
-    const launch = () => {
-      const sshArgs = ["-o", "BatchMode=yes", host, cmd, ...cmdArgs];
-      if (verbose) console.log("$ ssh", sshArgs.join(" "));
-
-      proc = spawn("ssh", sshArgs, { stdio: ["pipe", "ignore", "inherit"] });
-
-      if (proc.stdout) {
-        const rl = readline.createInterface({ input: proc.stdout });
-        rl.on("line", (line: string) => {
-          line = line.trim();
-          if (!line) return;
-          let ev, rpath;
-          try {
-            ({ ev, rpath } = JSON.parse(line));
-          } catch (err) {
-            console.warn("Error parsing scan line", { line }, err);
-            return;
-          }
-          const isDir = ev.endsWith("Dir");
-          if (!isDir) {
-            targetSet.add(rpath);
-            scheduleHotFlush();
-          }
-        });
-        rl.on("close", () => {});
-      }
-
-      proc.on("exit", (code, sig) => {
-        if (verbose) console.warn(`ssh ${tag} exited: code=${code} sig=${sig}`);
-        if (!restarting) {
-          restarting = true;
-          setTimeout(() => {
-            restarting = false;
-            launch();
-          }, 1500);
-        }
-      });
-
-      proc.on("error", (err) => {
-        if (verbose) console.warn(`ssh ${tag} error:`, err?.message || err);
-      });
-    };
-
-    launch();
-
-    return {
-      stop: () => {
-        restarting = false;
-        if (proc?.pid) {
-          try {
-            proc.kill("SIGINT");
-          } catch {}
-        }
-      },
-      add: (dirs: string[]) => {
-        if (dirs.length == 0) return;
-        proc?.stdin?.write(JSON.stringify({ op: "add", dirs }) + "\n");
-      },
-    };
-  }
-
   // Pipe: ssh scan --emit-delta  →  ccsync ingest --db <local.db>
   function splitCmd(s: string): string[] {
     return s.trim().split(/\s+/);
@@ -421,21 +334,30 @@ export async function runScheduler({
     };
   }
 
-  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root>""
+  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root>"
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
   function startRemoteDeltaStream(side: "alpha" | "beta") {
     if (disableHotWatch) return null;
     const host = side === "alpha" ? alphaHost : betaHost;
-    if (!host) return null; // only for remote sides
+    if (!host) return null;
     const root = side === "alpha" ? alphaRoot : betaRoot;
     const localDb = side === "alpha" ? alphaDb : betaDb;
 
-    const sshArgs = ["-C", host, ...splitCmd(remoteWatchCmd), "--root", root];
-    if (verbose) {
-      console.log("$ ssh", sshArgs.join(" "));
-    }
+    const sshArgs = [
+      "-C",
+      "-T",
+      "-o",
+      "BatchMode=yes",
+      host,
+      ...splitCmd(remoteWatchCmd),
+      "--root",
+      root,
+    ];
+    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+
+    // stdin=pipe so we can send EOF to make remote `watch` exit
     const sshP = spawn("ssh", sshArgs, {
-      stdio: ["ignore", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "inherit"],
     });
 
     const ingestArgs = ["ingest", "--db", localDb];
@@ -447,31 +369,23 @@ export async function runScheduler({
       ],
     });
 
-    // tee
     const tee = new PassThrough();
     if (sshP.stdout) {
       sshP.stdout.pipe(tee);
       tee.pipe(ingestP.stdin!);
     }
 
-    // Also parse NDJSON to kick microSync:
     const rl = readline.createInterface({ input: tee });
     rl.on("line", (line) => {
       if (!line) return;
       try {
         const evt = JSON.parse(line);
-        // Expect {path, deleted? ...}; convert to rpath for this side.
         if (!evt.path) return;
-        const p = String(evt.path);
-        // event path might be absolute; normalize to relative under `root`
-        let r = p.startsWith(root) ? p.slice(root.length) : p;
+        let r = String(evt.path);
+        if (r.startsWith(root)) r = r.slice(root.length);
         if (r.startsWith("/")) r = r.slice(1);
         if (!r) return;
-        if (side === "alpha") {
-          hotAlpha.add(r);
-        } else {
-          hotBeta.add(r);
-        }
+        (side === "alpha" ? hotAlpha : hotBeta).add(r);
         scheduleHotFlush();
       } catch {
         /* ignore malformed */
@@ -486,18 +400,39 @@ export async function runScheduler({
         ingestP.stdin?.end();
       } catch {}
       try {
-        ingestP.kill("SIGINT");
-      } catch {}
+        sshP.stdin?.end();
+      } catch {} // <— send EOF to remote watch
+      // Give it a moment to exit cleanly on EOF
+      setTimeout(() => {
+        try {
+          ingestP.kill("SIGTERM");
+        } catch {}
+        try {
+          sshP.kill("SIGTERM");
+        } catch {}
+      }, 300);
+    };
+
+    sshP.on("exit", () => {
+      kill();
+      if (side === "alpha") alphaStream = null;
+      else betaStream = null;
+    });
+
+    ingestP.on("exit", () => {
+      kill();
+      if (side === "alpha") alphaStream = null;
+      else betaStream = null;
+    });
+
+    const add = (dirs: string[]) => {
+      if (!dirs?.length) return;
       try {
-        sshP.kill("SIGINT");
+        sshP.stdin?.write(JSON.stringify({ op: "add", dirs }) + "\n");
       } catch {}
     };
 
-    // If either dies, kill the other.
-    sshP.on("exit", () => kill());
-    ingestP.on("exit", () => kill());
-
-    return { sshP, ingestP, kill };
+    return { add, kill };
   }
 
   function requestSoon(reason: string) {
@@ -645,35 +580,6 @@ export async function runScheduler({
     });
   }
 
-  // Start remote watch agent(s) over SSH (if any side is remote)
-  let stopRemoteAlphaWatch: null | (() => void) = null;
-  let stopRemoteBetaWatch: null | (() => void) = null;
-  let addRemoteAlphaHotDirs: null | ((dirs: string[]) => void) = null;
-  let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
-
-  if (alphaIsRemote && alphaHost && !disableHotWatch) {
-    const h = startSshRemoteWatch({
-      side: "alpha",
-      host: alphaHost,
-      root: alphaRoot,
-      remoteWatchCmd,
-      verbose,
-    });
-    stopRemoteAlphaWatch = h.stop;
-    addRemoteAlphaHotDirs = h.add;
-  }
-  if (betaIsRemote && betaHost && !disableHotWatch) {
-    const h = startSshRemoteWatch({
-      side: "beta",
-      host: betaHost,
-      root: betaRoot,
-      remoteWatchCmd,
-      verbose,
-    });
-    stopRemoteBetaWatch = h.stop;
-    addRemoteBetaHotDirs = h.add;
-  }
-
   // ---------- seed hot watchers from DB recent_touch ----------
   function seedHotFromDb(
     dbPath: string,
@@ -710,6 +616,9 @@ export async function runScheduler({
       sdb.close();
     }
   }
+
+  let addRemoteAlphaHotDirs: null | ((dirs: string[]) => void) = null;
+  let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
   // ---------- full cycle ----------
   async function oneCycle(): Promise<void> {
@@ -990,15 +899,32 @@ export async function runScheduler({
 
   let remoteStreams: Array<{ kill: () => void }> = [];
 
+  let alphaStream: ReturnType<typeof startRemoteDeltaStream> | null = null;
+  let betaStream: ReturnType<typeof startRemoteDeltaStream> | null = null;
+
+  function ensureRemoteStreams() {
+    if (alphaIsRemote && !alphaStream) {
+      alphaStream = startRemoteDeltaStream("alpha");
+    }
+    if (betaIsRemote && !betaStream) {
+      betaStream = startRemoteDeltaStream("beta");
+    }
+  }
+
   async function loop() {
-    const alphaStream = alphaIsRemote ? startRemoteDeltaStream("alpha") : null;
-    const betaStream = betaIsRemote ? startRemoteDeltaStream("beta") : null;
+    ensureRemoteStreams();
+
+    // capture add() so seedHotFromDb can push hot dirs to the ONE watcher
+    addRemoteAlphaHotDirs = alphaStream?.add ?? null;
+    addRemoteBetaHotDirs = betaStream?.add ?? null;
+
     remoteStreams = [alphaStream, betaStream].filter(Boolean) as any[];
 
     while (true) {
       if (!running) {
         pending = false;
         await oneCycle();
+        ensureRemoteStreams(); // recreate if they died during the cycle
         const baseNext = clamp(
           lastCycleMs * 2,
           MIN_INTERVAL_MS,
@@ -1060,12 +986,7 @@ export async function runScheduler({
     try {
       db.close();
     } catch {}
-    try {
-      stopRemoteAlphaWatch?.();
-    } catch {}
-    try {
-      stopRemoteBetaWatch?.();
-    } catch {}
+
     if (hbTimer) {
       clearInterval(hbTimer);
       hbTimer = null;

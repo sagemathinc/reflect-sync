@@ -103,6 +103,22 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   const { root, shallowDepth, hotDepth, hotTtlMs, maxHotWatchers, verbose } =
     opts;
 
+  // Ensure process terminate when stdin closes (so this also closes when
+  // used via ssh)
+  (function bindShutdownHooks() {
+    const exit = () => process.exit(0);
+    process.on("SIGTERM", exit);
+    process.on("SIGHUP", exit);
+    process.on("SIGINT", exit);
+
+    // If launched via ssh with a pipe, stdin will get EOF when the local side ends.
+    if (!process.stdin.isTTY) {
+      process.stdin.on("end", exit);
+      // Make sure 'end' can fire even if we never read from stdin.
+      process.stdin.resume();
+    }
+  })();
+
   const rootAbs = path.resolve(root);
 
   const hotMgr = new HotWatchManager(
