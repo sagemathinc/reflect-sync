@@ -14,7 +14,7 @@ parentPort?.on("message", async (payload: JobBatch) => {
   const isRoot = process.geteuid?.() === 0;
   const jobs = payload?.jobs ?? [];
   const out: Array<
-    | { path: string; hash: string; ctime: number }
+    | { path: string; hash: string; ctime: number; mtime: number }
     | { path: string; error: string }
   > = [];
 
@@ -27,7 +27,7 @@ parentPort?.on("message", async (payload: JobBatch) => {
         // so that uid and gid changes cause an update:
         hash += `|${st.uid}:${st.gid}`;
       }
-      out.push({ path: j.path, hash, ctime: j.ctime });
+      out.push({ path: j.path, hash, ctime: j.ctime, mtime: j.mtime });
     } catch (e: any) {
       // Most common issue: file vanished mid-hash; surface as an error entry
       out.push({ path: j.path, error: e?.message || String(e) });

@@ -11,6 +11,7 @@ import { modeHash, xxh128String } from "./hash.js";
 import path from "node:path";
 import { loadIgnoreFile } from "./ignore.js";
 import { toRel } from "./path-rel.js";
+import { isRecent } from "./hotwatch.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -172,7 +173,7 @@ ON CONFLICT(path) DO UPDATE SET
   type Job = { path: string; size: number; ctime: number; mtime: number }; // ABS path
   type JobBatch = { jobs: Job[] };
   type Result =
-    | { path: string; hash: string; ctime: number } // ABS path echoed back
+    | { path: string; hash: string; ctime: number; mtime: number } // ABS path echoed back
     | { path: string; error: string };
 
   const workers = Array.from(
@@ -237,7 +238,7 @@ ON CONFLICT(path) DO UPDATE SET
 
   // Handle worker replies (batched)
   for (const w of workers) {
-    w.on("message", (msg: { done?: Result[] }) => {
+    w.on("message", async (msg: { done?: Result[] }) => {
       freeWorkers.push(w);
       waiters.shift()?.();
 
@@ -250,7 +251,9 @@ ON CONFLICT(path) DO UPDATE SET
         } else {
           const rpath = toRel(r.path, absRoot);
           hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
-          touchBatch.push([rpath, Date.now()]);
+          if (await isRecent(r.path, undefined, r.mtime)) {
+            touchBatch.push([rpath, Date.now()]);
+          }
           const meta = pendingMeta.get(r.path); // ABS key
           if (meta) {
             emitObj({

@@ -3,7 +3,7 @@ import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import { MAX_WATCHERS } from "./defaults.js";
 import ignore from "ignore";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { IGNORE_FILE } from "./constants.js";
 
 export type HotWatchEvent =
@@ -295,4 +295,23 @@ export function handleWatchErrors(watch) {
       console.error("Watch error", err);
     }
   });
+}
+
+// we only start watching directories when there's activity on a file
+// with a recent mtime (say 5 minutes).
+const RECENT_MTIME_TOLERANCE = 5 * 60_000;
+
+export async function isRecent(abs: string, stats?: any, mtime?: number) {
+  try {
+    if (!mtime) {
+      stats ??= await stat(abs);
+      mtime = stats.mtimeMs ?? stats.mtime.getTime();
+    }
+  } catch {
+    return false;
+  }
+  if (!mtime) {
+    return false;
+  }
+  return Math.abs(mtime - Date.now()) < RECENT_MTIME_TOLERANCE;
 }

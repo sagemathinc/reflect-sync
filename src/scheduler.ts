@@ -19,6 +19,7 @@ import {
   norm,
   parentDir,
   handleWatchErrors,
+  isRecent,
 } from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { MAX_WATCHERS } from "./defaults.js";
@@ -550,11 +551,15 @@ export async function runScheduler({
   function enableWatch({ watcher, root, mgr, hot }) {
     handleWatchErrors(watcher);
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
-      watcher.on(evt as any, async (p: string) => {
+      watcher.on(evt as any, async (p: string, stats) => {
         const r = rel(root, p);
         if (mgr.isIgnored(r, (evt as string)?.endsWith("Dir"))) return;
-        const rdir = parentDir(r);
-        if (rdir) await mgr.add(rdir);
+        if (await isRecent(p, stats)) {
+          const rdir = parentDir(r);
+          if (rdir) {
+            await mgr.add(rdir);
+          }
+        }
         if (r && (evt === "add" || evt === "change" || evt === "unlink")) {
           hot.add(r);
           scheduleHotFlush();

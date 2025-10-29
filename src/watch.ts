@@ -11,6 +11,7 @@ import {
   HOT_EVENTS,
   type HotWatchEvent,
   handleWatchErrors,
+  isRecent,
 } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
 import { MAX_WATCHERS } from "./defaults.js";
@@ -144,9 +145,13 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   });
 
   function wireShallow() {
-    const handle = async (evt: HotWatchEvent, abs: string) => {
+    const handle = async (evt: HotWatchEvent, abs: string, stats?) => {
       // Send the event immediately (so microSync can act quickly)
       emitEvent(abs, evt, rootAbs);
+
+      if (!(await isRecent(abs, stats))) {
+        return;
+      }
 
       // Escalate: add a bounded hot watcher anchored at the parent dir
       const r = relR(rootAbs, abs);
@@ -163,7 +168,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     };
 
     for (const evt of HOT_EVENTS) {
-      shallow.on(evt, (p) => handle(evt, p));
+      shallow.on(evt, (p, stats) => handle(evt, p, stats));
     }
     handleWatchErrors(shallow);
   }
