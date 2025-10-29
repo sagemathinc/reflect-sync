@@ -1,6 +1,6 @@
 {
   "name": "ccsync",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,8 +16,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "rm -rf dist",
-    "prepare": "pnpm run build",
+    "clean": "rm -rf dist node_modules",
+    "prepare": "pnpm test",
     "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest",
     "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch"
   },
