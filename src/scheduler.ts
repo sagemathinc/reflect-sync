@@ -26,7 +26,7 @@ import { MAX_WATCHERS } from "./defaults.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
-import { expandHome } from "./remote.js";
+import { expandHome, isRoot } from "./remote.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -199,6 +199,8 @@ export async function runScheduler({
     betaHost,
     verbose,
   );
+  const numericIds =
+    (await isRoot(alphaHost, verbose)) && (await isRoot(betaHost, verbose));
 
   // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
@@ -300,6 +302,7 @@ export async function runScheduler({
     root: string; // remote root
     remoteDb: string; // remote DB path (on remote host)
     localDb: string; // local mirror DB for ingest
+    numericIds?: boolean;
   }): Promise<{
     code: number | null;
     ms: number;
@@ -318,6 +321,9 @@ export async function runScheduler({
       params.remoteDb,
       "--vacuum",
     ];
+    if (numericIds) {
+      sshArgs.push("--numeric-ids");
+    }
     if (lastRemoteScan.ok && lastRemoteScan.start) {
       sshArgs.push("--prune-ms");
       sshArgs.push(`${Date.now() - lastRemoteScan.start}`);
@@ -680,11 +686,13 @@ export async function runScheduler({
             root: alphaRoot,
             localDb: alphaDb,
             remoteDb: alphaRemoteDb!,
+            numericIds,
           })
         : await spawnTask(
             "ccsync",
             ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
               verbose ? ["--verbose"] : [],
+              numericIds ? ["--numeric-ids"] : [],
             ),
           );
       seedHotFromDb(
@@ -709,11 +717,13 @@ export async function runScheduler({
             root: betaRoot,
             localDb: betaDb,
             remoteDb: betaRemoteDb!,
+            numericIds,
           })
         : await spawnTask(
             "ccsync",
             ["scan", "--root", betaRoot, "--db", betaDb].concat(
               verbose ? ["--verbose"] : [],
+              numericIds ? ["--numeric-ids"] : [],
             ),
           );
       seedHotFromDb(

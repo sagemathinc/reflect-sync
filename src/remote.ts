@@ -45,6 +45,15 @@ export async function resolveRemoteHome(
   return home;
 }
 
+export async function isRoot(host?: string, verbose?: boolean) {
+  if (!host) {
+    return process.geteuid?.() === 0;
+  }
+  // this isn't technically the same as being root, but
+  // we cache it and implemented it above, so are going with it for now
+  return (await resolveRemoteHome(host, verbose)) == "/root";
+}
+
 export async function expandHome(
   p: string,
   host?: string,
