@@ -1499,13 +1499,11 @@ export async function runMerge({
       db.pragma("incremental_vacuum");
       db.pragma("optimize");
       done();
-      // sometimes we do a potentially much more expensive full vacuum;
-      // this can save a LOT more space than incremental vacu
-      if (Math.random() <= 0.5) {
-        done = t("sqlite full vacuum");
-        db.exec("vacuum; vacuum alpha; vacuum beta;");
-        done();
-      }
+      // for now do a more expensive full vacuum;
+      // this can save a LOT more space than incremental vacuum
+      done = t("sqlite full vacuum");
+      db.exec("vacuum; vacuum alpha; vacuum beta;");
+      done();
 
       if (verbose) console.log("Merge complete.");
 

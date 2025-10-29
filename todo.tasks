@@ -12,9 +12,10 @@
 {"desc":"#now multiple remote watches which don't get killed properly and waste resources.\n","done":true,"last_edited":1761712383448,"position":-21.8125,"task_id":"cbd05b79-8230-41a9-bedf-ab268e7f949a"}
 {"desc":"#now propagate uid/gid using numeric ids \\-\\- but ONLY if user is uid=0.\n","done":true,"last_edited":1761673805020,"position":-12.8125,"task_id":"25d2f344-f73c-421e-8488-55aad5da4865"}
 {"desc":"#now quiet fast path\n","done":true,"last_edited":1761510314398,"position":-5.9375,"task_id":"dd5f63a1-a0fe-4a40-999b-88c774b40a0d"}
+{"desc":"#now remote scan \\-\\- why does it output _everything_ every time?   that seems very inefficient.  It should output only the records of the database that change, right?\n","last_edited":1761717229230,"position":-21.4375,"task_id":"4be0a2f5-fb80-443c-aae9-8bcf5a66f1f6"}
 {"desc":"#now symlink loop\n","done":true,"last_edited":1761595269899,"position":-8.8125,"task_id":"1390aca8-d622-4bee-b1aa-7cc84f840dfb"}
 {"desc":"#now symlink scan problems\n","done":true,"last_edited":1761671652269,"position":-12.5625,"task_id":"a38d3f7d-57b6-457b-bf6c-868486b9747f"}
-{"desc":"#now vacuuming \n\n- [x] local\n- [ ] remote vacuum \\- add a \"\\-\\-vacuum\" option to scan and pass that when called on remote\n- [ ] deleting paths from remote table \\- add \"delete\\-after\\-....\" option to scan.\n\n","last_edited":1761690606352,"position":-21.0625,"task_id":"401bf297-7f96-46bc-aecb-50989e60b91f"}
+{"desc":"#now vacuuming \n\n- [x] local\n- [x] remote vacuum \\- add a \"\\-\\-vacuum\" option to scan and pass that when called on remote\n- [x] deleting paths from remote table \\- add \"delete\\-after\\-....\" option to scan.\n\n","last_edited":1761717225449,"position":-21.0625,"task_id":"401bf297-7f96-46bc-aecb-50989e60b91f"}
 {"desc":"#speed moves?\n","last_edited":1761680483276,"position":-16.5625,"task_id":"2c9fd2c3-6a58-47c1-b4f6-d35596c1ec16"}
 {"desc":"I think at least one query for the merge plan scales very badly. super slow on a built cocalc...?\n\n","done":true,"last_edited":1761502618785,"position":-1.9375,"task_id":"1670b2bd-2366-4d7c-bb92-9b6bd4ba7940"}
 {"desc":"add other operations to microSync:\n\n- directory creation/removal\n- symlinks creation/removal\n- file removal\n\n","last_edited":1761715280424,"position":-20.0625,"task_id":"6e77ec92-5ab5-416e-8757-578abe78884c"}
