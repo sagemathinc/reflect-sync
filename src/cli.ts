@@ -28,6 +28,11 @@ program
   .requiredOption("--root <path>", "directory to scan")
   .option("--db <path>", "sqlite db file", "alpha.db")
   .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
+  .option(
+    "--emit-since-ts <milliseconds>",
+    "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
+  )
+
   .option("--vacuum", "vacuum the database after doing the scan", false)
   .option(
     "--prune-ms <milliseconds>",
@@ -39,6 +44,7 @@ program
         root: string;
         db: string;
         emitDelta: boolean;
+        emitRecentMs: string;
         vacume: boolean;
         pruneMs: string;
       },

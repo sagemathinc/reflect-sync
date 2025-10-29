@@ -278,7 +278,7 @@ export async function runScheduler({
 
   // ssh to a remote, run a scan, and writing the resulting
   // data into our local database.
-  const lastRemoteScan = { start: 0, ok: false };
+  const lastRemoteScan = { start: 0, ok: false, whenOk: 0 };
   async function sshScanIntoMirror(params: {
     host: string;
     remoteScanCmd: string;
@@ -307,6 +307,12 @@ export async function runScheduler({
     if (lastRemoteScan.ok && lastRemoteScan.start) {
       sshArgs.push("--prune-ms");
       sshArgs.push(`${Date.now() - lastRemoteScan.start}`);
+    }
+    if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
+      // last time wasn't ok, so emit *everything* since last time it worked,
+      // so we do not miss data.
+      sshArgs.push("--emit-since-ts");
+      sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
     }
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
@@ -337,6 +343,10 @@ export async function runScheduler({
     ]);
     const ok = sshCode === 0 && ingestCode === 0;
     lastRemoteScan.ok = ok;
+    if (lastRemoteScan.ok) {
+      // could be now but this is more conservative/safe.
+      lastRemoteScan.whenOk = lastRemoteScan.start;
+    }
     return {
       code: ok ? 0 : (sshCode ?? ingestCode),
       ms: Date.now() - t0,

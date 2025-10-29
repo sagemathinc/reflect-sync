@@ -22,6 +22,10 @@ function buildProgram(): Command {
     .requiredOption("--root <path>", "directory to scan")
     .requiredOption("--db <file>", "path to sqlite database")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
+    .option(
+      "--emit-since-ts <milliseconds>",
+      "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
+    )
     .option("--verbose", "enable verbose logging", false)
     .option("--vacuum", "vacuum the database after doing the scan", false)
     .option(
@@ -33,6 +37,7 @@ function buildProgram(): Command {
 type ScanOptions = {
   db: string;
   emitDelta: boolean;
+  emitRecentMs?: string;
   verbose: boolean;
   root: string;
   vacuum?: boolean;
@@ -40,7 +45,15 @@ type ScanOptions = {
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
-  const { root, db: DB_PATH, emitDelta, verbose, vacuum, pruneMs } = opts;
+  const {
+    root,
+    db: DB_PATH,
+    emitDelta,
+    emitRecentMs,
+    verbose,
+    vacuum,
+    pruneMs,
+  } = opts;
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -225,19 +238,123 @@ ON CONFLICT(path) DO UPDATE SET
     target?: string; // for links
   }) => {
     if (!emitDelta) {
-      return;
+      throw Error("do not call emitObj if emitDelta isn't enabled");
     }
     deltaBuf.push(JSON.stringify(o));
     if (deltaBuf.length >= 1000) {
       flushDeltaBuf();
     }
   };
+
   function flushDeltaBuf() {
     if (!emitDelta || deltaBuf.length === 0) {
       return;
     }
     process.stdout.write(deltaBuf.join("\n") + "\n");
     deltaBuf.length = 0;
+  }
+
+  async function emitReplaySinceTs(dbSince: number) {
+    if (!emitDelta) return;
+
+    // Files (changed or deleted)
+    const files = db
+      .prepare(
+        `
+    SELECT path, size, ctime, mtime, op_ts, hash, deleted
+    FROM files
+    WHERE op_ts >= ?
+    ORDER BY op_ts ASC, path ASC
+  `,
+      )
+      .all(dbSince) as {
+      path: string;
+      size: number;
+      ctime: number;
+      mtime: number;
+      op_ts: number;
+      hash: string | null;
+      deleted: number;
+    }[];
+
+    for (const r of files) {
+      emitObj({
+        path: r.path,
+        size: r.size,
+        ctime: r.ctime,
+        mtime: r.mtime,
+        op_ts: r.op_ts,
+        hash: r.hash ?? undefined,
+        deleted: r.deleted,
+      });
+    }
+    flushDeltaBuf();
+
+    // Dirs
+    const dirs = db
+      .prepare(
+        `
+    SELECT path, ctime, mtime, op_ts, hash, deleted
+    FROM dirs
+    WHERE op_ts >= ?
+    ORDER BY op_ts ASC, path ASC
+  `,
+      )
+      .all(dbSince) as {
+      path: string;
+      ctime: number;
+      mtime: number;
+      op_ts: number;
+      hash: string;
+      deleted: number;
+    }[];
+
+    for (const r of dirs) {
+      emitObj({
+        kind: "dir",
+        path: r.path,
+        ctime: r.ctime,
+        mtime: r.mtime,
+        op_ts: r.op_ts,
+        hash: r.hash,
+        deleted: r.deleted,
+      });
+    }
+    flushDeltaBuf();
+
+    // Links
+    const links = db
+      .prepare(
+        `
+    SELECT path, target, ctime, mtime, op_ts, hash, deleted
+    FROM links
+    WHERE op_ts >= ?
+    ORDER BY op_ts ASC, path ASC
+  `,
+      )
+      .all(dbSince) as {
+      path: string;
+      target: string;
+      ctime: number;
+      mtime: number;
+      op_ts: number;
+      hash: string;
+      deleted: number;
+    }[];
+
+    for (const r of links) {
+      emitObj({
+        kind: "link",
+        path: r.path,
+        target: r.target,
+        ctime: r.ctime,
+        mtime: r.mtime,
+        op_ts: r.op_ts,
+        hash: r.hash,
+        deleted: r.deleted,
+      });
+    }
+    flushDeltaBuf();
   }
 
   // We keep meta keyed by ABS path (because worker replies with ABS),
@@ -272,15 +389,17 @@ ON CONFLICT(path) DO UPDATE SET
           }
           const meta = pendingMeta.get(r.path); // ABS key
           if (meta) {
-            emitObj({
-              path: rpath,
-              size: meta.size,
-              ctime: meta.ctime,
-              mtime: meta.mtime,
-              op_ts: meta.mtime,
-              hash: r.hash,
-              deleted: 0,
-            });
+            if (emitDelta) {
+              emitObj({
+                path: rpath,
+                size: meta.size,
+                ctime: meta.ctime,
+                mtime: meta.mtime,
+                op_ts: meta.mtime,
+                hash: r.hash,
+                deleted: 0,
+              });
+            }
             pendingMeta.delete(r.path);
           }
           if (hashResults.length >= DB_BATCH_SIZE) {
@@ -298,6 +417,16 @@ ON CONFLICT(path) DO UPDATE SET
   async function scan() {
     const t0 = Date.now();
     const scan_id = Date.now();
+
+    // If requested, first replay a bounded window from the DB,
+    // then proceed to the actual filesystem walk (which will emit new changes).
+    if (emitDelta && emitRecentMs) {
+      const ms = Number(emitRecentMs);
+      if (Number.isFinite(ms) && ms > 0) {
+        const since = Date.now() - ms;
+        await emitReplaySinceTs(since);
+      }
+    }
 
     // Load per-root ignore matcher (gitignore semantics)
     const ig = await loadIgnoreFile(absRoot);
@@ -355,6 +484,26 @@ ON CONFLICT(path) DO UPDATE SET
       | undefined
     >(`SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`);
 
+    // Existing-dir lookup by rpath (to decide whether to emit NDJSON)
+    const getExistingDir = db.prepare<
+      [string],
+      | { ctime: number; mtime: number; hash: string; deleted: number }
+      | undefined
+    >(`SELECT ctime, mtime, hash, deleted FROM dirs WHERE path = ?`);
+
+    // Existing-link lookup by rpath (to decide whether to emit NDJSON)
+    const getExistingLink = db.prepare<
+      [string],
+      | {
+          ctime: number;
+          mtime: number;
+          hash: string;
+          target: string;
+          deleted: number;
+        }
+      | undefined
+    >(`SELECT ctime, mtime, hash, target, deleted FROM links WHERE path = ?`);
+
     for await (const entry of stream as AsyncIterable<{
       dirent;
       path: string; // ABS
@@ -373,9 +522,28 @@ ON CONFLICT(path) DO UPDATE SET
         if (isRoot) {
           hash += `|${st.uid}:${st.gid}`;
         }
-        dirMetaBuf.push({ path: rpath, ctime, mtime, hash, scan_id, op_ts });
 
+        // Decide whether to emit NDJSON for this dir (delta-only)
+        let dirChanged = true;
         if (emitDelta) {
+          const prev = getExistingDir.get(rpath);
+          dirChanged =
+            !prev ||
+            prev.deleted === 1 ||
+            prev.mtime !== mtime ||
+            prev.ctime !== ctime ||
+            prev.hash !== hash;
+        }
+
+        // Always upsert to bump last_seen (so deletion detection works)
+        dirMetaBuf.push({ path: rpath, ctime, mtime, hash, scan_id, op_ts });
+        if (dirMetaBuf.length >= DB_BATCH_SIZE) {
+          applyDirBatch(dirMetaBuf);
+          dirMetaBuf.length = 0;
+        }
+
+        // Only emit if changed/new/resurrected
+        if (emitDelta && dirChanged) {
           emitObj({
             kind: "dir",
             path: rpath,
@@ -387,10 +555,7 @@ ON CONFLICT(path) DO UPDATE SET
           });
         }
 
-        if (dirMetaBuf.length >= DB_BATCH_SIZE) {
-          applyDirBatch(dirMetaBuf);
-          dirMetaBuf.length = 0;
-        }
+        continue;
       } else if (entry.dirent.isFile()) {
         const size = st.size;
         const op_ts = mtime;
@@ -435,6 +600,20 @@ ON CONFLICT(path) DO UPDATE SET
         const op_ts = mtime; // LWW uses op_ts consistently
         const hash = xxh128String(target);
 
+        // Decide whether to emit NDJSON for this link (delta-only)
+        let linkChanged = true;
+        if (emitDelta) {
+          const prev = getExistingLink.get(rpath);
+          linkChanged =
+            !prev ||
+            prev.deleted === 1 ||
+            prev.mtime !== mtime ||
+            prev.ctime !== ctime ||
+            prev.hash !== hash ||
+            prev.target !== target;
+        }
+
+        // Always upsert to bump last_seen
         linksBuf.push({
           path: rpath,
           target,
@@ -444,23 +623,26 @@ ON CONFLICT(path) DO UPDATE SET
           hash,
           scan_id,
         });
-
-        // emit-delta for remote ingestion
-        emitObj({
-          kind: "link",
-          path: rpath,
-          ctime,
-          mtime,
-          op_ts,
-          hash,
-          target,
-          deleted: 0,
-        });
-
         if (linksBuf.length >= DB_BATCH_SIZE) {
           applyLinksBatch(linksBuf);
           linksBuf.length = 0;
         }
+
+        // Only emit if changed/new/resurrected
+        if (emitDelta && linkChanged) {
+          emitObj({
+            kind: "link",
+            path: rpath,
+            ctime,
+            mtime,
+            op_ts,
+            hash,
+            target,
+            deleted: 0,
+          });
+        }
+
+        continue;
       }
     }
 
