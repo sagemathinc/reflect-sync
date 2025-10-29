@@ -600,7 +600,7 @@ export async function runScheduler({
             await mgr.add(rdir);
           }
         }
-        if (r && (evt === "add" || evt === "change" || evt === "unlink")) {
+        if (r) {
           hot.add(r);
           scheduleHotFlush();
         }

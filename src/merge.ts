@@ -848,16 +848,69 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    function makePrefixChecker(dirs: string[]) {
-      const ps = dirs
-        .map((d) => (d.endsWith("/") ? d.slice(0, -1) : d))
-        .filter((d) => d && d !== ".")
-        .sort((a, b) => b.length - a.length);
-      return (p: string) => {
-        for (const pre of ps) {
-          if (p === pre || p.startsWith(pre + "/")) return true;
+    // --- helpers: POSIX-y parent and normalization
+    const posixParent = (p: string) => {
+      if (!p) return "";
+      const i = p.lastIndexOf("/");
+      return i <= 0 ? "" : p.slice(0, i);
+    };
+    const normDir = (d: string) =>
+      (d.endsWith("/") ? d.slice(0, -1) : d).replace(/^\.\/+/, "");
+
+    /**
+     * Build a fast “is under any deleted dir?” predicate.
+     *  - Pre-normalizes and reduces the deleted-dirs list to a minimal cover
+     *    (drops descendants when an ancestor is present)
+     *  - Checks membership by walking ancestors using a Set (O(depth))
+     *  - Caches results per path to amortize repeated prefixes
+     */
+    function makeAncestorChecker(dirs: string[]) {
+      // Normalize and minimal-cover the deleted dirs
+      const base = dirs.map(normDir).filter((d) => d && d !== ".");
+      base.sort(); // lexicographic for ancestor test
+
+      const minimal = [] as string[];
+      const chosen = new Set<string>();
+      for (const d of base) {
+        // skip if any ancestor is already chosen
+        let p = d;
+        let covered = false;
+        while (p) {
+          if (chosen.has(p)) {
+            covered = true;
+            break;
+          }
+          p = posixParent(p);
         }
-        return false;
+        if (!covered) {
+          minimal.push(d);
+          chosen.add(d);
+        }
+      }
+
+      // Fast ancestor membership + memoization
+      const del = chosen; // Set of minimal deleted dirs
+      const memo = new Map<string, boolean>();
+      return (p: string) => {
+        let cur = normDir(p);
+        // exact/ancestor cache walk
+        while (true) {
+          const hit = memo.get(cur);
+          if (hit !== undefined) {
+            memo.set(p, hit);
+            return hit;
+          }
+          if (del.has(cur)) {
+            memo.set(p, true);
+            return true;
+          }
+          const parent = posixParent(cur);
+          if (parent === cur || !parent) {
+            memo.set(p, false);
+            return false;
+          }
+          cur = parent;
+        }
       };
     }
 
@@ -871,11 +924,11 @@ export async function runMerge({
       .map((r: any) => r.rpath as string);
 
     if (prefer === "alpha" && deletedDirsA.length) {
-      const underADeleted = makePrefixChecker(deletedDirsA);
+      const underADeleted = makeAncestorChecker(deletedDirsA);
       toAlpha = toAlpha.filter((r) => !underADeleted(r));
     }
     if (prefer === "beta" && deletedDirsB.length) {
-      const underBDeleted = makePrefixChecker(deletedDirsB);
+      const underBDeleted = makeAncestorChecker(deletedDirsB);
       toBeta = toBeta.filter((r) => !underBDeleted(r));
     }
     done();
