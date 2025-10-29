@@ -1428,7 +1428,7 @@ export async function runMerge({
       done();
 
       // ---------- prune tombstones ----------
-      done = t("drop tombstones");
+      done = t("drop tombstones in alpha and beta");
       db.exec(`
         DELETE FROM alpha.files
         WHERE deleted = 1
@@ -1453,24 +1453,44 @@ export async function runMerge({
         DELETE FROM beta.links
         WHERE deleted = 1
           AND EXISTS (SELECT 1 FROM base WHERE base.path = beta.links.path AND base.deleted = 1);
+      `);
+      done();
 
+      done = t("drop paths in base in neither alpha nor beta");
+      db.exec(`
         -- delete anything deleted in base that doesn't exist in either alpha or beta
-        WITH live_paths AS (
-          SELECT path FROM alpha_entries WHERE deleted = 0
-          UNION
-          SELECT path FROM beta_entries  WHERE deleted = 0
-        )
-        DELETE FROM base
-        WHERE NOT EXISTS (SELECT 1 FROM live_paths lp WHERE lp.path = base.path);
+        -- Materialize "live" sets without touching the ranked views
+        DROP TABLE IF EXISTS _live_paths;
+        CREATE TEMP TABLE _live_paths(
+          path TEXT PRIMARY KEY
+        ) WITHOUT ROWID;
 
-        -- live dirs
-        WITH live_dir_paths AS (
-          SELECT path FROM alpha.dirs WHERE deleted = 0
-          UNION
-          SELECT path FROM beta.dirs  WHERE deleted = 0
-        )
+        INSERT INTO _live_paths(path)
+        SELECT path FROM alpha.files WHERE deleted=0
+        UNION
+        SELECT path FROM alpha.links WHERE deleted=0
+        UNION
+        SELECT path FROM beta.files  WHERE deleted=0
+        UNION
+        SELECT path FROM beta.links  WHERE deleted=0;
+
+        DROP TABLE IF EXISTS _live_dir_paths;
+        CREATE TEMP TABLE _live_dir_paths(
+          path TEXT PRIMARY KEY
+        ) WITHOUT ROWID;
+
+        INSERT INTO _live_dir_paths(path)
+        SELECT path FROM alpha.dirs WHERE deleted=0
+        UNION
+        SELECT path FROM beta.dirs  WHERE deleted=0;
+
+        -- 4) Prune base tables using the materialized sets
+        DELETE FROM base
+         WHERE NOT EXISTS (SELECT 1 FROM _live_paths lp WHERE lp.path = base.path);
+
         DELETE FROM base_dirs
-        WHERE NOT EXISTS (SELECT 1 FROM live_dir_paths lp WHERE lp.path = base_dirs.path);      `);
+         WHERE NOT EXISTS (SELECT 1 FROM _live_dir_paths lp WHERE lp.path = base_dirs.path);
+      `);
       done();
 
       done = t("sqlite hygiene");
@@ -1479,13 +1499,13 @@ export async function runMerge({
       db.pragma("incremental_vacuum");
       db.pragma("optimize");
       done();
-      done = t("sqlite full vacuum");
       // sometimes we do a potentially much more expensive full vacuum;
       // this can save a LOT more space than incremental vacu
-      if (Math.random() <= 0.25) {
+      if (Math.random() <= 0.5) {
+        done = t("sqlite full vacuum");
         db.exec("vacuum; vacuum alpha; vacuum beta;");
+        done();
       }
-      done();
 
       if (verbose) console.log("Merge complete.");
 
