@@ -31,7 +31,8 @@ function buildProgram(): Command {
     .option(
       "--prune-ms <milliseconds>",
       "prune deleted entries at least this old *before* doing the scan",
-    );
+    )
+    .option("--numeric-ids", "include uid and gid in file hashes", false);
 }
 
 type ScanOptions = {
@@ -42,6 +43,7 @@ type ScanOptions = {
   root: string;
   vacuum?: boolean;
   pruneMs?: string;
+  numericIds?: boolean;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -53,6 +55,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     verbose,
     vacuum,
     pruneMs,
+    numericIds,
   } = opts;
 
   // Rows written to DB always use rpaths now.
@@ -80,8 +83,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const CPU_COUNT = Math.min(os.cpus().length, 8);
   const DB_BATCH_SIZE = 2000;
   const DISPATCH_BATCH = 256; // files per worker message
-
-  const isRoot = process.geteuid?.() === 0;
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
@@ -199,7 +200,13 @@ ON CONFLICT(path) DO UPDATE SET
 
   // ----------------- Worker pool ------------------
   // Worker accepts ABS paths for hashing; we convert the results to rpaths here.
-  type Job = { path: string; size: number; ctime: number; mtime: number }; // ABS path
+  type Job = {
+    path: string;
+    size: number;
+    ctime: number;
+    mtime: number;
+    numericIds?: boolean;
+  }; // ABS path
   type JobBatch = { jobs: Job[] };
   type Result =
     | { path: string; hash: string; ctime: number; mtime: number } // ABS path echoed back
@@ -502,7 +509,9 @@ ON CONFLICT(path) DO UPDATE SET
         // directory ops don't bump mtime reliably, so we use op time.
         const op_ts = Date.now();
         let hash = modeHash(st.mode);
-        if (isRoot) {
+        if (numericIds) {
+          // NOTE: it is only a good idea to use this when
+          // the user is root for both alpha and beta
           hash += `|${st.uid}:${st.gid}`;
         }
 
@@ -567,7 +576,8 @@ ON CONFLICT(path) DO UPDATE SET
         if (needsHash) {
           // keep ABS key here; worker replies with ABS and we’ll map to rpath
           pendingMeta.set(abs, { size, ctime, mtime });
-          jobBuf.push({ path: abs, size, ctime, mtime }); // ABS for worker
+          // ABS path for worker
+          jobBuf.push({ path: abs, size, ctime, mtime, numericIds });
           if (jobBuf.length >= DISPATCH_BATCH) {
             const w = await nextWorker();
             (w as any).postMessage({ jobs: jobBuf } as JobBatch);

@@ -1493,17 +1493,24 @@ export async function runMerge({
       `);
       done();
 
-      done = t("sqlite hygiene");
-      db.pragma("optimize");
-      db.pragma("wal_checkpoint(TRUNCATE)");
-      db.pragma("incremental_vacuum");
-      db.pragma("optimize");
-      done();
-      // for now do a more expensive full vacuum;
-      // this can save a LOT more space than incremental vacuum
-      done = t("sqlite full vacuum");
-      db.exec("vacuum; vacuum alpha; vacuum beta;");
-      done();
+      try {
+        done = t("sqlite hygiene");
+        db.pragma("optimize");
+        db.pragma("wal_checkpoint(TRUNCATE)");
+        db.pragma("incremental_vacuum");
+        db.pragma("optimize");
+        done();
+        // for now do a more expensive full vacuum;
+        // this can save a LOT more space than incremental vacuum
+        done = t("sqlite full vacuum");
+        db.exec("vacuum; vacuum alpha; vacuum beta;");
+        done();
+      } catch (err) {
+        // harmless if fails -- may happen if locked
+        if (verbose) {
+          console.log("warning -- sqlite hygiene issue", err);
+        }
+      }
 
       if (verbose) console.log("Merge complete.");
 

@@ -23,14 +23,24 @@ export class Database extends DatabaseSync {
   };
 }
 
+const PRAGMAS = [
+  "auto_vacuum = INCREMENTAL",
+  "temp_store = MEMORY",
+  "journal_mode = WAL",
+  "synchronous = NORMAL",
+];
+
 export function getDb(dbPath: string): Database {
   // ----------------- SQLite setup -----------------
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
-  db.pragma("auto_vacuum = INCREMENTAL");
-  db.pragma("temp_store = MEMORY");
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
+  for (const pragma of PRAGMAS) {
+    try {
+      db.pragma(pragma);
+    } catch {
+      // if two at once loading db it may lock so we skip setting a pragma in that case.
+    }
+  }
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS files (

@@ -26,6 +26,7 @@ import { MAX_WATCHERS } from "./defaults.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
+import { expandHome } from "./remote.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -78,12 +79,12 @@ function buildProgram(): Command {
     .option(
       "--alpha-remote-db <file>",
       "remote path to alpha sqlite db (on the SSH host)",
-      `${process.env.HOME ?? ""}/.cache/cocalc-sync/alpha.db`,
+      `~/.cache/ccsync/alpha.db`,
     )
     .option(
       "--beta-remote-db <file>",
       "remote path to beta sqlite db (on the SSH host)",
-      `${process.env.HOME ?? ""}/.cache/cocalc-sync/beta.db`,
+      `~/.cache/ccsync/beta.db`,
     )
     // commands to run on remote for scan/micro-watch
     .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")
@@ -185,6 +186,20 @@ export async function runScheduler({
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
 
+  // Resolve ~ for any remote paths once up-front
+  alphaRoot = await expandHome(alphaRoot, alphaHost, verbose);
+  betaRoot = await expandHome(betaRoot, betaHost, verbose);
+  alphaRemoteDb = await expandHome(
+    alphaRemoteDb || "~/.cache/ccsync/alpha.db",
+    alphaHost,
+    verbose,
+  );
+  betaRemoteDb = await expandHome(
+    betaRemoteDb || "~/.cache/ccsync/beta.db",
+    betaHost,
+    verbose,
+  );
+
   // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
   let sessionWriter: SessionWriter | null = null;
@@ -282,8 +297,9 @@ export async function runScheduler({
   async function sshScanIntoMirror(params: {
     host: string;
     remoteScanCmd: string;
-    root: string;
-    localDb: string;
+    root: string; // remote root
+    remoteDb: string; // remote DB path (on remote host)
+    localDb: string; // local mirror DB for ingest
   }): Promise<{
     code: number | null;
     ms: number;
@@ -298,10 +314,8 @@ export async function runScheduler({
       "--root",
       params.root,
       "--emit-delta",
-      // use same path as local DB, but on remote:
-      // [ ] TODO: this isn't going to be right in general!
       "--db",
-      params.localDb,
+      params.remoteDb,
       "--vacuum",
     ];
     if (lastRemoteScan.ok && lastRemoteScan.start) {
@@ -355,7 +369,7 @@ export async function runScheduler({
     };
   }
 
-  // Remote delta stream (watch): ssh "<remoteWatchCmd> --root <root>"
+  // Remote delta stream (watch)
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
   function startRemoteDeltaStream(side: "alpha" | "beta") {
     if (disableHotWatch) return null;
@@ -665,6 +679,7 @@ export async function runScheduler({
             remoteScanCmd,
             root: alphaRoot,
             localDb: alphaDb,
+            remoteDb: alphaRemoteDb!,
           })
         : await spawnTask(
             "ccsync",
@@ -693,6 +708,7 @@ export async function runScheduler({
             remoteScanCmd,
             root: betaRoot,
             localDb: betaDb,
+            remoteDb: betaRemoteDb!,
           })
         : await spawnTask(
             "ccsync",

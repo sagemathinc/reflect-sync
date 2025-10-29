@@ -38,6 +38,7 @@ program
     "--prune-ms <milliseconds>",
     "prune deleted entries at least this old *before* doing the scan",
   )
+  .option("--numeric-ids", "include uid and gid in file hashes", false)
   .action(
     async (
       opts: {
@@ -47,6 +48,7 @@ program
         emitRecentMs: string;
         vacume: boolean;
         pruneMs: string;
+        numericIds: boolean;
       },
       command,
     ) => {
@@ -103,12 +105,12 @@ program
   .option(
     "--alpha-remote-db <file>",
     "remote alpha sqlite DB path (on SSH host)",
-    `${process.env.HOME ?? ""}/.cache/cocalc-sync/alpha.db`,
+    `~/.cache/ccsync/alpha.db`,
   )
   .option(
     "--beta-remote-db <file>",
     "remote beta sqlite DB path (on SSH host)",
-    `${process.env.HOME ?? ""}/.cache/cocalc-sync/beta.db`,
+    `~/.cache/ccsync/beta.db`,
   )
   // commands to run remotely
   .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")

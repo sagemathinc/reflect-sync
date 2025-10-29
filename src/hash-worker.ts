@@ -3,7 +3,13 @@ import { parentPort } from "node:worker_threads";
 import { modeHash, xxh128File } from "./hash.js";
 import { stat } from "node:fs/promises";
 
-type Job = { path: string; size: number; ctime: number; mtime: number };
+type Job = {
+  path: string;
+  size: number;
+  ctime: number;
+  mtime: number;
+  numericIds?: boolean;
+};
 type JobBatch = { jobs: Job[] };
 
 if (!parentPort) {
@@ -11,7 +17,6 @@ if (!parentPort) {
 }
 
 parentPort?.on("message", async (payload: JobBatch) => {
-  const isRoot = process.geteuid?.() === 0;
   const jobs = payload?.jobs ?? [];
   const out: Array<
     | { path: string; hash: string; ctime: number; mtime: number }
@@ -23,7 +28,7 @@ parentPort?.on("message", async (payload: JobBatch) => {
       const hashContents = await xxh128File(j.path, j.size);
       const st = await stat(j.path);
       let hash = `${hashContents}|${modeHash(st.mode)}`;
-      if (isRoot) {
+      if (j.numericIds) {
         // so that uid and gid changes cause an update:
         hash += `|${st.uid}:${st.gid}`;
       }
