@@ -7,6 +7,8 @@ import { createHash, getHashes } from "node:crypto";
 export const HASH_STREAM_CUTOFF = 10_000_000; // ~10MB; small files do one-shot hashing
 export const STREAM_HWM = 8 * 1024 * 1024; // 8MB read chunks
 
+const ENCODING = "base64";
+
 // Curated set we’re willing to expose
 export const CURATED_HASH_ALGOS = [
   "sha1",
@@ -62,7 +64,7 @@ export function normalizeHashAlg(requested?: string): HashAlg {
 
 // Hash a string (e.g., symlink targets).
 export function stringDigest(alg: string, s: string): string {
-  return createHash(alg).update(s).digest("hex");
+  return createHash(alg).update(s).digest(ENCODING);
 }
 
 /**
@@ -88,7 +90,7 @@ export async function fileDigest(
   // Fast path: read whole file at once
   if (n <= HASH_STREAM_CUTOFF) {
     const buf = await fs.readFile(path);
-    return createHash(alg).update(buf).digest("hex");
+    return createHash(alg).update(buf).digest(ENCODING);
   }
 
   // Streaming path: strong backpressure + error propagation via pipeline
@@ -103,7 +105,7 @@ export async function fileDigest(
     }
   });
 
-  return h.digest("hex");
+  return h.digest(ENCODING);
 }
 
 // not a full hash, just mode bits in hex.

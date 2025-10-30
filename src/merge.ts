@@ -137,7 +137,7 @@ export async function runMerge({
       for (const row of stmt.iterate()) {
         h.update(`${row.path}\x1f${row.hash}\x1f`);
       }
-      return h.digest("hex");
+      return h.digest("base64");
     };
 
     let done = t("compute digests");
