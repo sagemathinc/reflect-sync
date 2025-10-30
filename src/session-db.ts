@@ -5,10 +5,11 @@ import { join } from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { CLI_NAME } from "./constants.js";
+import { defaultHashAlg } from "./hash.js";
 
 // Paths & Home
 
-export function getReflexSyncHome(): string {
+export function getReflectSyncHome(): string {
   const explicit = process.env.RFSYNC_HOME?.trim();
   if (explicit) {
     return ensureDir(expandHome(explicit));
@@ -34,7 +35,7 @@ export function getReflexSyncHome(): string {
 }
 
 // A persistent local identifier for this CLI_NAME "origin"/installation.
-export function getOrCreateEngineId(home = getReflexSyncHome()): string {
+export function getOrCreateEngineId(home = getReflectSyncHome()): string {
   const p = join(home, "engine.id");
   try {
     const s = fs.readFileSync(p, "utf8").trim();
@@ -52,15 +53,15 @@ export function getOrCreateEngineId(home = getReflexSyncHome()): string {
   return raw;
 }
 
-export function getSessionDbPath(home = getReflexSyncHome()): string {
+export function getSessionDbPath(home = getReflectSyncHome()): string {
   return join(home, "sessions.db");
 }
 
-export function sessionDir(id: number, home = getReflexSyncHome()): string {
+export function sessionDir(id: number, home = getReflectSyncHome()): string {
   return join(home, "sessions", String(id));
 }
 
-export function deriveSessionPaths(id: number, home = getReflexSyncHome()) {
+export function deriveSessionPaths(id: number, home = getReflectSyncHome()) {
   const dir = sessionDir(id, home);
   return {
     dir,
@@ -107,6 +108,7 @@ export interface SessionCreateInput {
   beta_remote_db?: string | null;
   remote_scan_cmd?: string | null;
   remote_watch_cmd?: string | null;
+  hash_alg?: string | null;
 }
 
 export interface SessionPatch {
@@ -184,6 +186,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         alpha_db         TEXT,
         beta_db          TEXT,
         events_db        TEXT,
+
+        hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
 
         desired_state    TEXT NOT NULL DEFAULT 'stopped',
         actual_state     TEXT NOT NULL DEFAULT 'stopped',
@@ -278,9 +282,10 @@ export function createSession(
         created_at, updated_at, name,
         alpha_root, beta_root, prefer,
         alpha_host, beta_host, alpha_remote_db, beta_remote_db,
-        remote_scan_cmd, remote_watch_cmd
+        remote_scan_cmd, remote_watch_cmd,
+        hash_alg
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const info = stmt.run(
       now,
@@ -295,6 +300,7 @@ export function createSession(
       input.beta_remote_db ?? null,
       input.remote_scan_cmd ?? `${CLI_NAME} scan`,
       input.remote_watch_cmd ?? `${CLI_NAME} watch`,
+      input.hash_alg ?? defaultHashAlg(),
     );
     const id = Number(info.lastInsertRowid);
 
@@ -544,7 +550,7 @@ export function selectSessions(
 
 export function materializeSessionPaths(
   id: number,
-  home = getReflexSyncHome(),
+  home = getReflectSyncHome(),
 ): { base_db: string; alpha_db: string; beta_db: string; events_db: string } {
   const derived = deriveSessionPaths(id, home);
   ensureDir(derived.dir);

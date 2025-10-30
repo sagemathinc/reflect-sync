@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -25,12 +25,23 @@
   "engines": {
     "node": ">=24"
   },
-  "files": ["dist", "README.md", "LICENSE"],
-  "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "rsync",
+    "sqlite",
+    "sync",
+    "watch",
+    "ssh",
+    "mutagen",
+    "backup"
+  ],
   "license": "MIT",
   "packageManager": "pnpm@10.19.0",
   "dependencies": {
-    "@node-rs/xxhash": "^1.7.6",
     "@nodelib/fs.walk": "^3.0.1",
     "ascii-table3": "^1.0.1",
     "chokidar": "^4.0.3",

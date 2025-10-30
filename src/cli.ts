@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 import { createRequire } from "node:module";
 import { registerSessionCommands } from "./session-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
+import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
@@ -26,13 +27,17 @@ program
     "Run a local scan writing to sqlite database and optionally stdout",
   )
   .requiredOption("--root <path>", "directory to scan")
-  .option("--db <path>", "sqlite db file", "alpha.db")
+  .requiredOption("--db <path>", "sqlite db file", "alpha.db")
   .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
   .option(
     "--emit-since-ts <milliseconds>",
     "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
   )
-
+  .addOption(
+    new Option("--hash <algorithm>", "content hash algorithm")
+      .choices(listSupportedHashes())
+      .default(defaultHashAlg()),
+  )
   .option("--vacuum", "vacuum the database after doing the scan", false)
   .option(
     "--prune-ms <milliseconds>",
@@ -45,7 +50,9 @@ program
         root: string;
         db: string;
         emitDelta: boolean;
-        emitRecentMs: string;
+        emitSinceTs: string;
+        hash: string;
+        listHashes: boolean;
         vacume: boolean;
         pruneMs: string;
         numericIds: boolean;
@@ -98,6 +105,11 @@ program
     new Option("--prefer <side>", "conflict preference")
       .choices(["alpha", "beta"])
       .default("alpha"),
+  )
+  .addOption(
+    new Option("--hash <algorithm>", "content hash algorithm")
+      .choices(listSupportedHashes())
+      .default(defaultHashAlg()),
   )
   // optional SSH endpoints (only one side may be remote)
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")

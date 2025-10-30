@@ -5,14 +5,20 @@ import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
 import { readlink } from "node:fs/promises";
 import { getDb } from "./db.js";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
-import { modeHash, xxh128String } from "./hash.js";
 import path from "node:path";
 import { loadIgnoreFile } from "./ignore.js";
 import { toRel } from "./path-rel.js";
 import { isRecent } from "./hotwatch.js";
 import { CLI_NAME } from "./constants.js";
+import {
+  normalizeHashAlg,
+  modeHash,
+  stringDigest,
+  listSupportedHashes,
+  defaultHashAlg,
+} from "./hash.js";
 
 function buildProgram(): Command {
   const program = new Command();
@@ -20,14 +26,19 @@ function buildProgram(): Command {
   return program
     .name(`${CLI_NAME}-scan`)
     .description("Run a local scan writing to sqlite database")
-    .requiredOption("--root <path>", "directory to scan")
     .requiredOption("--db <file>", "path to sqlite database")
+    .requiredOption("--root <path>", "directory to scan")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
     .option(
       "--emit-since-ts <milliseconds>",
       "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
     )
     .option("--verbose", "enable verbose logging", false)
+    .addOption(
+      new Option("--hash <algorithm>", "content hash algorithm")
+        .choices(listSupportedHashes())
+        .default(defaultHashAlg()),
+    )
     .option("--vacuum", "vacuum the database after doing the scan", false)
     .option(
       "--prune-ms <milliseconds>",
@@ -41,6 +52,7 @@ type ScanOptions = {
   emitDelta: boolean;
   emitRecentMs?: string;
   verbose: boolean;
+  hash: string;
   root: string;
   vacuum?: boolean;
   pruneMs?: string;
@@ -54,6 +66,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     emitDelta,
     emitRecentMs,
     verbose,
+    hash,
     vacuum,
     pruneMs,
     numericIds,
@@ -70,6 +83,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     last_seen: number;
     hashed_ctime: number | null;
   };
+
+  const HASH_ALG = normalizeHashAlg(hash);
+  if (verbose) {
+    console.log(`scan: using hash=${HASH_ALG}`);
+  }
 
   if (verbose) {
     console.log("running scan with database = ", DB_PATH);
@@ -215,8 +233,12 @@ ON CONFLICT(path) DO UPDATE SET
 
   const workers = Array.from(
     { length: CPU_COUNT },
-    () => new Worker(new URL("./hash-worker", import.meta.url)),
+    () =>
+      new Worker(new URL("./hash-worker", import.meta.url), {
+        workerData: { alg: HASH_ALG },
+      }),
   );
+
   const freeWorkers: Worker[] = [...workers];
   const waiters: Array<() => void> = [];
 
@@ -592,7 +614,7 @@ ON CONFLICT(path) DO UPDATE SET
           target = await readlink(abs);
         } catch {}
         const op_ts = mtime; // LWW uses op_ts consistently
-        const hash = xxh128String(target);
+        const hash = stringDigest(HASH_ALG, target);
 
         // Decide whether to emit NDJSON for this link (delta-only)
         let linkChanged = true;

@@ -1,47 +1,112 @@
+// src/hash.ts
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import fs from "node:fs/promises";
-import { xxh3 } from "@node-rs/xxhash";
+import { createHash, getHashes } from "node:crypto";
 
-const HASH_STREAM_CUTOFF = 10_000_000; // ~10MB; small files do one-shot hashing
-const STREAM_HWM = 8 * 1024 * 1024; // 8MB read chunks
+export const HASH_STREAM_CUTOFF = 10_000_000; // ~10MB; small files do one-shot hashing
+export const STREAM_HWM = 8 * 1024 * 1024; // 8MB read chunks
 
-// Convert unsigned 128-bit BigInt to 32-char hex (lowercase)
-const TWO128 = 1n << 128n;
-export function hex128(x: bigint): string {
-  if (x < 0n) x += TWO128; // normalize (defensive)
-  return x.toString(16);
+// Curated set we’re willing to expose
+export const CURATED_HASH_ALGOS = [
+  "sha1",
+  "sha256",
+  "sha512",
+  "blake2b512",
+  "blake2s256",
+  "sha3-256",
+  "sha3-512",
+] as const;
+
+export type HashAlg = (typeof CURATED_HASH_ALGOS)[number];
+
+export function defaultHashAlg(): HashAlg {
+  return "sha256";
 }
-export function xxh128String(s: string): string {
-  const dig = xxh3.xxh128(s);
-  return hex128(dig);
+
+let supportedHashes: HashAlg[] | null = null;
+export function listSupportedHashes(): HashAlg[] {
+  if (supportedHashes == null) {
+    const avail = new Set(getHashes().map((s) => s.toLowerCase()));
+    supportedHashes = CURATED_HASH_ALGOS.filter((a) =>
+      avail.has(a),
+    ) as HashAlg[];
+  }
+  return supportedHashes!;
 }
 
-export async function xxh128File(path: string, size: number): Promise<string> {
-  // Fast path for small files
-  if (size <= HASH_STREAM_CUTOFF) {
-    const buf = await fs.readFile(path);
-    const dig = xxh3.xxh128(buf); // BigInt
-    return hex128(dig);
+/**
+ * Normalize/validate requested algorithm against runtime support.
+ * Accepts short shorthands "blake2b" -> blake2b512, "blake2s" -> blake2s256.
+ */
+export function normalizeHashAlg(requested?: string): HashAlg {
+  const list = listSupportedHashes();
+  if (!requested) return defaultHashAlg();
+  const low = requested.toLowerCase();
+  const exact = list.find((h) => h.toLowerCase() === low);
+  if (exact) return exact;
+
+  if (low === "blake2b") {
+    const b = list.find((h) => h.toLowerCase() === "blake2b512");
+    if (b) return b;
+  }
+  if (low === "blake2s") {
+    const s = list.find((h) => h.toLowerCase() === "blake2s256");
+    if (s) return s;
   }
 
-  // Streaming path for large files
-  const hasher = xxh3.Xxh3.withSeed(); // default seed=0
+  throw new Error(
+    `Unknown/unsupported hash algorithm "${requested}". Try one of:\n  ${list.join(", ")}`,
+  );
+}
+
+// Hash a string (e.g., symlink targets).
+export function stringDigest(alg: string, s: string): string {
+  return createHash(alg).update(s).digest("hex");
+}
+
+/**
+ * Hash a file. Uses a fast path for small files and a backpressured streaming
+ * pipeline for large files. If 'size' is not provided, we'll stat the file.
+ */
+export async function fileDigest(
+  alg: string,
+  path: string,
+  size?: number,
+): Promise<string> {
+  let n = size;
+  if (n == null) {
+    try {
+      const st = await fs.stat(path);
+      n = st.size;
+    } catch (e) {
+      // fall back to streaming if stat fails for some reason
+      n = HASH_STREAM_CUTOFF + 1;
+    }
+  }
+
+  // Fast path: read whole file at once
+  if (n <= HASH_STREAM_CUTOFF) {
+    const buf = await fs.readFile(path);
+    return createHash(alg).update(buf).digest("hex");
+  }
+
+  // Streaming path: strong backpressure + error propagation via pipeline
+  const h = createHash(alg);
   const rs = createReadStream(path, { highWaterMark: STREAM_HWM });
 
-  // Use pipeline to get proper backpressure/error propagation
   await pipeline(rs, async function* (src) {
     for await (const chunk of src) {
-      hasher.update(chunk);
-      // we must yield something to satisfy the generator signature
-      // but we don't actually need to pass data downstream
+      h.update(chunk);
+      // yield once to satisfy transform signature (no downstream consumer)
+      yield;
     }
   });
 
-  const dig = hasher.digest(); // BigInt
-  return hex128(dig);
+  return h.digest("hex");
 }
 
+// not a full hash, just mode bits in hex.
 export function modeHash(mode: number): string {
   return (mode & 0o7777).toString(16);
 }

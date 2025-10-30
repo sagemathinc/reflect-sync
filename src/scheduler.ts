@@ -27,6 +27,7 @@ import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
 import { expandHome, isRoot } from "./remote.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
+import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -38,6 +39,7 @@ export type SchedulerOptions = {
   verbose: boolean;
   dryRun: boolean;
 
+  hash: string;
   alphaHost?: string;
   betaHost?: string;
   alphaRemoteDb: string;
@@ -72,6 +74,11 @@ function buildProgram(): Command {
         .default("alpha"),
     )
     .option("--verbose", "enable verbose logging", false)
+    .addOption(
+      new Option("--hash <algorithm>", "content hash algorithm")
+        .choices(listSupportedHashes())
+        .default(defaultHashAlg()),
+    )
     .option("--dry-run", "simulate without changing files", false)
     // optional SSH endpoints (only one side may be remote)
     .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
@@ -79,12 +86,12 @@ function buildProgram(): Command {
     .option(
       "--alpha-remote-db <file>",
       "remote path to alpha sqlite db (on the SSH host)",
-      `~/.cache/${CLI_NAME}/alpha.db`,
+      `~/.local/share/${CLI_NAME}/alpha.db`,
     )
     .option(
       "--beta-remote-db <file>",
       "remote path to beta sqlite db (on the SSH host)",
-      `~/.cache/${CLI_NAME}/beta.db`,
+      `~/.local/share/${CLI_NAME}/beta.db`,
     )
     // commands to run on remote for scan/micro-watch
     .option(
@@ -118,6 +125,7 @@ function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     prefer: String(opts.prefer).toLowerCase() as "alpha" | "beta",
     verbose: !!opts.verbose,
     dryRun: !!opts.dryRun,
+    hash: String(opts.hash),
     alphaHost: opts.alphaHost?.trim() || undefined,
     betaHost: opts.betaHost?.trim() || undefined,
     alphaRemoteDb: String(opts.alphaRemoteDb),
@@ -162,6 +170,7 @@ export async function runScheduler({
   prefer,
   verbose,
   dryRun,
+  hash,
   alphaHost,
   betaHost,
   alphaRemoteDb,
@@ -193,12 +202,12 @@ export async function runScheduler({
   alphaRoot = await expandHome(alphaRoot, alphaHost, verbose);
   betaRoot = await expandHome(betaRoot, betaHost, verbose);
   alphaRemoteDb = await expandHome(
-    alphaRemoteDb || `~/.cache/${CLI_NAME}/alpha.db`,
+    alphaRemoteDb || `~/.local/share/${CLI_NAME}/alpha.db`,
     alphaHost,
     verbose,
   );
   betaRemoteDb = await expandHome(
-    betaRemoteDb || `~/.cache/${CLI_NAME}/beta.db`,
+    betaRemoteDb || `~/.local/share/${CLI_NAME}/beta.db`,
     betaHost,
     verbose,
   );
@@ -322,6 +331,8 @@ export async function runScheduler({
       "--emit-delta",
       "--db",
       params.remoteDb,
+      "--hash",
+      hash,
       "--vacuum",
     ];
     if (numericIds) {
@@ -693,7 +704,15 @@ export async function runScheduler({
           })
         : await spawnTask(
             CLI_NAME,
-            ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
+            [
+              "scan",
+              "--root",
+              alphaRoot,
+              "--db",
+              alphaDb,
+              "--hash",
+              hash,
+            ].concat(
               verbose ? ["--verbose"] : [],
               numericIds ? ["--numeric-ids"] : [],
             ),
@@ -724,7 +743,7 @@ export async function runScheduler({
           })
         : await spawnTask(
             CLI_NAME,
-            ["scan", "--root", betaRoot, "--db", betaDb].concat(
+            ["scan", "--root", betaRoot, "--db", betaDb, "--hash", hash].concat(
               verbose ? ["--verbose"] : [],
               numericIds ? ["--numeric-ids"] : [],
             ),

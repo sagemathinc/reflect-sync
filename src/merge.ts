@@ -14,9 +14,8 @@ import {
   rsyncCopyDirs,
   rsyncDeleteChunked,
 } from "./rsync.js";
-import { xxh3 } from "@node-rs/xxhash";
-import { hex128 } from "./hash.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
+import { createHash } from "node:crypto";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -134,11 +133,11 @@ export async function runMerge({
         )
         ORDER BY path
       `);
-      const h = xxh3.Xxh3.withSeed();
+      const h = createHash("sha256");
       for (const row of stmt.iterate()) {
         h.update(`${row.path}\x1f${row.hash}\x1f`);
       }
-      return hex128(h.digest());
+      return h.digest("hex");
     };
 
     let done = t("compute digests");

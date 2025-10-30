@@ -4,7 +4,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 
 - **Rsync transport** \(latest rsync recommended\)
 - **SQLite indexes** per side \(alpha / beta\) \+ base snapshot for true 3\-way merges
-- **Incremental scans** with content hashes using [XXH3](https://www.npmjs.com/package/@node-rs/xxhash) only when needed \(based on ctime\)
+- **Incremental scans** with content hashes only when needed \(based on ctime\)
 - **Realtime micro\-sync** for hot files \(debounced, safe on partial edits\)
 - **SSH\-friendly**: stream remote deltas over stdin
 - **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
@@ -23,7 +23,7 @@ Some differences compared to Mutagen, and todos:
 
 - the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
 - conflicts are resolved using **last write wins** \(clocks are sync'd\), with close ties resolved by one chosen side always wins. There is no manual resolution mode.
-- instead of Sha\-256 **we use XXH3** via [@node\-rs/xxhash](https://www.npmjs.com/package/@node-rs/xxhash). Using a very fast non\-cryptographic hash is a good fit for file sync.
+- we use Sha\-256 by default, but also support "sha512", "blake2b512", "blake2s256", "sha3-256", and "sha3-512".
 - only supports macos and linux \(currently\)
 - timestamps and permissions are fully preserved, whereas Mutagen mostly ignores them
 
@@ -187,13 +187,13 @@ Not a perfect fit if you need:
 
 ## How it compares
 
-| Tool          | License                             | Sync model                   | Conflict policy                   | Notes                                         |
-| ------------- | ----------------------------------- | ---------------------------- | --------------------------------- | --------------------------------------------- |
-| **ReflectSync**    | **MIT**                             | Two-way between two roots    | **LWW** (+ preferred side on tie) | rsync transport; SQLite state; symlink-aware  |
-| **Unison**    | GPL-3                               | Two-way                      | Interactive or policy-driven      | Mature, formal; heavier UX for headless flows |
-| **Syncthing** | MPL-2.0                             | Continuous P2P mesh          | **Conflict copies** on diverge    | Great for many devices; background indexer    |
-| **Mutagen**   | Source-available (see project docs) | Dev-focused low-latency sync | Modes incl. “prefer side”         | Very fast for dev trees; custom protocol      |
-| **lsyncd**    | GPL-2.0+                            | One-way (event → rsync)      | N/A                               | Simple near-real-time mirroring               |
+| Tool            | License                             | Sync model                   | Conflict policy                   | Notes                                         |
+| --------------- | ----------------------------------- | ---------------------------- | --------------------------------- | --------------------------------------------- |
+| **ReflectSync** | **MIT**                             | Two-way between two roots    | **LWW** (+ preferred side on tie) | rsync transport; SQLite state; symlink-aware  |
+| **Unison**      | GPL-3                               | Two-way                      | Interactive or policy-driven      | Mature, formal; heavier UX for headless flows |
+| **Syncthing**   | MPL-2.0                             | Continuous P2P mesh          | **Conflict copies** on diverge    | Great for many devices; background indexer    |
+| **Mutagen**     | Source-available (see project docs) | Dev-focused low-latency sync | Modes incl. “prefer side”         | Very fast for dev trees; custom protocol      |
+| **lsyncd**      | GPL-2.0+                            | One-way (event → rsync)      | N/A                               | Simple near-real-time mirroring               |
 
 > Philosophy difference: **ReflectSync** favors _determinism without duplicates or "conflict" files_ \(LWW \+ preference\). Tools like Syncthing/Dropbox prefer _never lose data_ \(create conflict files\), which is ideal for less controlled, multi\-party edits.
 
@@ -234,20 +234,20 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 
 ## ReflectSync vs. X — choose-by-scenario
 
-| Scenario                                                                | Recommended                  | Why                                                                                  | Notes                                                                       |
-| ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ReflectSync**                   | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod              |
+| Scenario                                                                | Recommended                  | Why                                                                                  | Notes                                                                            |
+| ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ReflectSync**              | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod                   |
 | **One-way near-real-time mirroring** (e.g., deploy artifacts → webroot) | **lsyncd**                   | Event→batch→rsync is simple and robust                                               | If you still want ReflectSync, just run one side as authoritative (prefer-alpha) |
-| **Dev loop; tons of small files; low latency**                          | **Mutagen**                  | Purpose-built for fast dev sync; very low overhead on edits                          | License differs; protocol/agent required                                    |
-| **Many devices; peer-to-peer mesh; zero central server**                | **Syncthing**                | Discovery, relay, NAT traversal, continuous                                          | Creates conflict copies on diverge (safer for multi-writer)                 |
-| **Non-technical users; desktop + mobile; web UI; version history**      | **Nextcloud** or **Dropbox** | Turnkey clients + history + sharing                                                  | Heavier footprint; server (Nextcloud) or cloud (Dropbox)                    |
-| **CI/CD cache or artifacts between two machines**                       | **ReflectSync**                   | Deterministic, debuggable, rsync-efficient on large binaries                         | Keep file lists tight; parallelize rsync if needed                          |
-| **Large binary files with small edits over LAN**                        | **ReflectSync**                   | rsync rolling checksum excels                                                        | Consider `--inplace` only if types won’t change and perms allow             |
-| **Interactive conflict resolution preferred**                           | **Unison**                   | Mature interactive/tunable policy engine                                             | More friction in headless automation                                        |
-| **Multi-writer folder; avoid any silent overwrite**                     | **Syncthing**                | Uses conflict files rather than overwrite                                            | Safer for less-controlled edits; not deterministic                          |
+| **Dev loop; tons of small files; low latency**                          | **Mutagen**                  | Purpose-built for fast dev sync; very low overhead on edits                          | License differs; protocol/agent required                                         |
+| **Many devices; peer-to-peer mesh; zero central server**                | **Syncthing**                | Discovery, relay, NAT traversal, continuous                                          | Creates conflict copies on diverge (safer for multi-writer)                      |
+| **Non-technical users; desktop + mobile; web UI; version history**      | **Nextcloud** or **Dropbox** | Turnkey clients + history + sharing                                                  | Heavier footprint; server (Nextcloud) or cloud (Dropbox)                         |
+| **CI/CD cache or artifacts between two machines**                       | **ReflectSync**              | Deterministic, debuggable, rsync-efficient on large binaries                         | Keep file lists tight; parallelize rsync if needed                               |
+| **Large binary files with small edits over LAN**                        | **ReflectSync**              | rsync rolling checksum excels                                                        | Consider `--inplace` only if types won’t change and perms allow                  |
+| **Interactive conflict resolution preferred**                           | **Unison**                   | Mature interactive/tunable policy engine                                             | More friction in headless automation                                             |
+| **Multi-writer folder; avoid any silent overwrite**                     | **Syncthing**                | Uses conflict files rather than overwrite                                            | Safer for less-controlled edits; not deterministic                               |
 | **Windows-first environment**                                           | **Syncthing** / **Dropbox**  | Native UX; no rsync/WSL needed                                                       | **ReflectSync** works best via **WSL** (document this path)                      |
-| **Air-gapped / restricted SSH only**                                    | **ReflectSync**                   | rsync over SSH; explicit file lists; easy to audit                                   | Works well in regulated environments                                        |
-| **Exact promotion between environments (e.g., staging → prod)**         | **ReflectSync**                   | Precise deletes; type changes honored; no conflict files                             | Keep backups if human edits happen in prod                                  |
+| **Air-gapped / restricted SSH only**                                    | **ReflectSync**              | rsync over SSH; explicit file lists; easy to audit                                   | Works well in regulated environments                                             |
+| **Exact promotion between environments (e.g., staging → prod)**         | **ReflectSync**              | Precise deletes; type changes honored; no conflict files                             | Keep backups if human edits happen in prod                                       |
 | **One-way ingest to object storage (S3, etc.)**                         | **rclone** (adjacent tool)   | Direct backends; checksumming; retries                                               | Different problem space; can be combined with ReflectSync locally                |
 
 **Legend:**

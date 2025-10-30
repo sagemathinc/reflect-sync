@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   ensureSessionDb,
   getSessionDbPath,
-  getReflexSyncHome,
+  getReflectSyncHome,
   getOrCreateEngineId,
   createSession,
   updateSession,
@@ -25,6 +25,7 @@ import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
 import { ensureRemoteParentDir } from "./remote.js";
 import { CLI_NAME } from "./constants.js";
+import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 
 type Endpoint = { root: string; host?: string };
 
@@ -72,7 +73,7 @@ const SCHED = fileURLToPath(new URL("./scheduler.js", import.meta.url));
 // Spawn scheduler for a session row
 function spawnSchedulerForSession(sessionDb: string, row: any): number {
   // Ensure DB file paths exist (materialize if needed)
-  const home = getReflexSyncHome();
+  const home = getReflectSyncHome();
   const sessDir = deriveSessionPaths(row.id, home).dir;
   fs.mkdirSync(sessDir, { recursive: true });
 
@@ -90,6 +91,8 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
     row.base_db,
     "--prefer",
     row.prefer,
+    "--hash",
+    row.hash_alg,
   ];
 
   if (row.alpha_host) {
@@ -155,7 +158,7 @@ export function registerSessionCommands(program: Command) {
     else ensureSessionDb(getSessionDbPath());
   });
 
-  // `reflex-sync session create [options] <alpha> <beta>`
+  // `reflect-sync session create [options] <alpha> <beta>`
   session
     .command("create")
     .description("Create a new sync session (mutagen-like endpoint syntax)")
@@ -169,7 +172,16 @@ export function registerSessionCommands(program: Command) {
     )
     .option("-l, --label <k=v>", "add a label", collectLabels, [] as string[])
     .option("-p, --paused", "leave session paused (do not sync)", false)
+    .addOption(
+      new Option("--hash <algorithm>", "content hash algorithm")
+        .choices(listSupportedHashes())
+        .default(defaultHashAlg()),
+    )
     .action(async (alphaSpec: string, betaSpec: string, opts: any) => {
+      if (opts.listHashes) {
+        console.log(listSupportedHashes().join("\n"));
+        return;
+      }
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       ensureSessionDb(sessionDb);
@@ -186,12 +198,13 @@ export function registerSessionCommands(program: Command) {
           prefer: (opts.prefer || "alpha").toLowerCase(),
           alpha_host: a.host ?? null,
           beta_host: b.host ?? null,
+          hash_alg: opts.hash,
         },
         parseLabelPairs(opts.label || []),
       );
 
-      const engineId = getOrCreateEngineId(getReflexSyncHome()); // persistent local origin id
-      // [ ] TODO: should instead use a remote version of getReflexSyncHome here:
+      const engineId = getOrCreateEngineId(getReflectSyncHome()); // persistent local origin id
+      // [ ] TODO: should instead use a remote version of getReflectSyncHome here:
       const nsBase = `~/.local/share/${CLI_NAME}/by-origin/${engineId}/sessions/${id}`;
 
       let alphaRemoteDb: string | null = null;
@@ -226,8 +239,6 @@ export function registerSessionCommands(program: Command) {
         setDesiredState(sessionDb, id, "running");
         setActualState(sessionDb, id, pid ? "running" : "error");
         // Also persist PID
-        // (minor convenience; you may add a dedicated update if you like)
-        // @ts-ignore
         row.scheduler_pid = pid;
         console.log(`started session ${id} (pid ${pid})`);
       }
@@ -377,7 +388,7 @@ export function registerSessionCommands(program: Command) {
         }
         setDesiredState(sessionDb, id, "stopped");
         setActualState(sessionDb, id, "stopped");
-        const dir = deriveSessionPaths(id, getReflexSyncHome()).dir;
+        const dir = deriveSessionPaths(id, getReflectSyncHome()).dir;
         try {
           fs.rmSync(dir, { recursive: true, force: true });
         } catch {}
