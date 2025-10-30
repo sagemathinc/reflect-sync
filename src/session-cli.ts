@@ -1,7 +1,5 @@
 // --- imports near the top of cli.ts (add if not already present)
 import { Command, Option } from "commander";
-import path from "node:path";
-import os from "node:os";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -10,6 +8,7 @@ import {
   getSessionDbPath,
   getCcsyncHome,
   createSession,
+  updateSession,
   selectSessions,
   parseSelectorTokens,
   materializeSessionPaths,
@@ -21,14 +20,8 @@ import {
   deleteSessionById,
 } from "./session-db.js";
 import { registerSessionStatus } from "./session-status.js";
+import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
-
-// ---------- small utils ----------
-function expandHome(p: string): string {
-  if (!p) return p;
-  if (p.startsWith("~")) return path.join(os.homedir(), p.slice(1));
-  return p;
-}
 
 type Endpoint = { root: string; host?: string };
 
@@ -45,12 +38,10 @@ function parseEndpoint(spec: string): Endpoint {
     const root = spec.slice(colon + 1);
     if (host.includes("@") || /^[a-z0-9_.-]+$/.test(host)) {
       // keep ~ unexpanded for remote; resolve relative pieces a bit
-      return { host, root: root || "." };
+      return { host, root: root || "~" };
     }
   }
-  // local
-  const abs = path.resolve(expandHome(spec));
-  return { root: abs };
+  return { root: spec };
 }
 
 // Collect `-l/--label k=v` repeatables
@@ -167,14 +158,14 @@ export function registerSessionCommands(program: Command) {
     .description("Create a new sync session (mutagen-like endpoint syntax)")
     .argument("<alpha>", "alpha endpoint (local path or user@host:path)")
     .argument("<beta>", "beta endpoint (local path or user@host:path)")
-    .option("--name <name>", "human-friendly session name")
+    .option("-n, --name <name>", "human-friendly session name")
     .addOption(
       new Option("--prefer <side>", "conflict preference")
         .choices(["alpha", "beta"])
         .default("alpha"),
     )
     .option("-l, --label <k=v>", "add a label", collectLabels, [] as string[])
-    .option("--start", "start scheduler immediately", true)
+    .option("-p, --paused", "leave session paused (do not sync)", false)
     .action((alphaSpec: string, betaSpec: string, opts: any) => {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
@@ -183,39 +174,31 @@ export function registerSessionCommands(program: Command) {
       const a = parseEndpoint(alphaSpec);
       const b = parseEndpoint(betaSpec);
 
-      // Only expand ~ locally; leave ~ as-is for remote paths (expanded remotely).
-      const alpha_root = a.host
-        ? a.root || "."
-        : path.resolve(expandHome(a.root));
-      const beta_root = b.host
-        ? b.root || "."
-        : path.resolve(expandHome(b.root));
-
       const id = createSession(
         sessionDb,
         {
           name: opts.name ?? null,
-          alpha_root,
-          beta_root,
+          alpha_root: a.root,
+          beta_root: b.root,
           prefer: (opts.prefer || "alpha").toLowerCase(),
           alpha_host: a.host ?? null,
           beta_host: b.host ?? null,
-          // Remote DB defaults; allow overrides later via patch command if desired
-          alpha_remote_db: a.host ? "~/.cache/cocalc-sync/alpha.db" : null,
-          beta_remote_db: b.host ? "~/.cache/cocalc-sync/beta.db" : null,
-          remote_scan_cmd: "ccsync scan",
-          remote_watch_cmd: "ccsync watch",
         },
         parseLabelPairs(opts.label || []),
       );
+      if (a.host || b.host) {
+        updateSession(sessionDb, id, {
+          alpha_remote_db: a.host
+            ? `~/.local/share/ccsync/${id}/alpha.db`
+            : null,
+          beta_remote_db: b.host ? `~/.local/share/ccsync/${id}/beta.db` : null,
+        });
+      }
 
-      // Create per-session dir & DB files; write back into row
-      const paths = materializeSessionPaths(sessionDb, id);
-      // (No need to echo here; start will read from DB)
+      const paths = materializeSessionPaths(id);
 
       console.log(`created session ${id}${opts.name ? ` (${opts.name})` : ""}`);
-
-      if (opts.start) {
+      if (!opts.paused) {
         const row = loadSessionById(sessionDb, id)!;
         // merge materialized DBs into row for spawn
         row.base_db = paths.base_db;
@@ -279,42 +262,14 @@ export function registerSessionCommands(program: Command) {
       }
     });
 
-  // `ccsync session start <id...>`
-  session
-    .command("start")
-    .description("Start scheduler for one or more sessions")
-    .argument("<id...>", "session id(s)")
-    .action((ids: string[]) => {
-      const sessionDb =
-        program.getOptionValue("sessionDb") || getSessionDbPath();
+  registerSessionMonitor(session);
 
-      ids.map(Number).forEach((id) => {
-        const row = loadSessionById(sessionDb, id);
-        if (!row) {
-          console.error(`session ${id} not found`);
-          return;
-        }
-        // Ensure per-session DB paths are present
-        materializeSessionPaths(sessionDb, id);
-        const fresh = loadSessionById(sessionDb, id)!;
-        const pid = spawnSchedulerForSession(sessionDb, fresh);
-        setDesiredState(sessionDb, id, "running");
-        setActualState(sessionDb, id, pid ? "running" : "error");
-        if (pid) {
-          recordHeartbeat(sessionDb, id, "running", pid);
-        }
-        console.log(
-          pid
-            ? `started session ${id} (pid ${pid})`
-            : `failed to start session ${id}`,
-        );
-      });
-    });
+  registerSessionFlush(session);
 
-  // `ccsync session stop <id...>`
+  // `ccsync session pause <id...>`
   session
-    .command("stop")
-    .description("Stop scheduler for one or more sessions")
+    .command("pause")
+    .description("Pause sync for one or more sessions")
     .argument("<id...>", "session id(s)")
     .action((ids: string[]) => {
       const sessionDb =
@@ -327,14 +282,61 @@ export function registerSessionCommands(program: Command) {
           return;
         }
         const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
-        setDesiredState(sessionDb, id, "stopped");
-        setActualState(sessionDb, id, "stopped");
+        setDesiredState(sessionDb, id, "paused");
+        setActualState(sessionDb, id, "paused");
         console.log(
           ok
-            ? `stopped session ${id} (pid ${row.scheduler_pid})`
+            ? `paused session ${id} (pid ${row.scheduler_pid})`
             : `session ${id} was not running`,
         );
       });
+    });
+
+  // `ccsync session resume <id...>`
+  session
+    .command("resume")
+    .description("Resume sync for one or more sessions")
+    .argument("<id...>", "session id(s)")
+    .action((ids: string[]) => {
+      const sessionDb =
+        program.getOptionValue("sessionDb") || getSessionDbPath();
+
+      ids.map(Number).forEach((id) => {
+        const row = loadSessionById(sessionDb, id);
+        if (!row) {
+          console.error(`session ${id} not found`);
+          return;
+        }
+        // Ensure per-session DB paths are present
+        materializeSessionPaths(id);
+        const fresh = loadSessionById(sessionDb, id)!;
+        const pid = spawnSchedulerForSession(sessionDb, fresh);
+        setDesiredState(sessionDb, id, "running");
+        setActualState(sessionDb, id, pid ? "running" : "error");
+        if (pid) {
+          recordHeartbeat(sessionDb, id, "running", pid);
+        }
+        console.log(
+          pid
+            ? `resumed session ${id} (pid ${pid})`
+            : `failed to resume session ${id}`,
+        );
+      });
+    });
+
+  // `ccsync session resume <id...>`
+  session
+    .command("reset")
+    .description("Reset sync for one or more sessions")
+    .argument("<id...>", "session id(s)")
+    .action((ids: string[]) => {
+      //const sessionDb =
+      //  program.getOptionValue("sessionDb") || getSessionDbPath();
+
+      // [ ] TODO: need to basically do a terminate then create of exactly the session,
+      // without code duplication, so might requiore some refactor, or just
+      // call this script as a subprocess?
+      console.log("reset: TODO", ids);
     });
 
   // `ccsync session terminate <id...>` (stop + remove all session state)
@@ -361,11 +363,15 @@ export function registerSessionCommands(program: Command) {
         try {
           fs.rmSync(dir, { recursive: true, force: true });
         } catch {}
+        // [ ] TODO: need to get and delete the REMOTE session via ssh
+        // and if that fails, give an error.  We could allow it only
+        // with termiante --force.  The point is that otherwise a potentially
+        // huge sqlite3 database could be left on the other side, wasting
+        // space forever, and the user needs to be aware of this.
         deleteSessionById(sessionDb, id);
         console.log(`terminated session ${id}`);
       });
     });
 
   registerSessionStatus(session);
-  registerSessionFlush(session);
 }

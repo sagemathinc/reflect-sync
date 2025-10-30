@@ -265,8 +265,8 @@ export function createSession(
       now,
       now,
       input.name ?? null,
-      expandHome(input.alpha_root),
-      expandHome(input.beta_root),
+      input.alpha_root,
+      input.beta_root,
       input.prefer,
       input.alpha_host ?? null,
       input.beta_host ?? null,
@@ -297,6 +297,7 @@ export function updateSession(
   id: number,
   patch: SessionPatch,
 ): void {
+  console.log("updateSession", { id, patch });
   const db = open(sessionDbPath);
   try {
     const sets: string[] = [];
@@ -522,18 +523,11 @@ export function selectSessions(
 //   Convenience: create per-session dirs and update DB paths
 
 export function materializeSessionPaths(
-  sessionDbPath: string,
   id: number,
   home = getCcsyncHome(),
 ): { base_db: string; alpha_db: string; beta_db: string; events_db: string } {
   const derived = deriveSessionPaths(id, home);
   ensureDir(derived.dir);
-  updateSession(sessionDbPath, id, {
-    base_db: derived.base_db,
-    alpha_db: derived.alpha_db,
-    beta_db: derived.beta_db,
-    events_db: derived.events_db,
-  });
   return {
     base_db: derived.base_db,
     alpha_db: derived.alpha_db,

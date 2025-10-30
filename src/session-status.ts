@@ -29,10 +29,7 @@ function fmtAgo(ts?: number | null): string {
   return `${h}h ${m % 60}m`;
 }
 
-function tryGetLabels(
-  db: Database,
-  sessionId: number,
-): Record<string, string> {
+function tryGetLabels(db: Database, sessionId: number): Record<string, string> {
   try {
     const rows = db
       .prepare(
@@ -69,10 +66,7 @@ function getState(db: Database, sessionId: number): AnyRow | null {
   }
 }
 
-function getLastHeartbeat(
-  db: Database,
-  sessionId: number,
-): AnyRow | null {
+function getLastHeartbeat(db: Database, sessionId: number): AnyRow | null {
   try {
     const row = db
       .prepare(
@@ -159,6 +153,10 @@ function tableOutput(
     if (sess.base_db) add("base db", sess.base_db);
     if (sess.alpha_db) add("alpha db", sess.alpha_db);
     if (sess.beta_db) add("beta db", sess.beta_db);
+    if (sess.alpha_remote_db)
+      add("alpha remote", `${sess.alpha_host}:${sess.alpha_remote_db}`);
+    if (sess.beta_remote_db)
+      add("beta remote", `${sess.beta_host}:${sess.beta_remote_db}`);
     if (sess.created_at)
       add("created", new Date(sess.created_at).toISOString());
   }
@@ -229,11 +227,13 @@ export function registerSessionStatus(sessionCmd: Command) {
                   host: sess.alpha_host ?? null,
                   root: sess.alpha_root ?? null,
                   db: sess.alpha_db ?? null,
+                  alpha_remote_db: sess.alpha_remote_db,
                 },
                 beta: {
                   host: sess.beta_host ?? null,
                   root: sess.beta_root ?? null,
                   db: sess.beta_db ?? null,
+                  beta_remote_db: sess.beta_remote_db,
                 },
                 baseDb: sess.base_db ?? null,
                 prefer: sess.prefer ?? null,
