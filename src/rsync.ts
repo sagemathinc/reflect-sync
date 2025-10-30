@@ -10,6 +10,165 @@ import { finished } from "node:stream/promises";
 // can be massive, of course.
 const verbose2 = !!process.env.CCSYNC_VERBOSE2;
 
+const RSYNC_COPY_CHUNK = Number(process.env.RSYNC_COPY_CHUNK ?? 10_000);
+const RSYNC_COPY_CONCURRENCY = Number(process.env.RSYNC_COPY_CONCURRENCY ?? 2);
+const RSYNC_DIR_CHUNK = Number(process.env.RSYNC_DIR_CHUNK ?? 20_000);
+
+async function parallelMapLimit<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const k = Math.max(1, Math.min(concurrency, items.length));
+  let i = 0;
+  const workers = Array.from({ length: k }, async () => {
+    while (true) {
+      const idx = i++;
+      if (idx >= items.length) break;
+      await fn(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function parentDirsOf(rpaths: string[]): string[] {
+  const s = new Set<string>();
+  for (const p of rpaths) {
+    const d = path.posix.dirname(p);
+    if (d && d !== ".") s.add(d);
+  }
+  // Sort shallowest-first so mkdir walk is cache-friendly
+  return Array.from(s).sort((a, b) => a.length - b.length || (a < b ? -1 : 1));
+}
+
+export async function rsyncCopyDirsChunked(
+  workDir: string,
+  fromRoot: string,
+  toRoot: string,
+  dirRpaths: string[],
+  label: string,
+  opts: {
+    chunkSize?: number;
+    concurrency?: number; // dirs usually OK at 2–4 as well
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+  } = {},
+): Promise<void> {
+  if (!dirRpaths.length) return;
+  const chunkSize = opts.chunkSize ?? RSYNC_DIR_CHUNK;
+  const concurrency = opts.concurrency ?? Math.min(4, RSYNC_COPY_CONCURRENCY);
+
+  const sorted = Array.from(new Set(dirRpaths)).sort(); // stable, deduped
+  const batches = chunk(sorted, chunkSize);
+
+  if (opts.verbose) {
+    console.log(
+      `>>> rsync mkdir ${label}: ${sorted.length} dirs in ${batches.length} batches (chunk=${chunkSize}, conc=${concurrency})`,
+    );
+  }
+
+  // Prepare list files first to reduce interleaving on disk
+  const listFiles: string[] = [];
+  for (let i = 0; i < batches.length; i++) {
+    const lf = path.join(
+      workDir,
+      `${label.replace(/[\s\(\)]+/g, "-")}.dirs.${i}.list`,
+    );
+    await writeNulList(lf, batches[i]);
+    listFiles.push(lf);
+  }
+
+  await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
+    if (opts.verbose) {
+      console.log(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
+    }
+    await rsyncCopyDirs(
+      fromRoot,
+      toRoot,
+      lf,
+      `${label} (dirs chunk ${idx + 1})`,
+      {
+        dryRun: opts.dryRun,
+        verbose: opts.verbose,
+      },
+    );
+  });
+}
+
+export async function rsyncCopyChunked(
+  workDir: string,
+  fromRoot: string,
+  toRoot: string,
+  fileRpaths: string[],
+  label: string,
+  opts: {
+    chunkSize?: number;
+    concurrency?: number;
+    precreateDirs?: boolean; // precreate parent dirs with -d
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+  } = {},
+): Promise<{ ok: boolean }> {
+  if (!fileRpaths.length) return { ok: true };
+
+  const chunkSize = opts.chunkSize ?? RSYNC_COPY_CHUNK;
+  const concurrency = opts.concurrency ?? RSYNC_COPY_CONCURRENCY;
+
+  // Sort for locality; dedupe
+  const sorted = Array.from(new Set(fileRpaths)).sort();
+  const batches = chunk(sorted, chunkSize);
+
+  if (opts.verbose) {
+    console.log(
+      `>>> rsync copy ${label}: ${sorted.length} files in ${batches.length} batches (chunk=${chunkSize}, conc=${concurrency})`,
+    );
+  }
+
+  // Optional: precreate parent directories once (chunked) to avoid per-chunk mkdir pressure.
+  if (opts.precreateDirs !== false) {
+    const dirs = parentDirsOf(sorted);
+    if (dirs.length) {
+      await rsyncCopyDirsChunked(workDir, fromRoot, toRoot, dirs, `${label}`, {
+        dryRun: opts.dryRun,
+        verbose: opts.verbose,
+      });
+    }
+  }
+
+  // Pre-write list files to disk to keep worker bodies small
+  const listFiles: string[] = [];
+  for (let i = 0; i < batches.length; i++) {
+    const lf = path.join(
+      workDir,
+      `${label.replace(/[\s\(\)]+/g, "-")}.files.${i}.list`,
+    );
+    await writeNulList(lf, batches[i]);
+    listFiles.push(lf);
+  }
+
+  let allOk = true;
+
+  await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
+    if (opts.verbose) {
+      console.log(`>>> rsync copy ${label} [${idx + 1}/${listFiles.length}]`);
+    }
+    const { ok } = await rsyncCopy(
+      fromRoot,
+      toRoot,
+      lf,
+      `${label} (chunk ${idx + 1})`,
+      {
+        dryRun: opts.dryRun,
+        verbose: opts.verbose,
+      },
+    );
+    if (!ok) allOk = false;
+  });
+
+  return { ok: allOk };
+}
+
 // ---------- helpers that used to be local to merge ----------
 export function ensureTrailingSlash(root: string): string {
   return root.endsWith("/") ? root : root + "/";

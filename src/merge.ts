@@ -9,7 +9,11 @@ import { cliEntrypoint } from "./cli-util.js";
 import { getBaseDb, getDb } from "./db.js";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
 import { IGNORE_FILE } from "./constants.js";
-import { rsyncCopy, rsyncCopyDirs, rsyncDeleteChunked } from "./rsync.js";
+import {
+  rsyncCopyChunked,
+  rsyncCopyDirs,
+  rsyncDeleteChunked,
+} from "./rsync.js";
 import { xxh3 } from "@node-rs/xxhash";
 import { hex128 } from "./hash.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
@@ -1111,8 +1115,11 @@ export async function runMerge({
       delDirsInBeta = sortDeepestFirst(nonRoot(delDirsInBeta));
       delDirsInAlpha = sortDeepestFirst(nonRoot(delDirsInAlpha));
 
-      await writeFile(listToBeta, join0(makeRelative(toBeta, betaRoot)));
-      await writeFile(listToAlpha, join0(makeRelative(toAlpha, alphaRoot)));
+      const toBetaRelative = makeRelative(toBeta, betaRoot);
+      const toAlphaRelative = makeRelative(toAlpha, alphaRoot);
+
+      await writeFile(listToBeta, join0(toBetaRelative));
+      await writeFile(listToAlpha, join0(toAlphaRelative));
       await writeFile(listDelInBeta, join0(delInBeta));
       await writeFile(listDelInAlpha, join0(delInAlpha));
 
@@ -1238,22 +1245,49 @@ export async function runMerge({
           }
           done();
           done = t("rsync: 3) copy files -- falling back to rsync");
-          // run your existing rsyncCopy(...) calls here
           copyAlphaBetaOk = (
-            await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
+            await rsyncCopyChunked(
+              tmp,
+              alpha,
+              beta,
+              toBetaRelative,
+              "alpha→beta",
+              rsyncOpts,
+            )
           ).ok;
           copyBetaAlphaOk = (
-            await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
+            await rsyncCopyChunked(
+              tmp,
+              beta,
+              alpha,
+              toAlphaRelative,
+              "beta→alpha",
+              rsyncOpts,
+            )
           ).ok;
         }
       } else {
         // 3) copy files
         done = t("rsync: 3) copy files");
         copyAlphaBetaOk = (
-          await rsyncCopy(alpha, beta, listToBeta, "alpha→beta", rsyncOpts)
+          await rsyncCopyChunked(
+            tmp,
+            alpha,
+            beta,
+            toBetaRelative,
+            "alpha→beta",
+            rsyncOpts,
+          )
         ).ok;
         copyBetaAlphaOk = (
-          await rsyncCopy(beta, alpha, listToAlpha, "beta→alpha", rsyncOpts)
+          await rsyncCopyChunked(
+            tmp,
+            beta,
+            alpha,
+            toAlphaRelative,
+            "beta→alpha",
+            rsyncOpts,
+          )
         ).ok;
         done();
       }
