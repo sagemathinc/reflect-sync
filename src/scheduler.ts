@@ -5,7 +5,7 @@
 //
 // Notes:
 // * Local watchers only; remote changes arrive via remote watch stream.
-// * Full-cycle still uses "ccsync merge" (see merge.ts).
+// * Full-cycle still uses "reflect merge" (see merge.ts).
 
 import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
 import chokidar from "chokidar";
@@ -22,11 +22,11 @@ import {
   isRecent,
 } from "./hotwatch.js";
 import { ensureSessionDb, SessionWriter } from "./session-db.js";
-import { MAX_WATCHERS } from "./defaults.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
 import { expandHome, isRoot } from "./remote.js";
+import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -43,8 +43,8 @@ export type SchedulerOptions = {
   alphaRemoteDb: string;
   betaRemoteDb: string;
 
-  remoteScanCmd: string; // e.g. "ccsync scan"
-  remoteWatchCmd: string; // e.g. "ccsync watch"
+  remoteScanCmd: string; // e.g. "CLI_NAME scan"
+  remoteWatchCmd: string; // e.g. "CLI_NAME watch"
   disableHotWatch: boolean;
 
   sessionDb?: string;
@@ -54,7 +54,7 @@ export type SchedulerOptions = {
 // ---------- CLI ----------
 function buildProgram(): Command {
   const program = new Command()
-    .name("ccsync-scheduler")
+    .name(`${CLI_NAME}-scheduler`)
     .description("Orchestration of scanning, watching, syncing");
 
   program
@@ -79,19 +79,23 @@ function buildProgram(): Command {
     .option(
       "--alpha-remote-db <file>",
       "remote path to alpha sqlite db (on the SSH host)",
-      `~/.cache/ccsync/alpha.db`,
+      `~/.cache/${CLI_NAME}/alpha.db`,
     )
     .option(
       "--beta-remote-db <file>",
       "remote path to beta sqlite db (on the SSH host)",
-      `~/.cache/ccsync/beta.db`,
+      `~/.cache/${CLI_NAME}/beta.db`,
     )
     // commands to run on remote for scan/micro-watch
-    .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")
+    .option(
+      "--remote-scan-cmd <cmd>",
+      "remote scan command",
+      `${CLI_NAME} scan`,
+    )
     .option(
       "--remote-watch-cmd <cmd>",
       "remote watch command for micro-sync (emits NDJSON lines)",
-      "ccsync watch",
+      `${CLI_NAME} watch`,
     )
     .option(
       "--disable-hot-watch",
@@ -189,12 +193,12 @@ export async function runScheduler({
   alphaRoot = await expandHome(alphaRoot, alphaHost, verbose);
   betaRoot = await expandHome(betaRoot, betaHost, verbose);
   alphaRemoteDb = await expandHome(
-    alphaRemoteDb || "~/.cache/ccsync/alpha.db",
+    alphaRemoteDb || `~/.cache/${CLI_NAME}/alpha.db`,
     alphaHost,
     verbose,
   );
   betaRemoteDb = await expandHome(
-    betaRemoteDb || "~/.cache/ccsync/beta.db",
+    betaRemoteDb || `~/.cache/${CLI_NAME}/beta.db`,
     betaHost,
     verbose,
   );
@@ -287,7 +291,7 @@ export async function runScheduler({
     return r;
   }
 
-  // Pipe: ssh scan --emit-delta  →  ccsync ingest --db <local.db>
+  // Pipe: ssh scan --emit-delta  →  CLI_NAME ingest --db <local.db>
   function splitCmd(s: string): string[] {
     return s.trim().split(/\s+/);
   }
@@ -343,8 +347,8 @@ export async function runScheduler({
     });
 
     const ingestArgs = ["ingest", "--db", params.localDb];
-    if (verbose) console.log("ccsync", ingestArgs.join(" "));
-    const ingestP = spawn("ccsync", ingestArgs, {
+    if (verbose) console.log(CLI_NAME, ingestArgs.join(" "));
+    const ingestP = spawn(CLI_NAME, ingestArgs, {
       stdio: [
         "pipe",
         verbose ? "inherit" : "ignore",
@@ -401,7 +405,7 @@ export async function runScheduler({
     });
 
     const ingestArgs = ["ingest", "--db", localDb];
-    const ingestP = spawn("ccsync", ingestArgs, {
+    const ingestP = spawn(CLI_NAME, ingestArgs, {
       stdio: [
         "pipe",
         verbose ? "inherit" : "ignore",
@@ -688,7 +692,7 @@ export async function runScheduler({
             numericIds,
           })
         : await spawnTask(
-            "ccsync",
+            CLI_NAME,
             ["scan", "--root", alphaRoot, "--db", alphaDb].concat(
               verbose ? ["--verbose"] : [],
               numericIds ? ["--numeric-ids"] : [],
@@ -719,7 +723,7 @@ export async function runScheduler({
             numericIds,
           })
         : await spawnTask(
-            "ccsync",
+            CLI_NAME,
             ["scan", "--root", betaRoot, "--db", betaDb].concat(
               verbose ? ["--verbose"] : [],
               numericIds ? ["--numeric-ids"] : [],
@@ -757,7 +761,7 @@ export async function runScheduler({
     if (dryRun) mArgs.push("--dry-run");
     if (verbose) mArgs.push("--verbose");
 
-    const m = await spawnTask("ccsync", mArgs);
+    const m = await spawnTask(CLI_NAME, mArgs);
 
     const ms = Date.now() - t0;
     lastCycleMs = ms;

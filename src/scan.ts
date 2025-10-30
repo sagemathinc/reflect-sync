@@ -12,12 +12,13 @@ import path from "node:path";
 import { loadIgnoreFile } from "./ignore.js";
 import { toRel } from "./path-rel.js";
 import { isRecent } from "./hotwatch.js";
+import { CLI_NAME } from "./constants.js";
 
 function buildProgram(): Command {
   const program = new Command();
 
   return program
-    .name("ccsync-scan")
+    .name(`${CLI_NAME}-scan`)
     .description("Run a local scan writing to sqlite database")
     .requiredOption("--root <path>", "directory to scan")
     .requiredOption("--db <file>", "path to sqlite database")

@@ -99,7 +99,7 @@ describe("SSH remote sync", () => {
       throw Error("ssh localhost unavailable; skipping remote-watch test");
     }
 
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-ssh-watch-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-ssh-watch-"));
     alphaRoot = join(tmp, "alpha-local");
     betaRootRemote = join(tmp, "beta-remote");
     alphaDb = join(tmp, "alpha.db");

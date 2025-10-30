@@ -8,11 +8,11 @@ import { finished } from "node:stream/promises";
 
 // extremely verbose -- showing all output of rsync, which
 // can be massive, of course.
-const verbose2 = !!process.env.CCSYNC_VERBOSE2;
+const verbose2 = !!process.env.RFSYNC_VERBOSE2;
 
-const RSYNC_COPY_CHUNK = Number(process.env.RSYNC_COPY_CHUNK ?? 10_000);
-const RSYNC_COPY_CONCURRENCY = Number(process.env.RSYNC_COPY_CONCURRENCY ?? 2);
-const RSYNC_DIR_CHUNK = Number(process.env.RSYNC_DIR_CHUNK ?? 20_000);
+const RSYNC_COPY_CHUNK = Number(process.env.RFSYNC_COPY_CHUNK ?? 10_000);
+const RSYNC_COPY_CONCURRENCY = Number(process.env.RFSYNC_COPY_CONCURRENCY ?? 2);
+const RSYNC_DIR_CHUNK = Number(process.env.RFSYNC_DIR_CHUNK ?? 20_000);
 
 async function parallelMapLimit<T>(
   items: T[],

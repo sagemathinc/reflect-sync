@@ -14,8 +14,8 @@ import {
   isRecent,
 } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
-import { MAX_WATCHERS } from "./defaults.js";
 import { inspect } from "node:util";
+import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -210,7 +210,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
 // ---------- CLI ----------
 function buildProgram() {
   const program = new Command()
-    .name("ccsync watch")
+    .name(`${CLI_NAME}-watch`)
     .description(
       "Watch a tree and emit NDJSON events to stdout; control via JSON on stdin.",
     );

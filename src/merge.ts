@@ -8,7 +8,7 @@ import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { getBaseDb, getDb } from "./db.js";
 import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
-import { IGNORE_FILE } from "./constants.js";
+import { CLI_NAME, IGNORE_FILE } from "./constants.js";
 import {
   rsyncCopyChunked,
   rsyncCopyDirs,
@@ -24,7 +24,7 @@ const LEAVE_TEMP_FILES = false;
 function buildProgram(): Command {
   const program = new Command();
   return program
-    .command("ccsync-merge-rsync")
+    .command(`${CLI_NAME}-merge`)
     .description("3-way plan + rsync between alpha/beta; updates base snapshot")
     .requiredOption("--alpha-root <path>", "alpha filesystem root")
     .requiredOption("--beta-root <path>", "beta filesystem root")

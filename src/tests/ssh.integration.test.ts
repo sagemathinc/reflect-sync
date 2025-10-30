@@ -1,9 +1,9 @@
 /* ssh.integration.test.ts
 
-SSH integration tests for ccsync.
+SSH integration tests for reflex-sync.
 
 Skips unless both:
-- env variable CCSYNC_SKIP_SSH_TEST is NOT set
+- env variable RFSYNC_SKIP_SSH_TEST is NOT set
 - sshd is reachable on localhost
 
 It:
@@ -82,7 +82,7 @@ async function runScanOverSshIntoIngest(opts: {
   });
 }
 
-const sshEnabled = process.env.CCSYNC_SKIP_SSH_TEST === undefined;
+const sshEnabled = process.env.RFSYNC_SKIP_SSH_TEST === undefined;
 
 (sshEnabled ? describe : describe.skip)(
   "SSH: remote scan -> local ingest",
@@ -97,7 +97,7 @@ const sshEnabled = process.env.CCSYNC_SKIP_SSH_TEST === undefined;
       }
 
       // temp dirs
-      tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ccsync-ssh-test-"));
+      tmp = await fs.mkdtemp(path.join(os.tmpdir(), "rfsync-ssh-test-"));
       aRoot = path.join(tmp, "alpha");
       await fs.mkdir(aRoot, { recursive: true });
 

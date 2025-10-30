@@ -11,11 +11,11 @@ import { join } from "node:path";
 import os from "node:os";
 import { IGNORE_FILE } from "../constants";
 
-describe("ccsync: ignore rules (IGNORE_FILE)", () => {
+describe("rfsync: ignore rules (IGNORE_FILE)", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-ignores-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-ignores-"));
   });
 
   afterAll(async () => {

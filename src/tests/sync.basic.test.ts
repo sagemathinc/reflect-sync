@@ -5,11 +5,11 @@ import fsp from "node:fs/promises";
 import { join, dirname } from "node:path";
 import os from "node:os";
 
-describe("ccsync: scan → merge simple tests and conflicts (part 1)", () => {
+describe("scan → merge simple tests and conflicts (part 1)", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-"));
   });
 
   afterAll(async () => {

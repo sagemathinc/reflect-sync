@@ -3,13 +3,13 @@
 import { Command, Option } from "commander";
 import { createRequire } from "node:module";
 import { registerSessionCommands } from "./session-cli.js";
-import { MAX_WATCHERS } from "./defaults.js";
+import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");
 
 const program = new Command()
-  .name("ccsync")
+  .name(CLI_NAME)
   .description("Fast rsync-powered two-way sync with SQLite metadata and SSH")
   .version(version);
 
@@ -105,19 +105,19 @@ program
   .option(
     "--alpha-remote-db <file>",
     "remote alpha sqlite DB path (on SSH host)",
-    `~/.cache/ccsync/alpha.db`,
+    `~/.local/share/${CLI_NAME}/alpha.db`,
   )
   .option(
     "--beta-remote-db <file>",
     "remote beta sqlite DB path (on SSH host)",
-    `~/.cache/ccsync/beta.db`,
+    `~/.local/share/${CLI_NAME}/beta.db`,
   )
   // commands to run remotely
-  .option("--remote-scan-cmd <cmd>", "remote scan command", "ccsync scan")
+  .option("--remote-scan-cmd <cmd>", "remote scan command", `${CLI_NAME} scan`)
   .option(
     "--remote-watch-cmd <cmd>",
     "remote watch command for micro-sync (emits NDJSON)",
-    "ccsync watch",
+    `${CLI_NAME} watch`,
   )
   .option("--disable-hot-watch", "only sync during the full sync cycle", false)
   .action(async (opts, command) => {

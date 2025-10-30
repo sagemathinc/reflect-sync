@@ -8,7 +8,7 @@ describe("LWW: delete vs modify", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-lww-2-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-lww-2-"));
   });
 
   afterAll(async () => {

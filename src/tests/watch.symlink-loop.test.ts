@@ -18,7 +18,7 @@ describe("HotWatchManager + sync: self-referential symlink loop", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-watch-loop-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-watch-loop-"));
   });
 
   afterAll(async () => {

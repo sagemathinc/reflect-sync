@@ -1,10 +1,9 @@
 // src/hotwatch.ts
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
-import { MAX_WATCHERS } from "./defaults.js";
 import ignore from "ignore";
 import { access, readFile, stat } from "node:fs/promises";
-import { IGNORE_FILE } from "./constants.js";
+import { IGNORE_FILE, MAX_WATCHERS } from "./constants.js";
 
 export type HotWatchEvent =
   | "add"
@@ -70,7 +69,7 @@ export class HotWatchManager {
   private lru: string[] = []; // oldest first
   private opts: Required<HotWatchOptions>;
 
-  // local .ccsyncignore matcher (hot-reloaded)
+  // local ignore matcher (hot-reloaded)
   private ig: ReturnType<typeof ignore> | null = null;
   private igWatcher: FSWatcher | null = null;
 
@@ -91,7 +90,7 @@ export class HotWatchManager {
       verbose: !!opts.verbose,
     };
 
-    // kick off initial load of .ccsyncignore and watch it for changes
+    // kick off initial load of ignore and watch it for changes
     this.reloadIg();
     this.watchIgnoreFile();
   }
@@ -136,7 +135,7 @@ export class HotWatchManager {
   }
 
   /**
-   * Combined ignore: local .ccsyncignore OR external predicate (e.g., other side).
+   * Combined ignore: local ignore OR external predicate (e.g., other side).
    */
   isIgnored(rpath: string, isDir: boolean): boolean {
     if (rpath.split("/").pop() == IGNORE_FILE) {

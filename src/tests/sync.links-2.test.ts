@@ -10,11 +10,11 @@ import { join } from "node:path";
 import os from "node:os";
 import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
 
-describe("ccsync: more symlink edge case tests", () => {
+describe("reflex-sync: more symlink edge case tests", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-links-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-links-"));
   });
 
   afterAll(async () => {

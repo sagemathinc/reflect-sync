@@ -1,6 +1,6 @@
 // ssh-util.ts
 
-// Helper functions for unit testing ccsync over ssh.
+// Helper functions for unit testing rfsync over ssh.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
@@ -32,9 +32,9 @@ export async function canSshLocalhost(): Promise<boolean> {
 
 // Create a temp ed25519 keypair, append public key to authorized_keys with markers, and return cleanup.
 export async function withTempSshKey() {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "ccsync-ssh-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "rfsync-ssh-"));
   const keyPath = path.join(tmp, "id_ed25519");
-  const comment = `ccsync-test-${crypto.randomBytes(6).toString("hex")}`;
+  const comment = `rfsync-test-${crypto.randomBytes(6).toString("hex")}`;
 
   // Generate keypair
   await new Promise<void>((resolve, reject) => {

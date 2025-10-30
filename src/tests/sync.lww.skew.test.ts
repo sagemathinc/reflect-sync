@@ -47,7 +47,7 @@ describe("LWW with clock skew (beta considered remote via ingest)", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-lww-3-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-lww-3-"));
   });
 
   afterAll(async () => {

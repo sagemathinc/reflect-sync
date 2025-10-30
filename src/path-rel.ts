@@ -1,7 +1,7 @@
 // src/path-rel.ts
 import path from "node:path";
 
-// posix only (ccsync is posix); if you want robust, use path.posix explicitly.
+// posix only FOR NOW (TODO!)
 export function toRel(abs: string, root: string): string {
   if (abs === root) return ""; // canonical root row in dirs
   if (abs.startsWith(root + "/")) return abs.slice(root.length + 1);

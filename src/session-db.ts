@@ -4,11 +4,12 @@ import fs from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { CLI_NAME } from "./constants.js";
 
 // Paths & Home
 
-export function getCcsyncHome(): string {
-  const explicit = process.env.CCSYNC_HOME?.trim();
+export function getReflexSyncHome(): string {
+  const explicit = process.env.RFSYNC_HOME?.trim();
   if (explicit) {
     return ensureDir(expandHome(explicit));
   }
@@ -16,24 +17,24 @@ export function getCcsyncHome(): string {
   // XDG first
   const xdg = process.env.XDG_DATA_HOME;
   if (xdg && xdg.trim()) {
-    return ensureDir(join(expandHome(xdg), "ccsync"));
+    return ensureDir(join(expandHome(xdg), CLI_NAME));
   }
 
   // Platform defaults
   const home = os.homedir();
   if (process.platform === "darwin") {
-    return ensureDir(join(home, "Library", "Application Support", "ccsync"));
+    return ensureDir(join(home, "Library", "Application Support", CLI_NAME));
   }
   if (process.platform === "win32") {
     const appData = process.env.APPDATA || join(home, "AppData", "Roaming");
-    return ensureDir(join(appData, "ccsync"));
+    return ensureDir(join(appData, CLI_NAME));
   }
   // Linux/other
-  return ensureDir(join(home, ".local", "share", "ccsync"));
+  return ensureDir(join(home, ".local", "share", CLI_NAME));
 }
 
-// A persistent local identifier for this ccsync "origin"/installation.
-export function getOrCreateEngineId(home = getCcsyncHome()): string {
+// A persistent local identifier for this CLI_NAME "origin"/installation.
+export function getOrCreateEngineId(home = getReflexSyncHome()): string {
   const p = join(home, "engine.id");
   try {
     const s = fs.readFileSync(p, "utf8").trim();
@@ -51,15 +52,15 @@ export function getOrCreateEngineId(home = getCcsyncHome()): string {
   return raw;
 }
 
-export function getSessionDbPath(home = getCcsyncHome()): string {
+export function getSessionDbPath(home = getReflexSyncHome()): string {
   return join(home, "sessions.db");
 }
 
-export function sessionDir(id: number, home = getCcsyncHome()): string {
+export function sessionDir(id: number, home = getReflexSyncHome()): string {
   return join(home, "sessions", String(id));
 }
 
-export function deriveSessionPaths(id: number, home = getCcsyncHome()) {
+export function deriveSessionPaths(id: number, home = getReflexSyncHome()) {
   const dir = sessionDir(id, home);
   return {
     dir,
@@ -176,8 +177,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         beta_host        TEXT,
         alpha_remote_db  TEXT,
         beta_remote_db   TEXT,
-        remote_scan_cmd  TEXT DEFAULT 'ccsync scan',
-        remote_watch_cmd TEXT DEFAULT 'ccsync watch',
+        remote_scan_cmd  TEXT DEFAULT '${CLI_NAME} scan',
+        remote_watch_cmd TEXT DEFAULT '${CLI_NAME} watch',
 
         base_db          TEXT,
         alpha_db         TEXT,
@@ -292,8 +293,8 @@ export function createSession(
       input.beta_host ?? null,
       input.alpha_remote_db ?? null,
       input.beta_remote_db ?? null,
-      input.remote_scan_cmd ?? "ccsync scan",
-      input.remote_watch_cmd ?? "ccsync watch",
+      input.remote_scan_cmd ?? `${CLI_NAME} scan`,
+      input.remote_watch_cmd ?? `${CLI_NAME} watch`,
     );
     const id = Number(info.lastInsertRowid);
 
@@ -543,7 +544,7 @@ export function selectSessions(
 
 export function materializeSessionPaths(
   id: number,
-  home = getCcsyncHome(),
+  home = getReflexSyncHome(),
 ): { base_db: string; alpha_db: string; beta_db: string; events_db: string } {
   const derived = deriveSessionPaths(id, home);
   ensureDir(derived.dir);

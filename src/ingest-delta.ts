@@ -17,6 +17,7 @@ import readline from "node:readline";
 import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
+import { CLI_NAME } from "./constants.js";
 
 // SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are for skew/future handling.
 // See comments in the original version for rationale.
@@ -26,7 +27,7 @@ const CAP_BACKOFF_MS = Number(process.env.FUTURE_CAP_BACKOFF_MS ?? 1);
 
 function buildProgram(): Command {
   const program = new Command()
-    .name("ccsync-ingest-delta")
+    .name(`${CLI_NAME}-ingest-delta`)
     .description("Ingest NDJSON deltas from stdin into a local sqlite db");
 
   program.requiredOption("--db <path>", "sqlite db file");

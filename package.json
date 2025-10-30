@@ -1,6 +1,6 @@
 {
-  "name": "ccsync",
-  "version": "0.6.4",
+  "name": "reflect-sync",
+  "version": "0.7.0",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
@@ -12,12 +12,13 @@
   },
   "types": "dist/index.d.ts",
   "bin": {
-    "ccsync": "bin/ccsync.mjs"
+    "reflect": "bin/reflect-sync.mjs",
+    "rfsync": "bin/reflect-sync.mjs",
+    "reflect-sync": "bin/reflect-sync.mjs"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist node_modules",
-    "prepare": "pnpm test",
     "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest",
     "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch"
   },
@@ -48,7 +49,7 @@
   "author": "William Stein (wstein@sagemath.com)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sagemathinc/ccsync"
+    "url": "https://github.com/sagemathinc/reflect-sync"
   },
-  "homepage": "https://github.com/sagemathinc/ccsync"
+  "homepage": "https://github.com/sagemathinc/reflect-sync"
 }

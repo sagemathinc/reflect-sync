@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import os from "node:os";
 
-describe("ccsync: future capabilities", () => {
+describe("rfsync: future capabilities", () => {
   let tmp: string;
 
   beforeAll(async () => {

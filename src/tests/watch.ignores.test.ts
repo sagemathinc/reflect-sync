@@ -23,7 +23,7 @@ describe("HotWatchManager + ignores", () => {
   };
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-watch-ignores-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-watch-ignores-"));
   });
 
   afterEach(async () => {
@@ -34,7 +34,7 @@ describe("HotWatchManager + ignores", () => {
     resetLog();
     // clear directory contents between tests
     await fsp.rm(tmp, { recursive: true, force: true });
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-watch-ignores-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-watch-ignores-"));
   });
 
   afterAll(async () => {
@@ -60,7 +60,7 @@ describe("HotWatchManager + ignores", () => {
 
     await wait(300); // allow chokidar to settle
 
-    // We might still see an 'add' for .ccsyncignore depending on timing, but no dist/* events.
+    // We might still see an 'add' for IGNORE_FILE depending on timing, but no dist/* events.
     const anyDist = seen.some((e) => e.abs.includes("/dist/"));
     expect(anyDist).toBe(false);
   });
@@ -91,7 +91,7 @@ describe("HotWatchManager + ignores", () => {
     expect(seen.length).toBe(0);
   });
 
-  test("hot-reload: adding .ccsyncignore live suppresses subsequent events", async () => {
+  test("hot-reload: adding ignore file live suppresses subsequent events", async () => {
     mgr = new HotWatchManager(tmp, onHotEvent, {
       hotDepth: 2,
       awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 20 },

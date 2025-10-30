@@ -1,8 +1,8 @@
-# Design Details
+# ReflectSync Design Details
 
 ## Motivation & relationship to [Mutagen](https://mutagen.io/)
 
-`ccsync` borrows the **algorithmic shape** of Mutagen’s two-way sync (periodic full scans + watching + a 3-way merge over a snapshot base) but makes a few big, pragmatic pivots:
+**ReflectSync** borrows the **algorithmic shape** of Mutagen’s two-way sync (periodic full scans + watching + a 3-way merge over a snapshot base) but makes a few big, pragmatic pivots:
 
 - **Use SQLite for metadata**, not in-memory graphs. That makes RAM use predictable, lets us handle millions of files, and gives us query power (recent changes, “du”-like stats, search).
 - **Use rsync for transport**, not a reimplementation. Rsync is battle-hardened, has great flags for exactly the workflows we need, and is easy to reason about/debug in production.
@@ -36,7 +36,7 @@ This yields scan times that largely scale with **“bytes changed”**, not “f
 
 ## Three-way merge planner (SQL)
 
-Three\-way merge is accomplished by simply doing SQL queries.  This is nice because it's just declarative SQL, hence easy to read and understand.  The queries deal with merge conflicts using **last write wins**, with tie breaking via a preference.
+Three\-way merge is accomplished by simply doing SQL queries. This is nice because it's just declarative SQL, hence easy to read and understand. The queries deal with merge conflicts using **last write wins**, with tie breaking via a preference.
 
 ---
 
@@ -110,7 +110,7 @@ Typical large-tree outcomes we’ve seen:
 
 ## Tradeoffs & known limitations (current)
 
-- **Dirs/links**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate.  Directories and symlinks are sync'd, just not immediately.
+- **Dirs/links**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate. Directories and symlinks are sync'd, just not immediately.
 - **Base updates & verification**: we update `base.db` after rsync; the next full cycle **verifies** the result end\-to\-end. In high\-churn cases you may see rsync 23/24 warnings—by design.
 - **ctime reliance**: ctime is an excellent gate for rehashing but can vary across FS types or be coarser than you like; you can switch to an `(mtime, size)` policy if desired \(configurable in future\).
 
@@ -119,9 +119,8 @@ Typical large-tree outcomes we’ve seen:
 ## Roadmap
 
 - **Full metadata parity**: xattrs/ACLs, uid/gid numeric IDs, symlink strategies, and precise permission diffs.
-- **Robust micro\-sync for dirs** \(create/remove/move at small scale\) with conflict\-safe base updates.
-- **Policy knobs**: mtime/size hashing gates
 - **SEA** \(single executable binary\) packs for easier deployment.
+- Non\-Posix: Native Windows Support
 
 ---
 

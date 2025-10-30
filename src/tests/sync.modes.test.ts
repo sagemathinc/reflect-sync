@@ -11,11 +11,11 @@ import os from "node:os";
 
 const getMode = async (p: string) => (await fsp.lstat(p)).mode & 0o777;
 
-describe("ccsync: file/dir mode propagation + conflicts", () => {
+describe("reflex-sync: file/dir mode propagation + conflicts", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-modes-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-modes-"));
   });
 
   afterAll(async () => {

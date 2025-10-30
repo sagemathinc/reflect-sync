@@ -12,11 +12,11 @@ import os from "node:os";
 import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
 import { join, dirname } from "node:path";
 
-describe("ccsync: symlink semantics", () => {
+describe("reflex-sync: symlink semantics", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-links-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-links-"));
   });
 
   afterAll(async () => {

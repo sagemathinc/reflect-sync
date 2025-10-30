@@ -95,7 +95,7 @@ describe("SSH remote watch → microSync", () => {
       throw Error("ssh localhost unavailable; skipping remote-watch test");
     }
 
-    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "ccsync-ssh-watch-"));
+    tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "rfsync-ssh-watch-"));
     alphaRoot = path.join(tmp, "alpha-local");
     betaRootRemote = path.join(tmp, "beta-remote");
     alphaDb = path.join(tmp, "alpha.db");

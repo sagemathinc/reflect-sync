@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   ensureSessionDb,
   getSessionDbPath,
-  getCcsyncHome,
+  getReflexSyncHome,
   getOrCreateEngineId,
   createSession,
   updateSession,
@@ -24,6 +24,7 @@ import { registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
 import { ensureRemoteParentDir } from "./remote.js";
+import { CLI_NAME } from "./constants.js";
 
 type Endpoint = { root: string; host?: string };
 
@@ -71,7 +72,7 @@ const SCHED = fileURLToPath(new URL("./scheduler.js", import.meta.url));
 // Spawn scheduler for a session row
 function spawnSchedulerForSession(sessionDb: string, row: any): number {
   // Ensure DB file paths exist (materialize if needed)
-  const home = getCcsyncHome();
+  const home = getReflexSyncHome();
   const sessDir = deriveSessionPaths(row.id, home).dir;
   fs.mkdirSync(sessDir, { recursive: true });
 
@@ -154,7 +155,7 @@ export function registerSessionCommands(program: Command) {
     else ensureSessionDb(getSessionDbPath());
   });
 
-  // `ccsync session create [options] <alpha> <beta>`
+  // `reflex-sync session create [options] <alpha> <beta>`
   session
     .command("create")
     .description("Create a new sync session (mutagen-like endpoint syntax)")
@@ -189,9 +190,9 @@ export function registerSessionCommands(program: Command) {
         parseLabelPairs(opts.label || []),
       );
 
-      const engineId = getOrCreateEngineId(getCcsyncHome()); // persistent local origin id
-      // [ ] TODO: should instead use a remote version of getCcsyncHome here:
-      const nsBase = `~/.local/share/ccsync/by-origin/${engineId}/sessions/${id}`;
+      const engineId = getOrCreateEngineId(getReflexSyncHome()); // persistent local origin id
+      // [ ] TODO: should instead use a remote version of getReflexSyncHome here:
+      const nsBase = `~/.local/share/${CLI_NAME}/by-origin/${engineId}/sessions/${id}`;
 
       let alphaRemoteDb: string | null = null;
       let betaRemoteDb: string | null = null;
@@ -232,7 +233,7 @@ export function registerSessionCommands(program: Command) {
       }
     });
 
-  // `ccsync session list [-s/--selector <expr>]…`
+  // `${CLI_NAME} session list [-s/--selector <expr>]…`
   session
     .command("list")
     .description("List sessions (filterable by label selectors)")
@@ -283,7 +284,7 @@ export function registerSessionCommands(program: Command) {
 
   registerSessionFlush(session);
 
-  // `ccsync session pause <id...>`
+  // `$CLI_NAME} session pause <id...>`
   session
     .command("pause")
     .description("Pause sync for one or more sessions")
@@ -309,7 +310,7 @@ export function registerSessionCommands(program: Command) {
       });
     });
 
-  // `ccsync session resume <id...>`
+  // `${CLI_NAME} session resume <id...>`
   session
     .command("resume")
     .description("Resume sync for one or more sessions")
@@ -341,7 +342,7 @@ export function registerSessionCommands(program: Command) {
       });
     });
 
-  // `ccsync session resume <id...>`
+  // `${CLI_NAME} session resume <id...>`
   session
     .command("reset")
     .description("Reset sync for one or more sessions")
@@ -356,7 +357,7 @@ export function registerSessionCommands(program: Command) {
       console.log("reset: TODO", ids);
     });
 
-  // `ccsync session terminate <id...>` (stop + remove all session state)
+  // `${CLI_NAME} session terminate <id...>` (stop + remove all session state)
   session
     .command("terminate")
     .description("Stop and remove all session state")
@@ -376,7 +377,7 @@ export function registerSessionCommands(program: Command) {
         }
         setDesiredState(sessionDb, id, "stopped");
         setActualState(sessionDb, id, "stopped");
-        const dir = deriveSessionPaths(id, getCcsyncHome()).dir;
+        const dir = deriveSessionPaths(id, getReflexSyncHome()).dir;
         try {
           fs.rmSync(dir, { recursive: true, force: true });
         } catch {}

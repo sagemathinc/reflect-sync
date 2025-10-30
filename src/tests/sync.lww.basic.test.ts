@@ -8,7 +8,7 @@ describe("LWW: basic conflicting edits", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-lww-1-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-lww-1-"));
   });
 
   afterAll(async () => {

@@ -1,4 +1,4 @@
-# ccsync
+# ReflectSync
 
 Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Designed for very large trees, low RAM, and observability.
 
@@ -17,7 +17,7 @@ Open source under the MIT License.
 
 ## Status: NOT READY FOR PRODUCTION
 
-**ccsync is NOT READY FOR PRODUCTION USE YET!** There is still a significant todo list of subtle edge cases to handle, features to implement, tests to put in place, etc. Do not use this. Our plan is to finish this quickly, then put this into major production on https://cocalc.com, and then I'll update this README when it is much safer to trust ccsync with your files.
+**reflect is NOT READY FOR PRODUCTION USE YET!** There is still a significant todo list of subtle edge cases to handle, features to implement, tests to put in place, etc. Do not use this. Our plan is to finish this quickly, then put this into major production on https://cocalc.com, and then I'll update this README when it is much safer to trust reflect with your files.
 
 Some differences compared to Mutagen, and todos:
 
@@ -36,15 +36,15 @@ See [Design Details](./DESIGN.md).
 Project (local):
 
 ```bash
-pnpm add ccsync
-# or: npm i ccsync
+pnpm add reflect-sync
+# or: npm i reflect-sync
 ```
 
 Global (handy for ops boxes):
 
 ```bash
-pnpm add -g ccsync
-# then: ccsync help
+pnpm add -g reflect-sync
+# then: reflect help
 ```
 
 Build from source (dev):
@@ -55,7 +55,7 @@ pnpm build
 pnpm test
 ```
 
-The package exposes the `ccsync` CLI (and aliases `ccsync-scan`, `ccsync-ingest`, `ccsync-merge`, `ccsync-scheduler`) via its `bin` map.
+The package exposes the `reflect` CLI (and aliases `rfsync` and `reflect-sync`) via its `bin` map.
 
 ---
 
@@ -64,23 +64,27 @@ The package exposes the `ccsync` CLI (and aliases `ccsync-scan`, `ccsync-ingest`
 ### 1) One machine (both roots local)
 
 ```bash
-ccsync session -h
-ccsync session create /path/to/alpha /path/to/beta
-ccsync session list
-ccsync session status 1
+reflect session -h
+reflect session create /path/to/alpha /path/to/beta
+reflect session list
+reflect session status 1
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
-- File changes are pushed quickly via a micro-sync path while the main loop verifies and updates the base snapshot.
+- File changes are pushed in realtime via a micro-sync path while the main loop verifies and updates the base snapshot for last write wins 3-way merge semantics.
 
 ### 2) One side over SSH
 
 Two ways to do it:
 
-**a) Let the scheduler do the remote scan over SSH**
+```bash
+reflect session create user@alpha.example.com:/tmp/alpha /tmp/beta
+```
+
+or
 
 ```bash
-ccsync session create user@alpha.example.com:/tmp/alaph /tmp/beta
+reflect session create /tmp/beta user@alpha.example.com:/tmp/alpha
 ```
 
 The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON deltas, and ingest them locally.
@@ -136,7 +140,7 @@ pnpm install
 pnpm build
 pnpm test
 pnpm link -g .
-ccsync -h
+reflect -h
 ```
 
 TypeScript compiler outputs to `dist/.`
@@ -145,14 +149,14 @@ TypeScript compiler outputs to `dist/.`
 
 ## Notes
 
-- Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global` to get `ccsync` on your PATH.
-- For SSH use, ensure the remote has Node 24\+ and `ccsync` on PATH \(installed or included in your SEA image\). Then `ccsync scan … --emit-delta | ccsync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
+- Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global .` to get `reflect` on your PATH.
+- For SSH use, ensure the remote has Node 24\+ and `reflect` on PATH \(installed or included in your SEA image\). Then `reflect scan … --emit-delta | reflect ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
 
 ---
 
-## Why ccsync?
+## Why ReflectSync?
 
-**ccsync** is a two-way file sync tool with **deterministic Last-Write-Wins (LWW)** semantics, built on **rsync** for transfer and **SQLite** for state. It aims to be predictable, debuggable, and fast for the common case of **two roots** (e.g., laptop ↔ server, container bind-mount ↔ host, staging ↔ prod).
+**reflect-sync** is a two-way file sync tool written in Typescript with **deterministic Last-Write-Wins (LWW)** semantics, built on **rsync** for transfer and **SQLite** for state. It aims to be predictable, debuggable, and fast for the common case of **two roots** (e.g., laptop ↔ server, container bind-mount ↔ host, staging ↔ prod).
 
 ### Key properties
 
@@ -160,13 +164,13 @@ TypeScript compiler outputs to `dist/.`
 - **Hash-driven change detection:** Content hashes, not “mtime only,” determine whether a file actually changed—keeps plans stable and reduces churn.
 - **First-class symlinks:** Links are scanned via `lstat`, targets are stored and hashed as **`link:<target>`**, and rsync preserves them.
 - **Simple & inspectable:** Uses SQLite tables and NDJSON deltas—easy to debug, test, and reason about.
-- **MIT-licensed:** Permissive for both open-source and commercial use.
+- **MIT-licensed:** Very permissive for both open-source and commercial use.
 
 ---
 
-## When to use ccsync
+## When to use ReflectSync
 
-Use ccsync when you want:
+When you want:
 
 - **Two endpoints** with **predictable outcomes** (no “conflict copies”).
 - Great performance on **large files** or **incremental edits** (thanks to rsync).
@@ -177,7 +181,7 @@ Not a perfect fit if you need:
 
 - A **multi\-node mesh** with discovery/relays \(see Syncthing/Resilio\).
 - Built\-in **version history** or a cloud UI \(see Nextcloud/Dropbox\).
-- **Interactive** conflict resolution UX \(see Unison\); with ccsync there is **never** conflict resolution.
+- **Interactive** conflict resolution UX \(see Unison\); with ReflectSync there is **never** conflict resolution.
 
 ---
 
@@ -185,19 +189,19 @@ Not a perfect fit if you need:
 
 | Tool          | License                             | Sync model                   | Conflict policy                   | Notes                                         |
 | ------------- | ----------------------------------- | ---------------------------- | --------------------------------- | --------------------------------------------- |
-| **ccsync**    | **MIT**                             | Two-way between two roots    | **LWW** (+ preferred side on tie) | rsync transport; SQLite state; symlink-aware  |
+| **ReflectSync**    | **MIT**                             | Two-way between two roots    | **LWW** (+ preferred side on tie) | rsync transport; SQLite state; symlink-aware  |
 | **Unison**    | GPL-3                               | Two-way                      | Interactive or policy-driven      | Mature, formal; heavier UX for headless flows |
 | **Syncthing** | MPL-2.0                             | Continuous P2P mesh          | **Conflict copies** on diverge    | Great for many devices; background indexer    |
 | **Mutagen**   | Source-available (see project docs) | Dev-focused low-latency sync | Modes incl. “prefer side”         | Very fast for dev trees; custom protocol      |
 | **lsyncd**    | GPL-2.0+                            | One-way (event → rsync)      | N/A                               | Simple near-real-time mirroring               |
 
-> Philosophy difference: **ccsync** favors _determinism without duplicates or "conflict" files_ \(LWW \+ preference\). Tools like Syncthing/Dropbox prefer _never lose data_ \(create conflict files\), which is ideal for less controlled, multi\-party edits.
+> Philosophy difference: **ReflectSync** favors _determinism without duplicates or "conflict" files_ \(LWW \+ preference\). Tools like Syncthing/Dropbox prefer _never lose data_ \(create conflict files\), which is ideal for less controlled, multi\-party edits.
 
 ---
 
 ## Semantics (brief)
 
-- **Change detection:** By **content hash, permissions and \(for root\) uid/gid**. Pure mtime or ctime changes do NOT count as edits.  However, when there is an edit, the file is transfered with the mtime properly synced.
+- **Change detection:** By **content hash, permissions and \(for root\) uid/gid**. Pure mtime or ctime changes do NOT count as edits. However, when there is an edit, the file is transfered with the mtime properly synced.
 - **Last write wins \(LWW\) resolution:** The newer op timestamp wins; within `--lww-epsilon-ms`, the **preferred side** wins.
 - **Type changes:** File ↔ symlink ↔ dir follow the same LWW rule \(so type can change if the winner differs\).
 - **Deletes:** Deletions are first\-class operations and replicate per LWW.
@@ -218,44 +222,43 @@ Not a perfect fit if you need:
 ## Platform support
 
 - **Linux / macOS:** Fully supported \(Node.js 24\+\). Uses `lutimes` where available for precise symlink mtimes.
-- **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions.  Not yet tested for native Windows, but planned.
+- **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions. Not yet tested for native Windows, but planned.
 
 ---
 
 ## Open Source
 
-The MIT license is maximally permissive: embed, modify, and redistribute with minimal friction. This makes **ccsync** easy to adopt in both open\-source stacks and commercial tooling.
+The MIT license is maximally permissive: embed, modify, and redistribute with minimal friction. This makes **ReflectSync** easy to adopt in both open\-source stacks and commercial tooling.
 
 ---
 
-## ccsync vs. X — choose-by-scenario
+## ReflectSync vs. X — choose-by-scenario
 
 | Scenario                                                                | Recommended                  | Why                                                                                  | Notes                                                                       |
 | ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ccsync**                   | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod              |
-| **One-way near-real-time mirroring** (e.g., deploy artifacts → webroot) | **lsyncd**                   | Event→batch→rsync is simple and robust                                               | If you still want ccsync, just run one side as authoritative (prefer-alpha) |
+| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ReflectSync**                   | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod              |
+| **One-way near-real-time mirroring** (e.g., deploy artifacts → webroot) | **lsyncd**                   | Event→batch→rsync is simple and robust                                               | If you still want ReflectSync, just run one side as authoritative (prefer-alpha) |
 | **Dev loop; tons of small files; low latency**                          | **Mutagen**                  | Purpose-built for fast dev sync; very low overhead on edits                          | License differs; protocol/agent required                                    |
 | **Many devices; peer-to-peer mesh; zero central server**                | **Syncthing**                | Discovery, relay, NAT traversal, continuous                                          | Creates conflict copies on diverge (safer for multi-writer)                 |
 | **Non-technical users; desktop + mobile; web UI; version history**      | **Nextcloud** or **Dropbox** | Turnkey clients + history + sharing                                                  | Heavier footprint; server (Nextcloud) or cloud (Dropbox)                    |
-| **CI/CD cache or artifacts between two machines**                       | **ccsync**                   | Deterministic, debuggable, rsync-efficient on large binaries                         | Keep file lists tight; parallelize rsync if needed                          |
-| **Large binary files with small edits over LAN**                        | **ccsync**                   | rsync rolling checksum excels                                                        | Consider `--inplace` only if types won’t change and perms allow             |
+| **CI/CD cache or artifacts between two machines**                       | **ReflectSync**                   | Deterministic, debuggable, rsync-efficient on large binaries                         | Keep file lists tight; parallelize rsync if needed                          |
+| **Large binary files with small edits over LAN**                        | **ReflectSync**                   | rsync rolling checksum excels                                                        | Consider `--inplace` only if types won’t change and perms allow             |
 | **Interactive conflict resolution preferred**                           | **Unison**                   | Mature interactive/tunable policy engine                                             | More friction in headless automation                                        |
 | **Multi-writer folder; avoid any silent overwrite**                     | **Syncthing**                | Uses conflict files rather than overwrite                                            | Safer for less-controlled edits; not deterministic                          |
-| **Windows-first environment**                                           | **Syncthing** / **Dropbox**  | Native UX; no rsync/WSL needed                                                       | **ccsync** works best via **WSL** (document this path)                      |
-| **Air-gapped / restricted SSH only**                                    | **ccsync**                   | rsync over SSH; explicit file lists; easy to audit                                   | Works well in regulated environments                                        |
-| **Exact promotion between environments (e.g., staging → prod)**         | **ccsync**                   | Precise deletes; type changes honored; no conflict files                             | Keep backups if human edits happen in prod                                  |
-| **One-way ingest to object storage (S3, etc.)**                         | **rclone** (adjacent tool)   | Direct backends; checksumming; retries                                               | Different problem space; can be combined with ccsync locally                |
+| **Windows-first environment**                                           | **Syncthing** / **Dropbox**  | Native UX; no rsync/WSL needed                                                       | **ReflectSync** works best via **WSL** (document this path)                      |
+| **Air-gapped / restricted SSH only**                                    | **ReflectSync**                   | rsync over SSH; explicit file lists; easy to audit                                   | Works well in regulated environments                                        |
+| **Exact promotion between environments (e.g., staging → prod)**         | **ReflectSync**                   | Precise deletes; type changes honored; no conflict files                             | Keep backups if human edits happen in prod                                  |
+| **One-way ingest to object storage (S3, etc.)**                         | **rclone** (adjacent tool)   | Direct backends; checksumming; retries                                               | Different problem space; can be combined with ReflectSync locally                |
 
 **Legend:**
 
-- **LWW** = Last-Write-Wins. In ccsync, ties within `--lww-epsilon-ms` break toward your **preferred side** (alpha/beta).
+- **LWW** = Last-Write-Wins. In ReflectSync, ties within `--lww-epsilon-ms` break toward your **preferred side** (alpha/beta).
 - “Conflict copies” = tools that create duplicate files when both sides changed (e.g., `filename (conflict copy).txt`).
 
 **Rule of thumb**
 
-- Want **determinism** between **two roots** → pick **ccsync**.
+- Want **determinism** between **two roots** → pick **ReflectSync**.
 - Want a **mesh** or **never lose data** via conflict files → pick **Syncthing** (or cloud sync).
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-

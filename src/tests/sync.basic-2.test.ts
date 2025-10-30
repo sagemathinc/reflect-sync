@@ -6,11 +6,11 @@ import { join, dirname } from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
-describe("ccsync: scan → merge-rsync simple tests and conflicts (part 2)", () => {
+describe("rfsync: scan → merge-rsync simple tests and conflicts (part 2)", () => {
   let tmp: string;
 
   beforeAll(async () => {
-    tmp = await fsp.mkdtemp(join(os.tmpdir(), "ccsync-test-"));
+    tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-"));
   });
 
   afterAll(async () => {
