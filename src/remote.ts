@@ -74,12 +74,16 @@ export async function expandHome(
 
 export async function ensureRemoteParentDir(
   host: string,
-  absPath: string,
+  path: string,
   verbose?: boolean,
 ): Promise<void> {
-  const dirname = posix.dirname(absPath);
+  if (path.startsWith("~/")) {
+    // relative to HOME
+    path = path.slice(2);
+  }
+  const dirname = posix.dirname(path);
   const cmd = `mkdir -p -- ${shellEscape(dirname)}`;
-  const args = ["-C", "-T", "-o", "BatchMode=yes", host, "sh", "-lc", cmd];
+  const args = ["-C", "-T", "-o", "BatchMode=yes", host, "--", cmd];
   if (verbose) console.log("$ ssh", args.join(" "));
   await new Promise<void>((resolve, reject) => {
     const p = spawn("ssh", args, { stdio: ["ignore", "ignore", "inherit"] });

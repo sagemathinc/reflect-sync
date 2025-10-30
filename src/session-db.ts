@@ -3,6 +3,7 @@ import { Database } from "./db.js";
 import fs from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 
 // Paths & Home
 
@@ -29,6 +30,25 @@ export function getCcsyncHome(): string {
   }
   // Linux/other
   return ensureDir(join(home, ".local", "share", "ccsync"));
+}
+
+// A persistent local identifier for this ccsync "origin"/installation.
+export function getOrCreateEngineId(home = getCcsyncHome()): string {
+  const p = join(home, "engine.id");
+  try {
+    const s = fs.readFileSync(p, "utf8").trim();
+    if (s) return s;
+  } catch {}
+  // 128-bit random, base64url without '=' padding
+  const raw = crypto
+    .randomBytes(16)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(p, raw + "\n");
+  return raw;
 }
 
 export function getSessionDbPath(home = getCcsyncHome()): string {
@@ -297,7 +317,6 @@ export function updateSession(
   id: number,
   patch: SessionPatch,
 ): void {
-  console.log("updateSession", { id, patch });
   const db = open(sessionDbPath);
   try {
     const sets: string[] = [];

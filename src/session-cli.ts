@@ -7,6 +7,7 @@ import {
   ensureSessionDb,
   getSessionDbPath,
   getCcsyncHome,
+  getOrCreateEngineId,
   createSession,
   updateSession,
   selectSessions,
@@ -22,6 +23,7 @@ import {
 import { registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
+import { ensureRemoteParentDir } from "./remote.js";
 
 type Endpoint = { root: string; host?: string };
 
@@ -166,7 +168,7 @@ export function registerSessionCommands(program: Command) {
     )
     .option("-l, --label <k=v>", "add a label", collectLabels, [] as string[])
     .option("-p, --paused", "leave session paused (do not sync)", false)
-    .action((alphaSpec: string, betaSpec: string, opts: any) => {
+    .action(async (alphaSpec: string, betaSpec: string, opts: any) => {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       ensureSessionDb(sessionDb);
@@ -186,13 +188,28 @@ export function registerSessionCommands(program: Command) {
         },
         parseLabelPairs(opts.label || []),
       );
-      if (a.host || b.host) {
+
+      const engineId = getOrCreateEngineId(getCcsyncHome()); // persistent local origin id
+      // [ ] TODO: should instead use a remote version of getCcsyncHome here:
+      const nsBase = `~/.local/share/ccsync/by-origin/${engineId}/sessions/${id}`;
+
+      let alphaRemoteDb: string | null = null;
+      let betaRemoteDb: string | null = null;
+
+      if (a.host) alphaRemoteDb = `${nsBase}/alpha.db`;
+      if (b.host) betaRemoteDb = `${nsBase}/beta.db`;
+
+      if (alphaRemoteDb || betaRemoteDb) {
         updateSession(sessionDb, id, {
-          alpha_remote_db: a.host
-            ? `~/.local/share/ccsync/${id}/alpha.db`
-            : null,
-          beta_remote_db: b.host ? `~/.local/share/ccsync/${id}/beta.db` : null,
+          alpha_remote_db: alphaRemoteDb,
+          beta_remote_db: betaRemoteDb,
         });
+
+        // proactively create parent dirs on remotes
+        if (a.host && alphaRemoteDb)
+          await ensureRemoteParentDir(a.host, alphaRemoteDb, opts.verbose);
+        if (b.host && betaRemoteDb)
+          await ensureRemoteParentDir(b.host, betaRemoteDb, opts.verbose);
       }
 
       const paths = materializeSessionPaths(id);
