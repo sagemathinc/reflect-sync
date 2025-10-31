@@ -130,6 +130,9 @@ export interface SessionPatch {
   actual_state?: ActualState;
   scheduler_pid?: number | null;
   last_heartbeat?: number | null;
+  last_digest?: number | null;
+  alpha_digest?: string | null;
+  beta_digest?: string | null;
 }
 
 export interface SessionRow {
@@ -154,6 +157,9 @@ export interface SessionRow {
   actual_state: ActualState;
   last_heartbeat: number | null;
   scheduler_pid: number | null;
+  last_digest?: number | null;
+  alpha_digest?: string | null;
+  beta_digest?: string | null;
 }
 
 // DB init
@@ -192,6 +198,10 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         desired_state    TEXT NOT NULL DEFAULT 'stopped',
         actual_state     TEXT NOT NULL DEFAULT 'stopped',
         last_heartbeat   INTEGER,
+
+        last_digest      INTEGER,
+        alpha_digest     TEXT,
+        beta_digest      TEXT,
 
         scheduler_pid    INTEGER
       );

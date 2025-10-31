@@ -16,17 +16,29 @@ function fmtMs(ms?: number | null): string {
   return `${m}m ${rs}s`;
 }
 
-function fmtAgo(ts?: number | null): string {
-  if (!ts) return "-";
-  const d = Date.now() - ts;
-  if (d < 0) return "0s";
-  if (d < 1000) return `${d} ms`;
-  const s = Math.floor(d / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
+const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+export function fmtAgo(
+  input: Date | number | string,
+  now = Date.now(),
+): string {
+  const t = typeof input === "number" ? input : new Date(input).getTime();
+  const diff = t - now; // negative for past, positive for future
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ["year", 365 * 24 * 60 * 60 * 1000],
+    ["month", 30 * 24 * 60 * 60 * 1000],
+    ["week", 7 * 24 * 60 * 60 * 1000],
+    ["day", 24 * 60 * 60 * 1000],
+    ["hour", 60 * 60 * 1000],
+    ["minute", 60 * 1000],
+    ["second", 1000],
+  ];
+
+  for (const [unit, ms] of units) {
+    const val = Math.trunc(diff / ms);
+    if (Math.abs(val) >= 1) return rtf.format(val, unit);
+  }
+  return rtf.format(0, "second"); // "now"
 }
 
 function tryGetLabels(db: Database, sessionId: number): Record<string, string> {
@@ -159,7 +171,13 @@ function tableOutput(
     if (sess.beta_remote_db)
       add("beta remote", `${sess.beta_host}:${sess.beta_remote_db}`);
     if (sess.created_at)
-      add("created", new Date(sess.created_at).toISOString());
+      add(
+        "created",
+        `${fmtAgo(sess.created_at)} on ${new Date(sess.created_at)}`,
+      );
+    if (sess.last_digest) add("[digest]", fmtAgo(sess.last_digest));
+    if (sess.alpha_digest) add("[digest] alpha ", sess.alpha_digest);
+    if (sess.beta_digest) add("[digest] beta", sess.beta_digest);
   }
 
   // Runtime

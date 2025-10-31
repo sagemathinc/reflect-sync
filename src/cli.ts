@@ -80,6 +80,11 @@ program
   .option("--base-db <path>", "base sqlite", "base.db")
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+  .option(
+    "--session-id <id>",
+    "optional session id to enable heartbeats, report state, etc",
+  )
+  .option("--session-db <path>", "path to session database")
   .addOption(
     new Option("--prefer <side>", "conflict winner")
       .choices(["alpha", "beta"])

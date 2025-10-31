@@ -16,6 +16,7 @@ import {
 } from "./rsync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import { createHash } from "node:crypto";
+import { updateSession } from "./session-db.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -39,6 +40,8 @@ function buildProgram(): Command {
     )
     .option("--lww-epsilon-ms <ms>", "LWW tie epsilon in ms", "3000")
     .option("--dry-run", "simulate without changing files", false)
+    .option("--session-id <id>", "optional session id to enable heartbeats")
+    .option("--session-db <path>", "path to session database")
     .option("--verbose", "enable verbose logging", false);
 }
 
@@ -54,6 +57,8 @@ type MergeRsyncOptions = {
   lwwEpsilonMs: string;
   dryRun: boolean | string;
   verbose: boolean | string;
+  sessionDb?: string;
+  sessionId?: number;
 };
 
 // ---------- helpers ----------
@@ -76,6 +81,8 @@ export async function runMerge({
   lwwEpsilonMs,
   dryRun,
   verbose,
+  sessionDb,
+  sessionId,
 }: MergeRsyncOptions) {
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
   const rsyncOpts = { dryRun, verbose };
@@ -147,6 +154,14 @@ export async function runMerge({
       console.log("[digest] alpha:", digestAlpha);
       console.log("[digest] beta :", digestBeta);
     }
+    if (sessionDb && sessionId) {
+      updateSession(sessionDb, sessionId, {
+        last_digest: Date.now(),
+        alpha_digest: digestAlpha,
+        beta_digest: digestBeta,
+      });
+    }
+
     done();
 
     if (digestAlpha == digestBeta) {

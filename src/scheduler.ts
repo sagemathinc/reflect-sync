@@ -101,7 +101,10 @@ function buildProgram(): Command {
       "only sync during the full sync cycle",
       false,
     )
-    .option("--session-id <id>", "optional session id to enable heartbeats")
+    .option(
+      "--session-id <id>",
+      "optional session id to enable heartbeats, report state, etc",
+    )
     .option("--session-db <path>", "path to session database");
 
   return program;
@@ -764,6 +767,9 @@ export async function runScheduler({
       "--prefer",
       prefer,
     ];
+    if (sessionDb && sessionId) {
+      mArgs.push("--session-db", sessionDb, "--session-id", String(sessionId));
+    }
     if (alphaHost) mArgs.push("--alpha-host", alphaHost);
     if (betaHost) mArgs.push("--beta-host", betaHost);
     if (dryRun) mArgs.push("--dry-run");
