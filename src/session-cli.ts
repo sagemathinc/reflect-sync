@@ -218,14 +218,11 @@ export function registerSessionCommands(program: Command) {
       }
 
       const paths = materializeSessionPaths(id);
+      updateSession(sessionDb, id, paths);
 
       console.log(`created session ${id}${opts.name ? ` (${opts.name})` : ""}`);
       if (!opts.paused) {
         const row = loadSessionById(sessionDb, id)!;
-        // merge materialized DBs into row for spawn
-        row.base_db = paths.base_db;
-        row.alpha_db = paths.alpha_db;
-        row.beta_db = paths.beta_db;
         const pid = spawnSchedulerForSession(sessionDb, row);
         setDesiredState(sessionDb, id, "running");
         setActualState(sessionDb, id, pid ? "running" : "error");
@@ -327,10 +324,7 @@ export function registerSessionCommands(program: Command) {
           console.error(`session ${id} not found`);
           return;
         }
-        // Ensure per-session DB paths are present
-        materializeSessionPaths(id);
-        const fresh = loadSessionById(sessionDb, id)!;
-        const pid = spawnSchedulerForSession(sessionDb, fresh);
+        const pid = spawnSchedulerForSession(sessionDb, row);
         setDesiredState(sessionDb, id, "running");
         setActualState(sessionDb, id, pid ? "running" : "error");
         if (pid) {

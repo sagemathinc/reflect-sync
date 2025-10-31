@@ -41,6 +41,15 @@ export function fmtAgo(
   return rtf.format(0, "second"); // "now"
 }
 
+export function fmtLocalPath(path: string) {
+  const home = process.env.HOME;
+  if (!home) return path;
+  if (path.startsWith(home)) {
+    return `~${path.slice(home.length)}`;
+  }
+  return path;
+}
+
 function tryGetLabels(db: Database, sessionId: number): Record<string, string> {
   try {
     const rows = db
@@ -163,19 +172,24 @@ function tableOutput(
     }
     if (sess.prefer) add("prefer", sess.prefer);
     if (sess.hash_alg) add("hash", sess.hash_alg);
-    if (sess.base_db) add("base db", sess.base_db);
-    if (sess.alpha_db) add("alpha db", sess.alpha_db);
-    if (sess.beta_db) add("beta db", sess.beta_db);
+    if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
+    if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
+    if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));
     if (sess.alpha_remote_db)
-      add("alpha remote", `${sess.alpha_host}:${sess.alpha_remote_db}`);
+      add("alpha remote db", `${sess.alpha_host}:${sess.alpha_remote_db}`);
     if (sess.beta_remote_db)
-      add("beta remote", `${sess.beta_host}:${sess.beta_remote_db}`);
+      add("beta remote db", `${sess.beta_host}:${sess.beta_remote_db}`);
     if (sess.created_at)
       add(
         "created",
         `${fmtAgo(sess.created_at)} on ${new Date(sess.created_at)}`,
       );
-    if (sess.last_digest) add("[digest]", fmtAgo(sess.last_digest));
+    if (sess.last_digest)
+      add(
+        "[digest]",
+        fmtAgo(sess.last_digest) +
+          (sess.alpha_digest == sess.beta_digest ? " ✅  (synchronized)" : ""),
+      );
     if (sess.alpha_digest) add("[digest] alpha ", sess.alpha_digest);
     if (sess.beta_digest) add("[digest] beta", sess.beta_digest);
   }
