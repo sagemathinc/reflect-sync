@@ -9,7 +9,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 - **SSH\-friendly**: stream remote deltas over stdin
 - **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
 
-> Requires **Node.js 24+**.
+> Requires **Node.js 22+**.
 
 ## LICENSE
 
@@ -104,7 +104,7 @@ The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON de
 
 ## Environment & scripts
 
-- **Node.js**: `>= 24` (set in `engines`).
+- **Node.js**: `>= 22` (set in `engines`).
 - **Build**: `pnpm build` (TypeScript → `dist/`), `rootDir=src`, `outDir=dist`.
 - **Dev helpers**: `dev:scan`, `dev:ingest`, `dev:merge`, `dev:scheduler` run the TS sources via `tsx`.
 
@@ -150,7 +150,7 @@ TypeScript compiler outputs to `dist/.`
 ## Notes
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global .` to get `reflect` on your PATH.
-- For SSH use, ensure the remote has Node 24\+ and `reflect` on PATH \(installed or included in your SEA image\). Then `reflect scan … --emit-delta | reflect ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
+- For SSH use, ensure the remote has Node 22\+ and `reflect` on PATH \(installed or included in your SEA image\). Then `reflect scan … --emit-delta | reflect ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
 
 ---
 
@@ -221,7 +221,7 @@ Not a perfect fit if you need:
 
 ## Platform support
 
-- **Linux / macOS:** Fully supported \(Node.js 24\+\). Uses `lutimes` where available for precise symlink mtimes.
+- **Linux / macOS:** Fully supported \(Node.js 22\+\). Uses `lutimes` where available for precise symlink mtimes.
 - **Windows:** Works best via **WSL** or an rsync port. Symlink behavior depends on platform capabilities and permissions. Not yet tested for native Windows, but planned.
 
 ---
