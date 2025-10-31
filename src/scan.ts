@@ -20,6 +20,35 @@ import {
   defaultHashAlg,
 } from "./hash.js";
 
+declare global {
+  // Set during bundle by Rollup banner.
+  // Contains the *bundled* worker source as a single ESM string.
+  var __RFSYNC_HASH_WORKER__: string | undefined;
+}
+
+function makeHashWorker(alg: string): Worker {
+  let injected = globalThis.__RFSYNC_HASH_WORKER__;
+
+  // bundle mode:
+  if (process.env.RFSYNC_BUNDLED === "1" && injected) {
+    // Defensive: if an older build accidentally left a data: URL, strip & decode it.
+    if (injected.startsWith("data:text/")) {
+      const i = injected.indexOf(",");
+      injected = decodeURIComponent(injected.slice(i + 1));
+    }
+    // SEA/bundled path — run CJS source directly
+    return new Worker(injected, {
+      eval: true, // IMPORTANT: give raw JS here, not a data: URL
+      workerData: { alg },
+    });
+  }
+
+  // NOT bundle mode:
+  return new Worker(new URL("./hash-worker.js", import.meta.url), {
+    workerData: { alg },
+  });
+}
+
 function buildProgram(): Command {
   const program = new Command();
 
@@ -224,19 +253,14 @@ ON CONFLICT(path) DO UPDATE SET
     size: number;
     ctime: number;
     mtime: number;
-    numericIds?: boolean;
   }; // ABS path
-  type JobBatch = { jobs: Job[] };
+  type JobBatch = { jobs: Job[]; numericIds?: boolean };
   type Result =
     | { path: string; hash: string; ctime: number; mtime: number } // ABS path echoed back
     | { path: string; error: string };
 
-  const workers = Array.from(
-    { length: CPU_COUNT },
-    () =>
-      new Worker(new URL("./hash-worker", import.meta.url), {
-        workerData: { alg: HASH_ALG },
-      }),
+  const workers = Array.from({ length: CPU_COUNT }, () =>
+    makeHashWorker(HASH_ALG),
   );
 
   const freeWorkers: Worker[] = [...workers];
@@ -600,10 +624,10 @@ ON CONFLICT(path) DO UPDATE SET
           // keep ABS key here; worker replies with ABS and we’ll map to rpath
           pendingMeta.set(abs, { size, ctime, mtime });
           // ABS path for worker
-          jobBuf.push({ path: abs, size, ctime, mtime, numericIds });
+          jobBuf.push({ path: abs, size, ctime, mtime });
           if (jobBuf.length >= DISPATCH_BATCH) {
             const w = await nextWorker();
-            (w as any).postMessage({ jobs: jobBuf } as JobBatch);
+            w.postMessage({ jobs: jobBuf, numericIds });
             dispatched += jobBuf.length;
             jobBuf = [];
           }

@@ -8,15 +8,14 @@ type Job = {
   size: number;
   ctime: number;
   mtime: number;
-  /**
-   * If true, append "|uid:gid" so ownership changes force re-hash equality changes.
-   * If omitted, falls back to the batch default, then to the worker default (false).
-   */
-  numericIds?: boolean;
 };
 
 type JobBatch = {
   jobs: Job[];
+  /**
+   * If true, append "|uid:gid" so ownership changes force re-hash equality changes.
+   * If omitted, falls back to the batch default, then to the worker default (false).
+   */
   numericIds?: boolean;
 };
 
