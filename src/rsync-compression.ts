@@ -67,7 +67,7 @@ function capture(
   });
 }
 
-async function estimateLinkClass(
+export async function estimateLinkClass(
   host?: string,
 ): Promise<"local" | "fast" | "medium" | "slow"> {
   if (!host) return "local";
@@ -75,17 +75,19 @@ async function estimateLinkClass(
   // testing time to make the ssh connection, which might have
   // little to do with the actual bandwidth (?).
   const t0 = Date.now();
+  const TIMEOUT = 2000;
   const { code } = await capture(
     "ssh",
     ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", host, "true"],
-    2500,
+    TIMEOUT,
   );
   if (code) {
     throw Error(`cannot connect to ${host}`);
   }
   const dt = Date.now() - t0;
-  if (dt < 5) return "fast";
-  if (dt > 20) return "medium";
+  console.log({ dt });
+  if (dt < 750) return "fast";
+  if (dt < TIMEOUT - 100) return "medium";
   return "slow";
 }
 
