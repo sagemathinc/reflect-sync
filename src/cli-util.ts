@@ -16,6 +16,9 @@ export function isDirectRun(
   metaUrl: string,
   argv1 = process.argv[1] ?? "",
 ): boolean {
+  if (process.env.RFSYNC_BUNDLED) {
+    return false;
+  }
   try {
     if (!argv1) return false;
     const me = fileURLToPath(metaUrl);

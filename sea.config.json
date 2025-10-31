@@ -1,0 +1,6 @@
+{
+  "main": "dist/bundle.cjs",
+  "output": "dist/reflect-sync.blob",
+  "execArgv": ["--no-warnings"],
+  "disableExperimentalSEAWarning": true
+}

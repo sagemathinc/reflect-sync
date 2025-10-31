@@ -128,6 +128,8 @@ program
     "remote watch command for micro-sync (emits NDJSON)",
     `${CLI_NAME} watch`,
   )
+  .option("--session-id <id>", "optional session id to enable heartbeats")
+  .option("--session-db <path>", "path to session database")
   .option("--disable-hot-watch", "only sync during the full sync cycle", false)
   .action(async (opts, command) => {
     // Safety: disallow both sides remote (two-remote rsync not yet supported)

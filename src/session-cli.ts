@@ -2,7 +2,6 @@
 import { Command, Option } from "commander";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import {
   ensureSessionDb,
   getSessionDbPath,
@@ -67,9 +66,6 @@ function parseLabelPairs(pairs: string[]): Record<string, string> {
   return out;
 }
 
-// Find dist/scheduler.js next to the compiled CLI
-const SCHED = fileURLToPath(new URL("./scheduler.js", import.meta.url));
-
 // Spawn scheduler for a session row
 function spawnSchedulerForSession(sessionDb: string, row: any): number {
   // Ensure DB file paths exist (materialize if needed)
@@ -77,8 +73,9 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
   const sessDir = deriveSessionPaths(row.id, home).dir;
   fs.mkdirSync(sessDir, { recursive: true });
 
-  const args: string[] = [
-    SCHED,
+  const args: string[] = process.env.RFSYNC_BUNDLED ? [] : [process.argv[1]];
+  args.push(
+    "scheduler",
     "--alpha-root",
     row.alpha_root,
     "--beta-root",
@@ -93,7 +90,7 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
     row.prefer,
     "--hash",
     row.hash_alg,
-  ];
+  );
 
   if (row.alpha_host) {
     args.push("--alpha-host", row.alpha_host);
