@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 // src/cli.ts (ESM, TypeScript)
 import { Command, Option } from "commander";
-import { createRequire } from "node:module";
 import { registerSessionCommands } from "./session-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
-
-const require = createRequire(import.meta.url);
-const { version } = require("../package.json");
+import pkg from "../package.json" with { type: "json" };
 
 const program = new Command()
   .name(CLI_NAME)
   .description("Fast rsync-powered two-way sync with SQLite metadata and SSH")
-  .version(version);
+  .version(pkg.version);
 
 // Global flags you want available everywhere
 program
