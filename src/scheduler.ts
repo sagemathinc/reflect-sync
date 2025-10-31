@@ -28,6 +28,8 @@ import { getBaseDb, getDb } from "./db.js";
 import { expandHome, isRoot, remoteWhich } from "./remote.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
+import { resolveCompression } from "./rsync-compression.js";
+import { argsJoin } from "./remote.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -47,6 +49,8 @@ export type SchedulerOptions = {
   remoteCommand?: string;
 
   disableHotWatch: boolean;
+
+  compress?: string;
 
   sessionDb?: string;
   sessionId?: number;
@@ -101,6 +105,7 @@ function buildProgram(): Command {
       "only sync during the full sync cycle",
       false,
     )
+    .option("--compress", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
     .option(
       "--session-id <id>",
       "optional session id to enable heartbeats, report state, etc",
@@ -127,6 +132,7 @@ function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteCommand: opts.remoteCommand,
     disableHotWatch: !!opts.disableHotWatch,
+    compress: opts.compress,
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
   };
@@ -171,6 +177,7 @@ export async function runScheduler({
   betaRemoteDb,
   remoteCommand,
   disableHotWatch,
+  compress,
   sessionDb,
   sessionId,
 }: SchedulerOptions): Promise<void> {
@@ -190,6 +197,8 @@ export async function runScheduler({
 
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
+
+  compress = await resolveCompression(alphaHost || betaHost, compress);
 
   // Resolve ~ for any remote paths once up-front
   alphaRoot = await expandHome(alphaRoot, alphaHost, verbose);
@@ -259,7 +268,7 @@ export async function runScheduler({
     ok: boolean;
     lastZero: boolean;
   }> {
-    if (verbose) console.log(`${cmd} ${args.join(" ")}`);
+    if (verbose) console.log(`${cmd} ${argsJoin(args)}`);
     return new Promise((resolve) => {
       const t0 = Date.now();
       let lastZero = false;
@@ -341,14 +350,14 @@ export async function runScheduler({
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
-    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+    if (verbose) console.log("$ ssh", argsJoin(sshArgs));
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
     });
 
     const ingestArgs = ["ingest", "--db", params.localDb];
-    if (verbose) console.log(CLI_NAME, ingestArgs.join(" "));
+    if (verbose) console.log(CLI_NAME, argsJoin(ingestArgs));
     const ingestP = spawn(CLI_NAME, ingestArgs, {
       stdio: [
         "pipe",
@@ -402,7 +411,7 @@ export async function runScheduler({
       "--root",
       root,
     ];
-    if (verbose) console.log("$ ssh", sshArgs.join(" "));
+    if (verbose) console.log("$ ssh", argsJoin(sshArgs));
 
     // stdin=pipe so we can send EOF to make remote `watch` exit
     const sshP = spawn("ssh", sshArgs, {
@@ -509,6 +518,7 @@ export async function runScheduler({
     dryRun,
     verbose,
     spawnTask,
+    compress,
     log,
   });
 
@@ -766,6 +776,8 @@ export async function runScheduler({
       baseDb,
       "--prefer",
       prefer,
+      "--compress",
+      compress!,
     ];
     if (sessionDb && sessionId) {
       mArgs.push("--session-db", sessionDb, "--session-id", String(sessionId));

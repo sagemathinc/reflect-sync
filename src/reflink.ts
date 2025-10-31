@@ -2,6 +2,7 @@
 import { cpus } from "node:os";
 import { stat, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { argsJoin } from "./remote.js";
 
 export async function sameDevice(a: string, b: string): Promise<boolean> {
   const [sa, sb] = await Promise.all([stat(a), stat(b)]);
@@ -20,7 +21,7 @@ function run(cmd: string, args: string[], cwd?: string): Promise<void> {
 
     p.on("exit", (code) => {
       if (code === 0) return res();
-      const msg = `${cmd} ${args.join(" ")} -> ${code}${errBuf ? `\n${errBuf}` : ""}`;
+      const msg = `${cmd} ${argsJoin(args)} -> ${code}${errBuf ? `\n${errBuf}` : ""}`;
       rej(new Error(msg));
     });
   });

@@ -22,7 +22,7 @@ import {
 import { registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
-import { ensureRemoteParentDir } from "./remote.js";
+import { argsJoin, ensureRemoteParentDir } from "./remote.js";
 import { CLI_NAME } from "./constants.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 
@@ -32,19 +32,27 @@ type Endpoint = { root: string; host?: string };
 // - local: "~/work" or "/abs/path" -> {root: absolute path, host: undefined}
 // - remote: "user@host:~/work" or "host:/abs" -> {root: as-given (keep ~ for remote), host}
 // Windows drive-letter paths like "C:\x" won’t be mistaken as remote (colon rule).
-function parseEndpoint(spec: string): Endpoint {
-  // treat as remote if there is a colon AND (contains "@", or starts with something that clearly looks like a host)
-  const looksLikeWindows = /^[A-Za-z]:[\\/]/.test(spec);
+export function parseEndpoint(spec: string): Endpoint {
+  // treat as local if absolute path (starts with /) or starts with ~ or looks like
+  // absolute windows path, AND does not contain a colon.
   const colon = spec.indexOf(":");
-  if (!looksLikeWindows && colon > 0) {
-    const host = spec.slice(0, colon);
-    const root = spec.slice(colon + 1);
-    if (host.includes("@") || /^[a-z0-9_.-]+$/.test(host)) {
-      // keep ~ unexpanded for remote; resolve relative pieces a bit
-      return { host, root: root || "~" };
-    }
+  if (colon <= 0) {
+    // no colon so definitely not remote  (or starts with :)
+    return { root: spec || "~" };
   }
-  return { root: spec };
+
+  // treat as remote if there is a colon AND (contains "@", or
+  // starts with something that clearly looks like a host)
+  const looksLikeWindows = /^[A-Za-z]:[\\]/.test(spec);
+  if (looksLikeWindows || spec.startsWith("/") || spec.startsWith("~")) {
+    // absolute path or relative to home -- definitely not remote
+    return { root: spec || "~" };
+  }
+
+  // not obviously a path, and does have a colon
+  const host = spec.slice(0, colon);
+  const root = spec.slice(colon + 1);
+  return { host, root: root || "~" };
 }
 
 // Collect `-l/--label k=v` repeatables
@@ -90,6 +98,8 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
     row.prefer,
     "--hash",
     row.hash_alg,
+    "--compress",
+    row.compress ?? "auto",
   );
 
   if (row.alpha_host) {
@@ -107,7 +117,7 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 
-  console.log(`${process.execPath} ${args.join(" ")}`);
+  console.log(`${process.execPath} ${argsJoin(args)}`);
   // Important: keep stdio detached so it runs in background (daemon-esque)
   const child = spawn(process.execPath, args, {
     stdio: "ignore",
@@ -168,6 +178,16 @@ export function registerSessionCommands(program: Command) {
         .choices(listSupportedHashes())
         .default(defaultHashAlg()),
     )
+    .addOption(
+      new Option("--compress <algorithm>", "rsync compression algorithm")
+        .choices(["auto", "zstd", "lz4", "zlib", "zlibx", "none"])
+        .default("auto"),
+    )
+    .option(
+      "--compress-level <level>",
+      "options -- zstd: -131072..22 (3 default), zlib/zlibx: 1..9 (6 default), lz4: 0",
+      "",
+    )
     .action(async (alphaSpec: string, betaSpec: string, opts: any) => {
       if (opts.listHashes) {
         console.log(listSupportedHashes().join("\n"));
@@ -179,6 +199,7 @@ export function registerSessionCommands(program: Command) {
 
       const a = parseEndpoint(alphaSpec);
       const b = parseEndpoint(betaSpec);
+      const compress = `${opts.compress}${opts.compressLevel ? ":" + opts.compressLevel : ""}`;
 
       const id = createSession(
         sessionDb,
@@ -190,6 +211,7 @@ export function registerSessionCommands(program: Command) {
           alpha_host: a.host ?? null,
           beta_host: b.host ?? null,
           hash_alg: opts.hash,
+          compress,
         },
         parseLabelPairs(opts.label || []),
       );

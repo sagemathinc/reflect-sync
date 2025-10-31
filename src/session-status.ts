@@ -172,6 +172,7 @@ function tableOutput(
     }
     if (sess.prefer) add("prefer", sess.prefer);
     if (sess.hash_alg) add("hash", sess.hash_alg);
+    if (sess.compress) add("compress", sess.compress);
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
     if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));

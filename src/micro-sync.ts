@@ -1,4 +1,4 @@
-// micro-sync.ts
+// src/micro-sync.ts
 import path from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -8,8 +8,13 @@ import {
   lstat as fsLstat,
   stat as fsStat,
 } from "node:fs/promises";
-import type { SpawnOptions } from "node:child_process";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
+import type { SpawnOptions } from "node:child_process";
+import {
+  isCompressing,
+  rsyncCompressionArgs,
+  type RsyncCompressSpec,
+} from "./rsync-compression.js";
 
 export type MicroSyncDeps = {
   alphaRoot: string;
@@ -36,21 +41,21 @@ export type MicroSyncDeps = {
     msg: string,
     details?: any,
   ) => void;
+  compress?: RsyncCompressSpec;
 };
 
-export function makeMicroSync(deps: MicroSyncDeps) {
-  const {
-    alphaRoot,
-    betaRoot,
-    alphaHost,
-    betaHost,
-    prefer,
-    dryRun,
-    verbose,
-    spawnTask,
-    log,
-  } = deps;
-
+export function makeMicroSync({
+  alphaRoot,
+  betaRoot,
+  alphaHost,
+  betaHost,
+  prefer,
+  dryRun,
+  verbose,
+  spawnTask,
+  log,
+  compress,
+}: MicroSyncDeps) {
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
 
@@ -61,6 +66,23 @@ export function makeMicroSync(deps: MicroSyncDeps) {
   // Last time we pushed a path in a given direction.
   const lastA2B = new Map<string, number>();
   const lastB2A = new Map<string, number>();
+
+  function rsyncRoots(
+    fromRoot: string,
+    fromHost: string | undefined,
+    toRoot: string,
+    toHost: string | undefined,
+    compression: RsyncCompressSpec | undefined,
+  ) {
+    const slash = (s: string) => (s.endsWith("/") ? s : s + "/");
+    const from = fromHost ? `${fromHost}:${slash(fromRoot)}` : slash(fromRoot);
+    const to = toHost ? `${toHost}:${slash(toRoot)}` : slash(toRoot);
+
+    const wantDisableSSH = isCompressing(compression);
+    const sshCmd = wantDisableSSH ? "ssh -oCompression=no" : "ssh";
+    const transport = fromHost || toHost ? (["-e", sshCmd] as string[]) : [];
+    return { from, to, transport };
+  }
 
   async function statKind(
     root: string,
@@ -105,30 +127,20 @@ export function makeMicroSync(deps: MicroSyncDeps) {
     }
   }
 
-  function rsyncRoots(
-    fromRoot: string,
-    fromHost: string | undefined,
-    toRoot: string,
-    toHost: string | undefined,
-  ) {
-    const slash = (s: string) => (s.endsWith("/") ? s : s + "/");
-    const from = fromHost ? `${fromHost}:${slash(fromRoot)}` : slash(fromRoot);
-    const to = toHost ? `${toHost}:${slash(toRoot)}` : slash(toRoot);
-    const transport = fromHost || toHost ? (["-e", "ssh"] as string[]) : [];
-    return { from, to, transport };
-  }
-
   async function doRsync(
     direction: "alpha->beta" | "beta->alpha",
     listFile: string,
     extra: string[] = [],
   ): Promise<boolean> {
+    const compArgs = rsyncCompressionArgs(compress);
+
     if (direction === "alpha->beta") {
       const { from, to, transport } = rsyncRoots(
         alphaRoot,
         alphaHost,
         betaRoot,
         betaHost,
+        compress,
       );
       const res = await spawnTask(
         "rsync",
@@ -139,6 +151,7 @@ export function makeMicroSync(deps: MicroSyncDeps) {
           "-I",
           "--relative",
           "--from0",
+          ...compArgs,
           ...extra,
           `--files-from=${listFile}`,
           from,
@@ -153,6 +166,7 @@ export function makeMicroSync(deps: MicroSyncDeps) {
         betaHost,
         alphaRoot,
         alphaHost,
+        compress,
       );
       const res = await spawnTask(
         "rsync",
@@ -163,6 +177,7 @@ export function makeMicroSync(deps: MicroSyncDeps) {
           "-I",
           "--relative",
           "--from0",
+          ...compArgs,
           ...extra,
           `--files-from=${listFile}`,
           from,

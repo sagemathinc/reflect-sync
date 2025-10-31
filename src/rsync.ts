@@ -5,14 +5,24 @@ import { mkdtemp, rm, stat as fsStat } from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
 import { finished } from "node:stream/promises";
+import {
+  isCompressing,
+  type RsyncCompressSpec,
+  rsyncCompressionArgs,
+} from "./rsync-compression.js";
+import { argsJoin } from "./remote.js";
 
 // extremely verbose -- showing all output of rsync, which
 // can be massive, of course.
 const verbose2 = !!process.env.RFSYNC_VERBOSE2;
 
-const RSYNC_COPY_CHUNK = Number(process.env.RFSYNC_COPY_CHUNK ?? 10_000);
-const RSYNC_COPY_CONCURRENCY = Number(process.env.RFSYNC_COPY_CONCURRENCY ?? 2);
-const RSYNC_DIR_CHUNK = Number(process.env.RFSYNC_DIR_CHUNK ?? 20_000);
+const RFSYNC_COPY_CHUNK = Number(process.env.RFSYNC_COPY_CHUNK ?? 10_000);
+const RFSYNC_COPY_CONCURRENCY = Number(
+  process.env.RFSYNC_COPY_CONCURRENCY ?? 2,
+);
+const RFSYNC_DIR_CHUNK = Number(process.env.RFSYNC_DIR_CHUNK ?? 20_000);
+
+// ----------------------- Helpers -----------------------
 
 async function parallelMapLimit<T>(
   items: T[],
@@ -56,8 +66,8 @@ export async function rsyncCopyDirsChunked(
   } = {},
 ): Promise<void> {
   if (!dirRpaths.length) return;
-  const chunkSize = opts.chunkSize ?? RSYNC_DIR_CHUNK;
-  const concurrency = opts.concurrency ?? Math.min(4, RSYNC_COPY_CONCURRENCY);
+  const chunkSize = opts.chunkSize ?? RFSYNC_DIR_CHUNK;
+  const concurrency = opts.concurrency ?? Math.min(4, RFSYNC_COPY_CONCURRENCY);
 
   const sorted = Array.from(new Set(dirRpaths)).sort(); // stable, deduped
   const batches = chunk(sorted, chunkSize);
@@ -108,12 +118,13 @@ export async function rsyncCopyChunked(
     precreateDirs?: boolean; // precreate parent dirs with -d
     dryRun?: boolean | string;
     verbose?: boolean | string;
+    compress?: RsyncCompressSpec;
   } = {},
 ): Promise<{ ok: boolean }> {
   if (!fileRpaths.length) return { ok: true };
 
-  const chunkSize = opts.chunkSize ?? RSYNC_COPY_CHUNK;
-  const concurrency = opts.concurrency ?? RSYNC_COPY_CONCURRENCY;
+  const chunkSize = opts.chunkSize ?? RFSYNC_COPY_CHUNK;
+  const concurrency = opts.concurrency ?? RFSYNC_COPY_CONCURRENCY;
 
   // Sort for locality; dedupe
   const sorted = Array.from(new Set(fileRpaths)).sort();
@@ -161,6 +172,7 @@ export async function rsyncCopyChunked(
       {
         dryRun: opts.dryRun,
         verbose: opts.verbose,
+        compress: opts.compress,
       },
     );
     if (!ok) allOk = false;
@@ -283,10 +295,7 @@ export function run(
   verbose?: boolean | string,
 ): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
   const t = Date.now();
-  if (verbose)
-    console.log(
-      `$ ${cmd} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}`,
-    );
+  if (verbose) console.log(`$ ${cmd} ${argsJoin(args)}`);
   return new Promise((resolve) => {
     // ignore is critical for stdio since we don't read the output
     // and there is a lot, so it would otherwise DEADLOCK.
@@ -336,7 +345,11 @@ export async function rsyncCopy(
   toRoot: string,
   listFile: string,
   label: string,
-  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+  opts: {
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+    compress?: RsyncCompressSpec;
+  } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
     if (opts.verbose) console.log(`>>> rsync ${label}: nothing to do`);
@@ -347,11 +360,22 @@ export async function rsyncCopy(
   }
   const args = [
     ...rsyncArgsBase(opts, fromRoot, toRoot),
+    ...rsyncCompressionArgs(opts.compress),
     "--from0",
     `--files-from=${listFile}`,
     ensureTrailingSlash(fromRoot),
     ensureTrailingSlash(toRoot),
   ];
+
+  if (
+    (!fromRoot.startsWith("/") || !toRoot.startsWith("/")) &&
+    opts.compress &&
+    opts.compress != "none" &&
+    isCompressing(opts.compress)
+  ) {
+    args.push("-e", "ssh -oCompression=no");
+  }
+
   const res = await run("rsync", args, [0, 23, 24], opts.verbose); // accept partials
   if (opts.verbose) {
     console.log(`>>> rsync ${label}: done (code ${res.code})`);

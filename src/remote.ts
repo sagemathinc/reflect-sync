@@ -10,7 +10,7 @@ function shellEscape(s: string): string {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-function argsJoin(args: string[]): string {
+export function argsJoin(args: string[]): string {
   return args.map((x) => (x.includes(" ") ? `'${x}'` : x)).join(" ");
 }
 
@@ -64,7 +64,7 @@ export async function resolveRemoteHome(
     'cd ~ 2>/dev/null && pwd -P || (getent passwd "$(id -un)" | cut -d: -f6)';
   const args = ["-C", "-T", "-o", "BatchMode=yes", host, `sh -lc ${cmd}`];
 
-  if (verbose) console.log("$ ssh", args.join(" "));
+  if (verbose) console.log("$ ssh", argsJoin(args));
 
   const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "inherit"] });
 
@@ -122,7 +122,7 @@ export async function ensureRemoteParentDir(
   const dirname = posix.dirname(path);
   const cmd = `mkdir -p -- ${shellEscape(dirname)}`;
   const args = ["-C", "-T", "-o", "BatchMode=yes", host, "--", cmd];
-  if (verbose) console.log("$ ssh", args.join(" "));
+  if (verbose) console.log("$ ssh", argsJoin(args));
   await new Promise<void>((resolve, reject) => {
     const p = spawn("ssh", args, { stdio: ["ignore", "ignore", "inherit"] });
     p.on("exit", (c) =>

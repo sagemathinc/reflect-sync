@@ -40,6 +40,11 @@ function buildProgram(): Command {
     )
     .option("--lww-epsilon-ms <ms>", "LWW tie epsilon in ms", "3000")
     .option("--dry-run", "simulate without changing files", false)
+    .option(
+      "--compress <algo>",
+      "[auto|zstd|lz4|zlib|zlibx|none][:level]",
+      "auto",
+    )
     .option("--session-id <id>", "optional session id to enable heartbeats")
     .option("--session-db <path>", "path to session database")
     .option("--verbose", "enable verbose logging", false);
@@ -57,8 +62,9 @@ type MergeRsyncOptions = {
   lwwEpsilonMs: string;
   dryRun: boolean | string;
   verbose: boolean | string;
-  sessionDb?: string;
+  compress?: string;
   sessionId?: number;
+  sessionDb?: string;
 };
 
 // ---------- helpers ----------
@@ -81,11 +87,12 @@ export async function runMerge({
   lwwEpsilonMs,
   dryRun,
   verbose,
+  compress,
   sessionDb,
   sessionId,
 }: MergeRsyncOptions) {
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
-  const rsyncOpts = { dryRun, verbose };
+  const rsyncOpts = { dryRun, verbose, compress };
 
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);

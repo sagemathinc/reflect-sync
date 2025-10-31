@@ -109,6 +109,7 @@ export interface SessionCreateInput {
   remote_scan_cmd?: string | null;
   remote_watch_cmd?: string | null;
   hash_alg?: string | null;
+  compress?: string | null;
 }
 
 export interface SessionPatch {
@@ -133,6 +134,7 @@ export interface SessionPatch {
   last_digest?: number | null;
   alpha_digest?: string | null;
   beta_digest?: string | null;
+  compress?: string | null;
 }
 
 export interface SessionRow {
@@ -160,6 +162,7 @@ export interface SessionRow {
   last_digest?: number | null;
   alpha_digest?: string | null;
   beta_digest?: string | null;
+  compress?: string | null;
 }
 
 // DB init
@@ -194,6 +197,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         events_db        TEXT,
 
         hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
+        compress         TEXT,
 
         desired_state    TEXT NOT NULL DEFAULT 'stopped',
         actual_state     TEXT NOT NULL DEFAULT 'stopped',
@@ -293,9 +297,9 @@ export function createSession(
         alpha_root, beta_root, prefer,
         alpha_host, beta_host, alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
-        hash_alg
+        hash_alg, compress
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const info = stmt.run(
       now,
@@ -311,6 +315,7 @@ export function createSession(
       input.remote_scan_cmd ?? `${CLI_NAME} scan`,
       input.remote_watch_cmd ?? `${CLI_NAME} watch`,
       input.hash_alg ?? defaultHashAlg(),
+      input.compress ?? null,
     );
     const id = Number(info.lastInsertRowid);
 
