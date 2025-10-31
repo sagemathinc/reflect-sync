@@ -121,12 +121,9 @@ program
     "remote beta sqlite DB path (on SSH host)",
     `~/.local/share/${CLI_NAME}/beta.db`,
   )
-  // commands to run remotely
-  .option("--remote-scan-cmd <cmd>", "remote scan command", `${CLI_NAME} scan`)
   .option(
-    "--remote-watch-cmd <cmd>",
-    "remote watch command for micro-sync (emits NDJSON)",
-    `${CLI_NAME} watch`,
+    "--remote-command <cmd>",
+    "absolute path to remote reflect-sync command",
   )
   .option("--session-id <id>", "optional session id to enable heartbeats")
   .option("--session-db <path>", "path to session database")

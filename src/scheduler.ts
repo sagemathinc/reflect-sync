@@ -25,7 +25,7 @@ import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
-import { expandHome, isRoot } from "./remote.js";
+import { expandHome, isRoot, remoteWhich } from "./remote.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 
@@ -44,9 +44,8 @@ export type SchedulerOptions = {
   betaHost?: string;
   alphaRemoteDb: string;
   betaRemoteDb: string;
+  remoteCommand?: string;
 
-  remoteScanCmd: string; // e.g. "CLI_NAME scan"
-  remoteWatchCmd: string; // e.g. "CLI_NAME watch"
   disableHotWatch: boolean;
 
   sessionDb?: string;
@@ -93,16 +92,9 @@ function buildProgram(): Command {
       "remote path to beta sqlite db (on the SSH host)",
       `~/.local/share/${CLI_NAME}/beta.db`,
     )
-    // commands to run on remote for scan/micro-watch
     .option(
-      "--remote-scan-cmd <cmd>",
-      "remote scan command",
-      `${CLI_NAME} scan`,
-    )
-    .option(
-      "--remote-watch-cmd <cmd>",
-      "remote watch command for micro-sync (emits NDJSON lines)",
-      `${CLI_NAME} watch`,
+      "--remote-command <cmd>",
+      "absolute path to remote reflect-sync command",
     )
     .option(
       "--disable-hot-watch",
@@ -130,8 +122,7 @@ function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     betaHost: opts.betaHost?.trim() || undefined,
     alphaRemoteDb: String(opts.alphaRemoteDb),
     betaRemoteDb: String(opts.betaRemoteDb),
-    remoteScanCmd: String(opts.remoteScanCmd),
-    remoteWatchCmd: String(opts.remoteWatchCmd),
+    remoteCommand: opts.remoteCommand,
     disableHotWatch: !!opts.disableHotWatch,
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
@@ -175,8 +166,7 @@ export async function runScheduler({
   betaHost,
   alphaRemoteDb,
   betaRemoteDb,
-  remoteScanCmd,
-  remoteWatchCmd,
+  remoteCommand,
   disableHotWatch,
   sessionDb,
   sessionId,
@@ -301,16 +291,11 @@ export async function runScheduler({
   }
 
   // Pipe: ssh scan --emit-delta  →  CLI_NAME ingest --db <local.db>
-  function splitCmd(s: string): string[] {
-    return s.trim().split(/\s+/);
-  }
-
   // ssh to a remote, run a scan, and writing the resulting
   // data into our local database.
   const lastRemoteScan = { start: 0, ok: false, whenOk: 0 };
   async function sshScanIntoMirror(params: {
     host: string;
-    remoteScanCmd: string;
     root: string; // remote root
     remoteDb: string; // remote DB path (on remote host)
     localDb: string; // local mirror DB for ingest
@@ -322,10 +307,12 @@ export async function runScheduler({
     lastZero: boolean;
   }> {
     const t0 = Date.now();
+    // if remote command not known, determine it from the PATH
+    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, { verbose });
     const sshArgs = [
       "-C",
       params.host,
-      ...splitCmd(params.remoteScanCmd),
+      `${remoteCommand} scan`,
       "--root",
       params.root,
       "--emit-delta",
@@ -391,20 +378,24 @@ export async function runScheduler({
 
   // Remote delta stream (watch)
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
-  function startRemoteDeltaStream(side: "alpha" | "beta") {
+  type StreamControl = { add: (dirs: string[]) => void; kill: () => void };
+
+  async function startRemoteDeltaStream(
+    side: "alpha" | "beta",
+  ): Promise<null | StreamControl> {
     if (disableHotWatch) return null;
     const host = side === "alpha" ? alphaHost : betaHost;
     if (!host) return null;
     const root = side === "alpha" ? alphaRoot : betaRoot;
     const localDb = side === "alpha" ? alphaDb : betaDb;
-
+    remoteCommand ??= await remoteWhich(host, CLI_NAME, { verbose });
     const sshArgs = [
       "-C",
       "-T",
       "-o",
       "BatchMode=yes",
       host,
-      ...splitCmd(remoteWatchCmd),
+      `${remoteCommand} watch`,
       "--root",
       root,
     ];
@@ -696,7 +687,6 @@ export async function runScheduler({
       a = alphaIsRemote
         ? await sshScanIntoMirror({
             host: alphaHost!,
-            remoteScanCmd,
             root: alphaRoot,
             localDb: alphaDb,
             remoteDb: alphaRemoteDb!,
@@ -735,7 +725,6 @@ export async function runScheduler({
       b = betaIsRemote
         ? await sshScanIntoMirror({
             host: betaHost!,
-            remoteScanCmd,
             root: betaRoot,
             localDb: betaDb,
             remoteDb: betaRemoteDb!,
@@ -971,21 +960,20 @@ export async function runScheduler({
   }
 
   let remoteStreams: Array<{ kill: () => void }> = [];
+  let alphaStream: StreamControl | null = null;
+  let betaStream: StreamControl | null = null;
 
-  let alphaStream: ReturnType<typeof startRemoteDeltaStream> | null = null;
-  let betaStream: ReturnType<typeof startRemoteDeltaStream> | null = null;
-
-  function ensureRemoteStreams() {
+  async function ensureRemoteStreams() {
     if (alphaIsRemote && !alphaStream) {
-      alphaStream = startRemoteDeltaStream("alpha");
+      alphaStream = await startRemoteDeltaStream("alpha");
     }
     if (betaIsRemote && !betaStream) {
-      betaStream = startRemoteDeltaStream("beta");
+      betaStream = await startRemoteDeltaStream("beta");
     }
   }
 
   async function loop() {
-    ensureRemoteStreams();
+    await ensureRemoteStreams();
 
     // capture add() so seedHotFromDb can push hot dirs to the ONE watcher
     addRemoteAlphaHotDirs = alphaStream?.add ?? null;
@@ -1036,8 +1024,6 @@ export async function runScheduler({
     betaHost,
     alphaRemoteDb,
     betaRemoteDb,
-    remoteScanCmd,
-    remoteWatchCmd,
     MAX_WATCHERS,
     HOT_TTL_MS,
     SHALLOW_DEPTH,

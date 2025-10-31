@@ -104,12 +104,6 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
   if (row.beta_remote_db) {
     args.push("--beta-remote-db", row.beta_remote_db);
   }
-  if (row.remote_scan_cmd) {
-    args.push("--remote-scan-cmd", row.remote_scan_cmd);
-  }
-  if (row.remote_watch_cmd) {
-    args.push("--remote-watch-cmd", row.remote_watch_cmd);
-  }
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 

@@ -10,6 +10,44 @@ function shellEscape(s: string): string {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
+function argsJoin(args: string[]): string {
+  return args.map((x) => (x.includes(" ") ? `'${x}'` : x)).join(" ");
+}
+
+const remoteWhichCache = new Map<string, string>();
+
+export async function remoteWhich(
+  host: string,
+  cmd: string,
+  { verbose, noCache }: { verbose?: boolean; noCache?: boolean } = {},
+): Promise<string> {
+  const key = `${host}:${cmd}`;
+  if (!noCache && remoteWhichCache.has(key)) {
+    return remoteWhichCache.get(key)!;
+  }
+  const args = [
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+    host,
+    `sh -lc 'which ${cmd}'`,
+  ];
+
+  if (verbose) console.log("$ ssh", argsJoin(args));
+  const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  p.stdout!.on("data", (c) => (out += c));
+  const code: number | null = await new Promise((res) =>
+    p.once("exit", (c) => res(c)),
+  );
+  if (code !== 0)
+    throw new Error(`'which ${cmd}' failed on ${host} (exit ${code})`);
+  out = out.trim();
+  remoteWhichCache.set(key, out);
+  return out;
+}
+
 const remoteHomeCache = new Map<string, string>();
 
 export async function resolveRemoteHome(
@@ -24,7 +62,7 @@ export async function resolveRemoteHome(
   // Fallback: getent passwd <user> | cut -d: -f6
   const cmd =
     'cd ~ 2>/dev/null && pwd -P || (getent passwd "$(id -un)" | cut -d: -f6)';
-  const args = ["-C", "-T", "-o", "BatchMode=yes", host, "sh", "-lc", cmd];
+  const args = ["-C", "-T", "-o", "BatchMode=yes", host, `sh -lc ${cmd}`];
 
   if (verbose) console.log("$ ssh", args.join(" "));
 
@@ -34,7 +72,7 @@ export async function resolveRemoteHome(
   p.stdout!.on("data", (c) => (out += c));
 
   const code: number | null = await new Promise((res) =>
-    p.on("exit", (c) => res(c)),
+    p.once("exit", (c) => res(c)),
   );
   if (code !== 0)
     throw new Error(`Failed to resolve remote HOME on ${host} (exit ${code})`);
