@@ -26,7 +26,7 @@
     "bundle:main": "rollup -c rollup.config.mjs",
     "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main",
     "sea:blob": "node --experimental-sea-config sea.config.json",
-    "sea:inject": "cp $(command -v node) dist/reflect-sync && pnpx postject dist/reflect-sync NODE_SEA_BLOB dist/reflect-sync.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 2>&1 | grep -v 'find string offset for section name'",
+    "sea:inject": "cp $(command -v node) dist/reflect-sync && pnpx postject dist/reflect-sync NODE_SEA_BLOB dist/reflect-sync.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 2>&1 | sed -E '/find string offset for section name/d'",
     "sea": "pnpm bundle && pnpm sea:blob && pnpm sea:inject"
   },
   "engines": {
