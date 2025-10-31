@@ -11,6 +11,7 @@ export default {
     sourcemap: false,
     banner: "process.env.RFSYNC_BUNDLED = '1';"
   },
+  external: (id) => id.startsWith('node:'),
   plugins: [
     resolve({ preferBuiltins: true }),
     commonjs(),
