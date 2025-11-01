@@ -129,6 +129,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const CPU_COUNT = Math.min(os.cpus().length, 8);
   const DB_BATCH_SIZE = 2000;
   const DISPATCH_BATCH = 256; // files per worker message
+  const HASH_PROGRESS_INTERVAL_MS = Number(
+    process.env.REFLECT_HASH_PROGRESS_MS ?? 3000,
+  );
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
@@ -252,7 +255,6 @@ ON CONFLICT(path) DO UPDATE SET
     ctime: number;
     mtime: number;
   }; // ABS path
-  type JobBatch = { jobs: Job[]; numericIds?: boolean };
   type Result =
     | { path: string; hash: string; ctime: number; mtime: number } // ABS path echoed back
     | { path: string; error: string };
@@ -263,6 +265,13 @@ ON CONFLICT(path) DO UPDATE SET
 
   const freeWorkers: Worker[] = [...workers];
   const waiters: Array<() => void> = [];
+  let dispatched = 0;
+  let received = 0;
+  let hashTotalFiles = 0;
+  let hashCompletedFiles = 0;
+  let hashTotalBytes = 0;
+  let hashCompletedBytes = 0;
+  let lastHashProgressEmit = 0;
 
   function nextWorker(): Promise<Worker> {
     return new Promise((resolve) => {
@@ -270,6 +279,38 @@ ON CONFLICT(path) DO UPDATE SET
       if (w) return resolve(w);
       waiters.push(() => resolve(freeWorkers.pop()!));
     });
+  }
+
+  function emitHashProgress(force = false) {
+    if (!hashTotalFiles) return;
+    const now = Date.now();
+    if (
+      !force &&
+      HASH_PROGRESS_INTERVAL_MS > 0 &&
+      now - lastHashProgressEmit < HASH_PROGRESS_INTERVAL_MS
+    ) {
+      return;
+    }
+    const percent =
+      hashTotalBytes > 0
+        ? Math.min(
+            100,
+            Math.round((hashCompletedBytes / hashTotalBytes) * 100),
+          )
+        : Math.min(
+            100,
+            Math.round((hashCompletedFiles / hashTotalFiles) * 100),
+          );
+    logger.info("progress", {
+      scope: "scan.hash",
+      stage: "hash",
+      totalFiles: hashTotalFiles,
+      completedFiles: hashCompletedFiles,
+      totalBytes: hashTotalBytes,
+      completedBytes: hashCompletedBytes,
+      percent,
+    });
+    lastHashProgressEmit = now;
   }
 
   // Buffer for hash results (rpaths) to batch DB writes
@@ -416,9 +457,6 @@ ON CONFLICT(path) DO UPDATE SET
     { size: number; ctime: number; mtime: number }
   >();
 
-  let dispatched = 0;
-  let received = 0;
-
   const absRoot = path.resolve(root);
 
   // Handle worker replies (batched)
@@ -431,36 +469,43 @@ ON CONFLICT(path) DO UPDATE SET
       received += arr.length;
 
       for (const r of arr) {
-        if ("error" in r) {
-          // ignore per-file hash errors in this pass
-        } else {
-          const rpath = toRel(r.path, absRoot);
-          hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
-          if (await isRecent(r.path, undefined, r.mtime)) {
-            touchBatch.push([rpath, Date.now()]);
-          }
-          const meta = pendingMeta.get(r.path); // ABS key
-          if (meta) {
-            if (emitDelta) {
-              emitObj({
-                path: rpath,
-                size: meta.size,
-                ctime: meta.ctime,
-                mtime: meta.mtime,
-                op_ts: meta.mtime,
-                hash: r.hash,
-                deleted: 0,
-              });
-            }
-            pendingMeta.delete(r.path);
-          }
-          if (hashResults.length >= DB_BATCH_SIZE) {
-            applyHashBatch(hashResults);
-            hashResults.length = 0;
-            flushTouchBatch(touchBatch);
-            flushDeltaBuf();
-          }
+        hashCompletedFiles += 1;
+        const metaToday = pendingMeta.get(r.path);
+        if (metaToday) {
+          hashCompletedBytes += metaToday.size;
         }
+        if ("error" in r) {
+          pendingMeta.delete(r.path);
+          emitHashProgress();
+          continue;
+        }
+
+        const rpath = toRel(r.path, absRoot);
+        hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
+        if (await isRecent(r.path, undefined, r.mtime)) {
+          touchBatch.push([rpath, Date.now()]);
+        }
+        if (metaToday) {
+          if (emitDelta) {
+            emitObj({
+              path: rpath,
+              size: metaToday.size,
+              ctime: metaToday.ctime,
+              mtime: metaToday.mtime,
+              op_ts: metaToday.mtime,
+              hash: r.hash,
+              deleted: 0,
+            });
+          }
+          pendingMeta.delete(r.path);
+        }
+        if (hashResults.length >= DB_BATCH_SIZE) {
+          applyHashBatch(hashResults);
+          hashResults.length = 0;
+          flushTouchBatch(touchBatch);
+          flushDeltaBuf();
+        }
+        emitHashProgress();
       }
     });
   }
@@ -522,7 +567,7 @@ ON CONFLICT(path) DO UPDATE SET
     const metaBuf: Row[] = [];
     const dirMetaBuf: DirRow[] = [];
     const linksBuf: LinkRow[] = [];
-    let jobBuf: Job[] = [];
+    const hashJobs: Job[] = [];
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
@@ -619,16 +664,10 @@ ON CONFLICT(path) DO UPDATE SET
         const needsHash = !row || row.hashed_ctime !== ctime;
 
         if (needsHash) {
-          // keep ABS key here; worker replies with ABS and we’ll map to rpath
           pendingMeta.set(abs, { size, ctime, mtime });
-          // ABS path for worker
-          jobBuf.push({ path: abs, size, ctime, mtime });
-          if (jobBuf.length >= DISPATCH_BATCH) {
-            const w = await nextWorker();
-            w.postMessage({ jobs: jobBuf, numericIds });
-            dispatched += jobBuf.length;
-            jobBuf = [];
-          }
+          hashJobs.push({ path: abs, size, ctime, mtime });
+          hashTotalFiles += 1;
+          hashTotalBytes += size;
         }
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";
@@ -702,20 +741,10 @@ ON CONFLICT(path) DO UPDATE SET
       linksBuf.length = 0;
     }
 
-    // Flush remaining job batch
-    if (jobBuf.length) {
-      const w = await nextWorker();
-      (w as any).postMessage({ jobs: jobBuf } as JobBatch);
-      dispatched += jobBuf.length;
-      jobBuf = [];
-    }
+    clearInterval(periodicFlush);
 
-    // Wait for all hashes to finish
-    while (received < dispatched) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
+    await processHashJobs(hashJobs);
 
-    // Final flush of hash results and touches
     if (hashResults.length) {
       applyHashBatch(hashResults);
       hashResults.length = 0;
@@ -779,7 +808,6 @@ ON CONFLICT(path) DO UPDATE SET
       flushDeltaBuf();
     }
 
-    clearInterval(periodicFlush);
     await Promise.all(workers.map((w) => w.terminate()));
 
     if (vacuum) {
@@ -794,6 +822,28 @@ ON CONFLICT(path) DO UPDATE SET
   }
 
   await scan();
+
+  async function processHashJobs(jobs: Job[]) {
+    if (!jobs.length) return;
+
+    hashCompletedFiles = 0;
+    hashCompletedBytes = 0;
+    lastHashProgressEmit = 0;
+    emitHashProgress(true);
+
+    for (let i = 0; i < jobs.length; i += DISPATCH_BATCH) {
+      const batch = jobs.slice(i, i + DISPATCH_BATCH);
+      const w = await nextWorker();
+      w.postMessage({ jobs: batch, numericIds });
+      dispatched += batch.length;
+    }
+
+    while (received < dispatched) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    emitHashProgress(true);
+  }
 }
 
 // ---------- CLI entry (preserved) ----------
