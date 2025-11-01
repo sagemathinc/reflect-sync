@@ -36,6 +36,7 @@ export interface SessionLogQuery {
   minLevel?: LogLevel;
   order?: "asc" | "desc";
   scope?: string;
+  message?: string;
 }
 
 export interface SessionLogStoreOptions {
@@ -180,6 +181,7 @@ export function fetchSessionLogs(
     minLevel,
     order = "asc",
     scope,
+    message,
   }: SessionLogQuery = {},
 ): SessionLogRow[] {
   const db = ensureSessionDb(sessionDbPath);
@@ -202,6 +204,10 @@ export function fetchSessionLogs(
     if (scope) {
       where.push("scope = ?");
       params.push(scope);
+    }
+    if (message) {
+      where.push("message = ?");
+      params.push(message);
     }
 
     const stmt = db.prepare(

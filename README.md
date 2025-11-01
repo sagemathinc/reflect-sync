@@ -117,7 +117,7 @@ reflect create <alpha> <beta>         # start a new session
 reflect list                          # list sessions
 reflect status <id-or-name>                   # show heartbeat / merge status
 reflect logs <id-or-name> [--follow]          # stream recent structured logs
-reflect logs <id-or-name> --scope progress    # tail only progress events (scan/hash/rsync/etc.)
+reflect logs <id-or-name> --message progress  # tail only progress events (scan/hash/rsync/etc.)
 reflect pause <id-or-name...>                 # pause one or more sessions
 reflect resume <id-or-name...>                # resume (and auto-start scheduler if needed)
 reflect terminate <id-or-name...>             # stop and remove session state
@@ -137,7 +137,7 @@ All commands honor `--session-db <path>` if you want to keep session metadata ou
   - shallow root watchers + bounded deep “hot” watchers (recently touched subtrees),
   - **micro-sync** a small list of hot files immediately,
   - periodically run a full scan + merge; interval adapts to prior cycle time and recent rsync errors.
-  - **Progress logging:** hashing and rsync stages emit `progress` scope logs with byte totals, percentages, speeds, and ETA. Use `reflect logs <id> --scope progress -f` to observe in real time.
+  - **Progress logging:** hashing and rsync stages emit logs tagged with `message="progress"` plus scopes in the metadata. Use `reflect logs <id> --message progress -f` to observe in real time.
 
 ---
 

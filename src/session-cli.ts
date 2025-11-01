@@ -294,6 +294,7 @@ export function registerSessionCommands(program: Command) {
       .option("-f, --follow", "follow log output", false)
       .option("--json", "emit newline-delimited JSON", false)
       .option("--scope <scope>", "only include logs with matching scope")
+      .option("--message <message>", "only include logs with matching message")
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -316,6 +317,7 @@ export function registerSessionCommands(program: Command) {
           sinceTs,
           order: "desc",
           scope: opts.scope ? String(opts.scope) : undefined,
+          message: opts.message ? String(opts.message) : undefined,
         }).reverse();
 
         let lastId = 0;
@@ -343,6 +345,7 @@ export function registerSessionCommands(program: Command) {
               minLevel,
               order: "asc",
               scope: opts.scope ? String(opts.scope) : undefined,
+              message: opts.message ? String(opts.message) : undefined,
             });
             if (rows.length) {
               renderRows(rows, {
