@@ -16,7 +16,12 @@ import {
   recordHeartbeat,
   type SessionRow,
 } from "./session-db.js";
-import { stopPid, terminateSession, newSession } from "./session-manage.js";
+import {
+  stopPid,
+  terminateSession,
+  newSession,
+  resetSession,
+} from "./session-manage.js";
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
@@ -459,25 +464,38 @@ export function registerSessionCommands(program: Command) {
       .description("Reset sync for one or more sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
-        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+        async (
+          refs: string[],
+          opts: { sessionDb?: string },
+          command: Command,
+        ) => {
           const sessionDb = resolveSessionDb(opts, command);
-          const resolved: SessionRow[] = [];
+          const cliLogger = new ConsoleLogger(getLogLevel());
+          let hadError = false;
           for (const ref of refs) {
+            let row: SessionRow;
             try {
-              resolved.push(requireSessionRow(sessionDb, ref));
+              row = requireSessionRow(sessionDb, ref);
             } catch (err) {
               console.error((err as Error).message);
+              hadError = true;
+              continue;
+            }
+            const label = row.name ?? String(row.id);
+            try {
+              await resetSession({ sessionDb, id: row.id, logger: cliLogger });
+              console.log(
+                `reset session ${label}; run 'reflect resume ${label}' to restart`,
+              );
+            } catch (err) {
+              hadError = true;
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error(`failed to reset session ${label}: ${msg}`);
             }
           }
-          if (!resolved.length) {
+          if (hadError) {
             process.exitCode = 1;
-            return;
           }
-          console.error(
-            "reset command is not implemented yet for sessions:",
-            resolved.map((row) => row.name ?? row.id).join(", "),
-          );
-          process.exitCode = 1;
         },
       ),
   );

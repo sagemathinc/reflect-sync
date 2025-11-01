@@ -9,6 +9,7 @@ import {
   getReflectSyncHome,
   materializeSessionPaths,
   updateSession,
+  clearSessionRuntime,
 } from "./session-db.js";
 import { ensureRemoteParentDir, sshDeleteDirectory } from "./remote.js";
 import { dirname } from "node:path";
@@ -98,6 +99,85 @@ export async function terminateSession({
     }
   }
   deleteSessionById(sessionDb, id);
+}
+
+export async function resetSession({
+  sessionDb,
+  id,
+  logger,
+}: {
+  sessionDb: string;
+  id: number;
+  logger?: Logger;
+}) {
+  const row = loadSessionById(sessionDb, id);
+  if (!row) {
+    throw new Error(`session ${id} not found`);
+  }
+
+  logger?.info("resetting session", { sessionId: id });
+  if (row.scheduler_pid) {
+    stopPid(row.scheduler_pid);
+  }
+
+  const remoteDirs = new Map<string, Set<string>>();
+  const remoteDbPaths = new Map<string, Set<string>>();
+  const addRemote = (host?: string | null, path?: string | null) => {
+    if (!host || !path) return;
+    const dir = dirname(path);
+    if (!remoteDirs.has(host)) remoteDirs.set(host, new Set());
+    remoteDirs.get(host)!.add(dir);
+    if (!remoteDbPaths.has(host)) remoteDbPaths.set(host, new Set());
+    remoteDbPaths.get(host)!.add(path);
+  };
+
+  addRemote(row.alpha_host, row.alpha_remote_db);
+  addRemote(row.beta_host, row.beta_remote_db);
+
+  for (const [host, dirs] of remoteDirs) {
+    for (const dir of dirs) {
+      if (!dir.includes(CLI_NAME)) {
+        const msg = `skipping remote cleanup for ${host}:${dir} (outside ${CLI_NAME})`;
+        if (logger) {
+          logger.warn(msg, { sessionId: id });
+        } else {
+          console.warn(msg);
+        }
+        continue;
+      }
+      await sshDeleteDirectory({
+        host,
+        path: dir,
+        logger,
+      });
+    }
+  }
+
+  const { dir } = deriveSessionPaths(id, getReflectSyncHome());
+  await rm(dir, { recursive: true, force: true });
+
+  const paths = materializeSessionPaths(id);
+  updateSession(sessionDb, id, {
+    ...paths,
+    scheduler_pid: null,
+    last_heartbeat: null,
+    last_digest: null,
+    alpha_digest: null,
+    beta_digest: null,
+    actual_state: "stopped",
+    desired_state: "paused",
+  });
+
+  clearSessionRuntime(sessionDb, id);
+
+  const remoteLog = logger ? { logger } : undefined;
+  for (const [host, pathsSet] of remoteDbPaths) {
+    for (const path of pathsSet) {
+      await ensureRemoteParentDir(host, path, remoteLog);
+    }
+  }
+
+  logger?.info("session reset complete", { sessionId: id });
 }
 
 type Endpoint = { root: string; host?: string };

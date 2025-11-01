@@ -413,6 +413,24 @@ export function unsetLabels(
   }
 }
 
+export function clearSessionRuntime(
+  sessionDbPath: string,
+  id: number,
+): void {
+  const db = open(sessionDbPath);
+  try {
+    const tx = db.transaction(() => {
+      db.prepare(`DELETE FROM session_state WHERE session_id = ?`).run(id);
+      db.prepare(`DELETE FROM session_heartbeats WHERE session_id = ?`).run(id);
+      db.prepare(`DELETE FROM session_commands WHERE session_id = ?`).run(id);
+      db.prepare(`DELETE FROM session_logs WHERE session_id = ?`).run(id);
+    });
+    tx();
+  } finally {
+    db.close();
+  }
+}
+
 export function deleteSessionById(sessionDbPath: string, id: number) {
   const db = open(sessionDbPath);
   try {
