@@ -164,7 +164,7 @@ export async function resetSession({
     last_digest: null,
     alpha_digest: null,
     beta_digest: null,
-    actual_state: "stopped",
+    actual_state: "paused",
     desired_state: "paused",
   });
 

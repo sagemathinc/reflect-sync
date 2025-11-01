@@ -89,11 +89,10 @@ function expandHome(p: string): string {
 
 //   Types
 export type Side = "alpha" | "beta";
-export type DesiredState = "running" | "stopped" | "paused";
+export type DesiredState = "running" | "paused";
 export type ActualState =
   | "running"
   | "starting"
-  | "stopped"
   | "paused"
   | "error";
 
@@ -199,8 +198,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
         compress         TEXT,
 
-        desired_state    TEXT NOT NULL DEFAULT 'stopped',
-        actual_state     TEXT NOT NULL DEFAULT 'stopped',
+        desired_state    TEXT NOT NULL DEFAULT 'paused',
+        actual_state     TEXT NOT NULL DEFAULT 'paused',
         last_heartbeat   INTEGER,
 
         last_digest      INTEGER,
@@ -225,9 +224,9 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
       CREATE TABLE IF NOT EXISTS session_state(
         session_id     INTEGER PRIMARY KEY,
         pid            INTEGER,
-        status         TEXT,        -- starting|running|stopped|error
+        status         TEXT,        -- starting|running|paused|error
         started_at     INTEGER,
-        stopped_at     INTEGER,
+        paused_at     INTEGER,
         last_heartbeat INTEGER,
         running        INTEGER,     -- boolean
         pending        INTEGER,     -- boolean
@@ -704,8 +703,8 @@ export class SessionWriter {
 
     this.stopStmt = this.db.prepare(`
     UPDATE session_state SET
-      status='stopped',
-      stopped_at=?,
+      status='paused',
+      paused_at=?,
       last_heartbeat=?
     WHERE session_id = ?
   `);
