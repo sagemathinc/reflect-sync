@@ -90,11 +90,7 @@ function expandHome(p: string): string {
 //   Types
 export type Side = "alpha" | "beta";
 export type DesiredState = "running" | "paused";
-export type ActualState =
-  | "running"
-  | "starting"
-  | "paused"
-  | "error";
+export type ActualState = "running" | "starting" | "paused" | "error";
 
 export interface SessionCreateInput {
   name?: string;
@@ -412,10 +408,7 @@ export function unsetLabels(
   }
 }
 
-export function clearSessionRuntime(
-  sessionDbPath: string,
-  id: number,
-): void {
+export function clearSessionRuntime(sessionDbPath: string, id: number): void {
   const db = open(sessionDbPath);
   try {
     const tx = db.transaction(() => {
@@ -772,12 +765,12 @@ export class SessionWriter {
   /**
    * Prune old heartbeats to keep the table bounded (don't waste disk).
    * Controls:
-   *   HEARTBEAT_KEEP_MS    (default: 0 => disabled)
-   *   HEARTBEAT_KEEP_ROWS  (default: 7200 rows, ~4h if 2s interval)
+   *   REFLECT_HEARTBEAT_KEEP_MS    (default: 0 => disabled)
+   *   REFLECT_HEARTBEAT_KEEP_ROWS  (default: 7200 rows, ~4h if 2s interval)
    */
   private pruneHeartbeats() {
-    const keepMs = Number(process.env.HEARTBEAT_KEEP_MS ?? 0);
-    const keepRows = Number(process.env.HEARTBEAT_KEEP_ROWS ?? 7200);
+    const keepMs = Number(process.env.REFLECT_HEARTBEAT_KEEP_MS ?? 0);
+    const keepRows = Number(process.env.REFLECT_HEARTBEAT_KEEP_ROWS ?? 7200);
 
     if (keepMs > 0) {
       const cutoff = Date.now() - keepMs;

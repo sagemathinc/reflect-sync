@@ -64,7 +64,7 @@ export function makeMicroSync({
 
   // Echo suppression prevents one-sided “echo” events from bouncing back
   // immediately after we ourselves copied the file to that side.
-  const ECHO_SUPPRESS_MS = Number(process.env.MICRO_ECHO_SUPPRESS_MS ?? 2500);
+  const ECHO_SUPPRESS_MS = Number(process.env.REFLECT_MICRO_ECHO_SUPPRESS_MS ?? 2500);
 
   // Last time we pushed a path in a given direction.
   const lastA2B = new Map<string, number>();

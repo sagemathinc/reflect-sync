@@ -259,7 +259,7 @@ export async function runScheduler({
     (await isRoot(betaHost, remoteLogConfig));
 
   // heartbeat interval (ms)
-  const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
+  const HEARTBEAT_MS = Number(process.env.REFLECT_HEARTBEAT_MS ?? 2000);
   let sessionWriter: SessionWriter | null = null;
   let hbTimer: NodeJS.Timeout | null = null;
   if (sessionDb && Number.isFinite(sessionId)) {

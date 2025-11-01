@@ -115,7 +115,7 @@ function computeHealth(
   if (state.status === "paused" || state.running === 0) {
     return { health: "paused" };
   }
-  const staleMs = Number(process.env.SESSION_STALE_MS ?? 15_000);
+  const staleMs = Number(process.env.REFLECT_SESSION_STALE_MS ?? 15_000);
   const last = (state.last_heartbeat as number) || (lastHb?.ts as number) || 0;
   if (!last) return { health: "unknown", reason: "no heartbeat yet" };
   const ago = Date.now() - last;

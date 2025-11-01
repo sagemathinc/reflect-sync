@@ -22,9 +22,9 @@ import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
 
 // SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are for skew/future handling.
 // See comments in the original version for rationale.
-const SAFETY_MS = Number(process.env.CLOCK_SKEW_SAFETY_MS ?? 100);
-const FUTURE_SLACK_MS = Number(process.env.FUTURE_SLACK_MS ?? 400);
-const CAP_BACKOFF_MS = Number(process.env.FUTURE_CAP_BACKOFF_MS ?? 1);
+const SAFETY_MS = Number(process.env.REFLECT_CLOCK_SKEW_SAFETY_MS ?? 100);
+const FUTURE_SLACK_MS = Number(process.env.REFLECT_FUTURE_SLACK_MS ?? 400);
+const CAP_BACKOFF_MS = Number(process.env.REFLECT_FUTURE_CAP_BACKOFF_MS ?? 1);
 
 function buildProgram(): Command {
   const program = new Command()
