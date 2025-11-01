@@ -6,6 +6,7 @@ module.exports = {
   testMatch: ['**/tests/**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   extensionsToTreatAsEsm: ['.ts'],
+  setupFilesAfterEnv: ['<rootDir>/test-setup.js'],
   // map ESM-style ".js" imports in TS source to the corresponding ".ts" files
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',

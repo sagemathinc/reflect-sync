@@ -49,7 +49,16 @@ export interface LoggerOptions {
 
 const defaultClock = () => Date.now();
 
+function isEchoSuppressed(): boolean {
+  const raw = process.env.RFSYNC_DISABLE_LOG_ECHO;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized !== "0" && normalized !== "false";
+}
+
 const defaultEchoWriter: EchoWriter = (entry) => {
+  if (isEchoSuppressed()) return;
   const { level, scope, message, meta } = entry;
   const prefix =
     level === "error"
