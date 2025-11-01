@@ -1,6 +1,10 @@
 // src/session-status.ts
 import { Command, Option } from "commander";
-import { ensureSessionDb, getSessionDbPath, resolveSessionRow } from "./session-db.js";
+import {
+  ensureSessionDb,
+  getSessionDbPath,
+  resolveSessionRow,
+} from "./session-db.js";
 import { type Database } from "./db.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 
@@ -104,12 +108,12 @@ function computeHealth(
   state: AnyRow | null,
   lastHb: AnyRow | null,
 ): {
-  health: "healthy" | "stale" | "stopped" | "unknown";
+  health: "healthy" | "stale" | "paused" | "unknown";
   reason?: string;
 } {
   if (!state) return { health: "unknown" };
-  if (state.status === "stopped" || state.running === 0) {
-    return { health: "stopped" };
+  if (state.status === "paused" || state.running === 0) {
+    return { health: "paused" };
   }
   const staleMs = Number(process.env.SESSION_STALE_MS ?? 15_000);
   const last = (state.last_heartbeat as number) || (lastHb?.ts as number) || 0;
@@ -210,8 +214,8 @@ function tableOutput(
   if (state?.backoff_ms != null) add("backoff", fmtMs(state.backoff_ms));
   if (state?.started_at)
     add("started", new Date(state.started_at).toISOString());
-  if (state?.stopped_at)
-    add("stopped", new Date(state.stopped_at).toISOString());
+  if (state?.paused_at && state?.status != "running")
+    add("paused", new Date(state.paused_at).toISOString());
   if (state?.last_error) add("last error", state.last_error);
 
   // Health
