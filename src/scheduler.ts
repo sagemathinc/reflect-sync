@@ -50,7 +50,9 @@ export type SchedulerOptions = {
 
   hash: string;
   alphaHost?: string;
+  alphaPort?: number;
   betaHost?: string;
+  betaPort?: number;
   alphaRemoteDb: string;
   betaRemoteDb: string;
   remoteCommand?: string;
@@ -92,7 +94,9 @@ function buildProgram(): Command {
     .option("--dry-run", "simulate without changing files", false)
     // optional SSH endpoints (only one side may be remote)
     .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+    .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
     .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+    .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
     .option(
       "--alpha-remote-db <file>",
       "remote path to alpha sqlite db (on the SSH host)",
@@ -133,7 +137,15 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     dryRun: !!opts.dryRun,
     hash: String(opts.hash),
     alphaHost: opts.alphaHost?.trim() || undefined,
+    alphaPort:
+      opts.alphaPort != null && !Number.isNaN(Number(opts.alphaPort))
+        ? Number(opts.alphaPort)
+        : undefined,
     betaHost: opts.betaHost?.trim() || undefined,
+    betaPort:
+      opts.betaPort != null && !Number.isNaN(Number(opts.betaPort))
+        ? Number(opts.betaPort)
+        : undefined,
     alphaRemoteDb: String(opts.alphaRemoteDb),
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteCommand: opts.remoteCommand,
@@ -187,7 +199,9 @@ export async function runScheduler({
   dryRun,
   hash,
   alphaHost,
+  alphaPort,
   betaHost,
+  betaPort,
   alphaRemoteDb,
   betaRemoteDb,
   remoteCommand,
@@ -237,26 +251,29 @@ export async function runScheduler({
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
 
-  compress = await resolveCompression(alphaHost || betaHost, compress);
+  const remotePort = alphaHost ? alphaPort : betaPort;
+  compress = await resolveCompression(alphaHost || betaHost, compress, remotePort);
 
   // Resolve ~ for any remote paths once up-front
   const remoteLogConfig = { logger };
 
-  alphaRoot = await expandHome(alphaRoot, alphaHost, remoteLogConfig);
-  betaRoot = await expandHome(betaRoot, betaHost, remoteLogConfig);
+  alphaRoot = await expandHome(alphaRoot, alphaHost, remoteLogConfig, alphaPort);
+  betaRoot = await expandHome(betaRoot, betaHost, remoteLogConfig, betaPort);
   alphaRemoteDb = await expandHome(
     alphaRemoteDb || `~/.local/share/${CLI_NAME}/alpha.db`,
     alphaHost,
     remoteLogConfig,
+    alphaPort,
   );
   betaRemoteDb = await expandHome(
     betaRemoteDb || `~/.local/share/${CLI_NAME}/beta.db`,
     betaHost,
     remoteLogConfig,
+    betaPort,
   );
   const numericIds =
-    (await isRoot(alphaHost, remoteLogConfig)) &&
-    (await isRoot(betaHost, remoteLogConfig));
+    (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
+    (await isRoot(betaHost, remoteLogConfig, betaPort));
 
   // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.REFLECT_HEARTBEAT_MS ?? 2000);
@@ -355,6 +372,7 @@ export async function runScheduler({
   const lastRemoteScan = { start: 0, ok: false, whenOk: 0 };
   async function sshScanIntoMirror(params: {
     host: string;
+    port?: number;
     root: string; // remote root
     remoteDb: string; // remote DB path (on remote host)
     localDb: string; // local mirror DB for ingest
@@ -367,9 +385,15 @@ export async function runScheduler({
   }> {
     const t0 = Date.now();
     // if remote command not known, determine it from the PATH
-    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, { logger });
-    const sshArgs = [
-      "-C",
+    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, {
+      logger,
+      port: params.port,
+    });
+    const sshArgs = ["-C"];
+    if (params.port != null) {
+      sshArgs.push("-p", String(params.port));
+    }
+    sshArgs.push(
       params.host,
       `${remoteCommand} scan`,
       "--root",
@@ -380,7 +404,7 @@ export async function runScheduler({
       "--hash",
       hash,
       "--vacuum",
-    ];
+    );
     if (numericIds) {
       sshArgs.push("--numeric-ids");
     }
@@ -484,17 +508,16 @@ export async function runScheduler({
     if (!host) return null;
     const root = side === "alpha" ? alphaRoot : betaRoot;
     const localDb = side === "alpha" ? alphaDb : betaDb;
-    remoteCommand ??= await remoteWhich(host, CLI_NAME, { logger });
-    const sshArgs = [
-      "-C",
-      "-T",
-      "-o",
-      "BatchMode=yes",
-      host,
-      `${remoteCommand} watch`,
-      "--root",
-      root,
-    ];
+    const port = side === "alpha" ? alphaPort : betaPort;
+    remoteCommand ??= await remoteWhich(host, CLI_NAME, {
+      logger,
+      port,
+    });
+    const sshArgs = ["-C", "-T", "-o", "BatchMode=yes"];
+    if (port != null) {
+      sshArgs.push("-p", String(port));
+    }
+    sshArgs.push(host, `${remoteCommand} watch`, "--root", root);
     const remoteLog = scoped(`remote.${side}`);
     remoteLog.debug("ssh watch", { args: argsJoin(sshArgs) });
 
@@ -643,7 +666,9 @@ export async function runScheduler({
     alphaRoot,
     betaRoot,
     alphaHost,
+    alphaPort,
     betaHost,
+    betaPort,
     prefer,
     dryRun,
     spawnTask,
@@ -826,6 +851,7 @@ export async function runScheduler({
       a = alphaIsRemote
         ? await sshScanIntoMirror({
             host: alphaHost!,
+            port: alphaPort,
             root: alphaRoot,
             localDb: alphaDb,
             remoteDb: alphaRemoteDb!,
@@ -881,6 +907,7 @@ export async function runScheduler({
       b = betaIsRemote
         ? await sshScanIntoMirror({
             host: betaHost!,
+            port: betaPort,
             root: betaRoot,
             localDb: betaDb,
             remoteDb: betaRemoteDb!,
@@ -941,7 +968,9 @@ export async function runScheduler({
         betaDb,
         baseDb,
         alphaHost,
+        alphaPort,
         betaHost,
+        betaPort,
         prefer,
         dryRun,
         compress,

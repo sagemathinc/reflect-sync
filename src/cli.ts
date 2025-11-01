@@ -144,7 +144,9 @@ program
   .option("--beta-db <path>", "beta sqlite", "beta.db")
   .option("--base-db <path>", "base sqlite", "base.db")
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+  .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+  .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
   .option(
     "--compress <algo>",
     "[auto|zstd|lz4|zlib|zlibx|none][:level]",
@@ -187,7 +189,9 @@ program
   )
   // optional SSH endpoints (only one side may be remote)
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+  .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+  .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
   .option(
     "--alpha-remote-db <file>",
     "remote alpha sqlite DB path (on SSH host)",

@@ -50,7 +50,9 @@ function buildProgram(): Command {
     .option("--beta-db <path>", "beta sqlite", "beta.db")
     .option("--base-db <path>", "base sqlite", "base.db")
     .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+    .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
     .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+    .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
     .addOption(
       new Option("--prefer <side>", "conflict winner")
         .choices(["alpha", "beta"])
@@ -79,7 +81,9 @@ type MergeRsyncOptions = {
   betaDb: string;
   baseDb: string;
   alphaHost?: string;
+  alphaPort?: number;
   betaHost?: string;
+  betaPort?: number;
   prefer: "alpha" | "beta";
   lwwEpsilonMs?: string;
   dryRun: boolean | string;
@@ -106,7 +110,9 @@ export async function runMerge({
   betaDb,
   baseDb,
   alphaHost,
+  alphaPort: rawAlphaPort,
   betaHost,
+  betaPort: rawBetaPort,
   prefer,
   lwwEpsilonMs,
   dryRun,
@@ -117,12 +123,28 @@ export async function runMerge({
   logLevel = "info",
   verbose,
 }: MergeRsyncOptions) {
+  const coercePort = (value: unknown): number | undefined => {
+    if (value === undefined || value === null || value === "") return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const alphaPort = coercePort(rawAlphaPort);
+  const betaPort = coercePort(rawBetaPort);
+
   const level =
     typeof logLevel === "string" ? parseLogLevel(logLevel, "info") : logLevel ?? "info";
   const logger = providedLogger ?? new ConsoleLogger(level);
   const debug = toBoolVerbose(verbose) || level === "debug";
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
-  const rsyncOpts = { dryRun, verbose: debug, compress, logger, logLevel: level };
+  const sshPort = alphaHost ? alphaPort : betaPort;
+  const rsyncOpts = {
+    dryRun,
+    verbose: debug,
+    compress,
+    logger,
+    logLevel: level,
+    sshPort,
+  };
 
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);

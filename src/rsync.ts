@@ -27,6 +27,7 @@ type RsyncLogOptions = {
   logger?: Logger;
   verbose?: boolean | string;
   logLevel?: LogLevel;
+  sshPort?: number;
 };
 
 type RsyncRunOptions = RsyncLogOptions & {
@@ -99,6 +100,7 @@ export async function rsyncCopyDirsChunked(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<void> {
   if (!dirRpaths.length) return;
@@ -130,18 +132,19 @@ export async function rsyncCopyDirsChunked(
     if (debug) {
       logger.debug(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
     }
-    await rsyncCopyDirs(
-      fromRoot,
-      toRoot,
-      lf,
-      `${label} (dirs chunk ${idx + 1})`,
-      {
-        dryRun: opts.dryRun,
-        verbose: opts.verbose,
-        logger,
-        logLevel: opts.logLevel,
-      },
-    );
+      await rsyncCopyDirs(
+        fromRoot,
+        toRoot,
+        lf,
+        `${label} (dirs chunk ${idx + 1})`,
+        {
+          dryRun: opts.dryRun,
+          verbose: opts.verbose,
+          logger,
+          logLevel: opts.logLevel,
+          sshPort: opts.sshPort,
+        },
+      );
   });
 }
 
@@ -160,6 +163,7 @@ export async function rsyncCopyChunked(
     compress?: RsyncCompressSpec;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<{ ok: boolean }> {
   if (!fileRpaths.length) return { ok: true };
@@ -187,6 +191,7 @@ export async function rsyncCopyChunked(
         verbose: opts.verbose,
         logger,
         logLevel: opts.logLevel,
+        sshPort: opts.sshPort,
       });
     }
   }
@@ -219,6 +224,7 @@ export async function rsyncCopyChunked(
         compress: opts.compress,
         logger,
         logLevel: opts.logLevel,
+        sshPort: opts.sshPort,
       },
     );
     if (!ok) allOk = false;
@@ -244,6 +250,29 @@ export async function fileNonEmpty(p: string, logger?: Logger) {
 function isLocal(p: string) {
   // crude but good enough: user@host:/path or host:/path patterns
   return !/^[^:/]+@[^:/]+:|^[^:/]+:/.test(p);
+}
+
+function applySshTransport(
+  args: string[],
+  from: string,
+  to: string,
+  opts: RsyncLogOptions,
+  compress?: RsyncCompressSpec,
+) {
+  const remote = !isLocal(from) || !isLocal(to);
+  if (!remote) return;
+  const pieces = ["ssh"];
+  if (opts.sshPort != null) {
+    pieces.push("-p", String(opts.sshPort));
+  }
+  const disableCompression =
+    compress && compress !== "none" && isCompressing(compress);
+  if (disableCompression) {
+    pieces.push("-oCompression=no");
+  }
+  if (pieces.length > 1) {
+    args.push("-e", pieces.join(" "));
+  }
 }
 
 function numericIdsFlag(): string[] {
@@ -391,6 +420,7 @@ export async function rsyncCopy(
     compress?: RsyncCompressSpec;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -401,23 +431,17 @@ export async function rsyncCopy(
   if (debug) {
     logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
   }
+  const from = ensureTrailingSlash(fromRoot);
+  const to = ensureTrailingSlash(toRoot);
   const args = [
     ...rsyncArgsBase(opts, fromRoot, toRoot),
     ...rsyncCompressionArgs(opts.compress),
     "--from0",
     `--files-from=${listFile}`,
-    ensureTrailingSlash(fromRoot),
-    ensureTrailingSlash(toRoot),
+    from,
+    to,
   ];
-
-  if (
-    (!fromRoot.startsWith("/") || !toRoot.startsWith("/")) &&
-    opts.compress &&
-    opts.compress != "none" &&
-    isCompressing(opts.compress)
-  ) {
-    args.push("-e", "ssh -oCompression=no");
-  }
+  applySshTransport(args, from, to, opts, opts.compress);
 
   const res = await run("rsync", args, [0, 23, 24], opts); // accept partials
   if (debug) {
@@ -439,6 +463,7 @@ export async function rsyncCopyDirs(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -450,12 +475,15 @@ export async function rsyncCopyDirs(
   if (debug) {
     logger.debug(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
   }
+  const from = ensureTrailingSlash(fromRoot);
+  const to = ensureTrailingSlash(toRoot);
   const args = [
     ...rsyncArgsDirs(opts),
     `--files-from=${listFile}`,
-    ensureTrailingSlash(fromRoot),
-    ensureTrailingSlash(toRoot),
+    from,
+    to,
   ];
+  applySshTransport(args, from, to, opts);
   const res = await run("rsync", args, [0, 23, 24], opts);
   if (debug) {
     logger.debug(`>>> rsync ${label} (dirs): done`, {
@@ -476,6 +504,7 @@ export async function rsyncFixMeta(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -486,12 +515,15 @@ export async function rsyncFixMeta(
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
   }
+  const from = ensureTrailingSlash(fromRoot);
+  const to = ensureTrailingSlash(toRoot);
   const args = [
     ...rsyncArgsFixMeta(opts),
     `--files-from=${listFile}`,
-    ensureTrailingSlash(fromRoot),
-    ensureTrailingSlash(toRoot),
+    from,
+    to,
   ];
+  applySshTransport(args, from, to, opts);
   const res = await run("rsync", args, [0, 23, 24], opts);
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta): done`, {
@@ -512,6 +544,7 @@ export async function rsyncFixMetaDirs(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -523,12 +556,15 @@ export async function rsyncFixMetaDirs(
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
   }
+  const from = ensureTrailingSlash(fromRoot);
+  const to = ensureTrailingSlash(toRoot);
   const args = [
     ...rsyncArgsFixMetaDirs(opts),
     `--files-from=${listFile}`,
-    ensureTrailingSlash(fromRoot),
-    ensureTrailingSlash(toRoot),
+    from,
+    to,
   ];
+  applySshTransport(args, from, to, opts);
   const res = await run("rsync", args, [0, 23, 24], opts);
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta dirs): done`, {
@@ -550,6 +586,7 @@ export async function rsyncDelete(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ): Promise<void> {
   const { logger, debug } = resolveLogContext(opts);
@@ -572,12 +609,14 @@ export async function rsyncDelete(
         `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
       );
     }
+    const to = ensureTrailingSlash(toRoot);
     const args = [
       ...rsyncArgsDelete(opts), // includes --delete-missing-args --force
       `--files-from=${listFile}`,
       sourceRoot,
-      ensureTrailingSlash(toRoot),
+      to,
     ];
+    applySshTransport(args, sourceRoot, to, opts);
     await run("rsync", args, [0, 24], opts);
   } finally {
     if (tmpEmptyDir) {
@@ -599,6 +638,7 @@ export async function rsyncDeleteChunked(
     verbose?: boolean | string;
     logger?: Logger;
     logLevel?: LogLevel;
+    sshPort?: number;
   } = {},
 ) {
   if (!rpaths.length) return;
@@ -620,18 +660,19 @@ export async function rsyncDeleteChunked(
       `${label.replace(/[\s\(\)]+/g, "-")}.${i}.list`,
     );
     await writeNulList(listFile, batches[i]);
-    await rsyncDelete(
-      fromRoot,
-      toRoot,
-      listFile,
-      `${label} [${i + 1}/${batches.length}]`,
-      {
-        forceEmptySource: opts.forceEmptySource,
-        dryRun: opts.dryRun,
-        verbose: opts.verbose,
-        logger,
-        logLevel: opts.logLevel,
-      },
-    );
+      await rsyncDelete(
+        fromRoot,
+        toRoot,
+        listFile,
+        `${label} [${i + 1}/${batches.length}]`,
+        {
+          forceEmptySource: opts.forceEmptySource,
+          dryRun: opts.dryRun,
+          verbose: opts.verbose,
+          logger,
+          logLevel: opts.logLevel,
+          sshPort: opts.sshPort,
+        },
+      );
   }
 }

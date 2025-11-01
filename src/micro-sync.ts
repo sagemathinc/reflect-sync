@@ -21,7 +21,9 @@ export type MicroSyncDeps = {
   alphaRoot: string;
   betaRoot: string;
   alphaHost?: string;
+  alphaPort?: number;
   betaHost?: string;
+  betaPort?: number;
   prefer: "alpha" | "beta";
   dryRun: boolean;
   spawnTask: (
@@ -49,7 +51,9 @@ export function makeMicroSync({
   alphaRoot,
   betaRoot,
   alphaHost,
+  alphaPort,
   betaHost,
+  betaPort,
   prefer,
   dryRun,
   spawnTask,
@@ -73,8 +77,10 @@ export function makeMicroSync({
   function rsyncRoots(
     fromRoot: string,
     fromHost: string | undefined,
+    fromPort: number | undefined,
     toRoot: string,
     toHost: string | undefined,
+    toPort: number | undefined,
     compression: RsyncCompressSpec | undefined,
   ) {
     const slash = (s: string) => (s.endsWith("/") ? s : s + "/");
@@ -82,8 +88,20 @@ export function makeMicroSync({
     const to = toHost ? `${toHost}:${slash(toRoot)}` : slash(toRoot);
 
     const wantDisableSSH = isCompressing(compression);
-    const sshCmd = wantDisableSSH ? "ssh -oCompression=no" : "ssh";
-    const transport = fromHost || toHost ? (["-e", sshCmd] as string[]) : [];
+    const port = fromHost ? fromPort : toPort;
+    const sshParts = ["ssh"];
+    if (port != null) {
+      sshParts.push("-p", String(port));
+    }
+    if (wantDisableSSH) {
+      sshParts.push("-oCompression=no");
+    }
+    const transport =
+      fromHost || toHost
+        ? sshParts.length > 1
+          ? (["-e", sshParts.join(" ")] as string[])
+          : ["-e", sshParts[0]]
+        : [];
     return { from, to, transport };
   }
 
@@ -141,8 +159,10 @@ export function makeMicroSync({
       const { from, to, transport } = rsyncRoots(
         alphaRoot,
         alphaHost,
+        alphaPort,
         betaRoot,
         betaHost,
+        betaPort,
         compress,
       );
       const res = await spawnTask(
@@ -167,8 +187,10 @@ export function makeMicroSync({
       const { from, to, transport } = rsyncRoots(
         betaRoot,
         betaHost,
+        betaPort,
         alphaRoot,
         alphaHost,
+        alphaPort,
         compress,
       );
       const res = await spawnTask(

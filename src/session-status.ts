@@ -54,6 +54,14 @@ export function fmtLocalPath(path: string) {
   return path;
 }
 
+function hostWithPort(
+  host?: string | null,
+  port?: number | null,
+): string | null {
+  if (!host) return null;
+  return port != null ? `${host}:${port}` : host;
+}
+
 function tryGetLabels(db: Database, sessionId: number): Record<string, string> {
   try {
     const rows = db
@@ -163,16 +171,12 @@ function tableOutput(
   // Config
   if (sess) {
     if (sess.alpha_root || sess.alpha_host) {
-      add(
-        "alpha",
-        `${sess.alpha_host ? `${sess.alpha_host}:` : ""}${sess.alpha_root ?? ""}`,
-      );
+      const hostPart = hostWithPort(sess.alpha_host, sess.alpha_port);
+      add("alpha", `${hostPart ? `${hostPart}:` : ""}${sess.alpha_root ?? ""}`);
     }
     if (sess.beta_root || sess.beta_host) {
-      add(
-        "beta",
-        `${sess.beta_host ? `${sess.beta_host}:` : ""}${sess.beta_root ?? ""}`,
-      );
+      const hostPart = hostWithPort(sess.beta_host, sess.beta_port);
+      add("beta", `${hostPart ? `${hostPart}:` : ""}${sess.beta_root ?? ""}`);
     }
     if (sess.prefer) add("prefer", sess.prefer);
     if (sess.hash_alg) add("hash", sess.hash_alg);
@@ -180,10 +184,20 @@ function tableOutput(
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
     if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));
-    if (sess.alpha_remote_db)
-      add("alpha remote db", `${sess.alpha_host}:${sess.alpha_remote_db}`);
-    if (sess.beta_remote_db)
-      add("beta remote db", `${sess.beta_host}:${sess.beta_remote_db}`);
+    if (sess.alpha_remote_db) {
+      const hostPart = hostWithPort(sess.alpha_host, sess.alpha_port);
+      add(
+        "alpha remote db",
+        hostPart ? `${hostPart}:${sess.alpha_remote_db}` : sess.alpha_remote_db,
+      );
+    }
+    if (sess.beta_remote_db) {
+      const hostPart = hostWithPort(sess.beta_host, sess.beta_port);
+      add(
+        "beta remote db",
+        hostPart ? `${hostPart}:${sess.beta_remote_db}` : sess.beta_remote_db,
+      );
+    }
     if (sess.created_at)
       add(
         "created",
@@ -197,11 +211,15 @@ function tableOutput(
       );
     if (sess.alpha_digest) add("[digest] alpha ", sess.alpha_digest);
     if (sess.beta_digest) add("[digest] beta", sess.beta_digest);
+    if (sess.actual_state && sess.desired_state)
+      add(
+        "State (actual/desired)",
+        `${sess.actual_state}/${sess.desired_state}`,
+      );
   }
 
   // Runtime
   const hbAgo = state?.last_heartbeat ? fmtAgo(state.last_heartbeat) : "-";
-  add("status", state?.status ?? "-");
   if (state?.pid) add("pid", state.pid);
   if (state?.host) add("host", state.host);
   add("running", state?.running ? "yes" : "no");
@@ -265,12 +283,14 @@ export function registerSessionStatus(sessionCmd: Command) {
               config: {
                 alpha: {
                   host: sess.alpha_host ?? null,
+                  port: sess.alpha_port ?? null,
                   root: sess.alpha_root ?? null,
                   db: sess.alpha_db ?? null,
                   alpha_remote_db: sess.alpha_remote_db,
                 },
                 beta: {
                   host: sess.beta_host ?? null,
+                  port: sess.beta_port ?? null,
                   root: sess.beta_root ?? null,
                   db: sess.beta_db ?? null,
                   beta_remote_db: sess.beta_remote_db,

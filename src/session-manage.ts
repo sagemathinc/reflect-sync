@@ -48,7 +48,9 @@ export async function terminateSession({
   if (row.scheduler_pid) {
     stopPid(row.scheduler_pid);
   }
-  const host = row.alpha_host || row.beta_host;
+  const host = row.alpha_host ?? row.beta_host;
+  const port =
+    row.alpha_host != null ? row.alpha_port ?? undefined : row.beta_port ?? undefined;
   if (host) {
     const path = row.alpha_remote_db || row.beta_remote_db;
     if (path) {
@@ -61,6 +63,7 @@ export async function terminateSession({
             host,
             path: dir,
             logger,
+            port,
           });
         } catch (err) {
           if (!force) {
@@ -120,21 +123,42 @@ export async function resetSession({
     stopPid(row.scheduler_pid);
   }
 
-  const remoteDirs = new Map<string, Set<string>>();
-  const remoteDbPaths = new Map<string, Set<string>>();
-  const addRemote = (host?: string | null, path?: string | null) => {
+  const remoteDirs = new Map<
+    string,
+    { host: string; port?: number; dirs: Set<string> }
+  >();
+  const remoteDbPaths = new Map<
+    string,
+    { host: string; port?: number; paths: Set<string> }
+  >();
+  const remoteKey = (host: string, port?: number) =>
+    port != null ? `${host}:${port}` : host;
+  const addRemote = (
+    host?: string | null,
+    port?: number | null,
+    path?: string | null,
+  ) => {
     if (!host || !path) return;
     const dir = dirname(path);
-    if (!remoteDirs.has(host)) remoteDirs.set(host, new Set());
-    remoteDirs.get(host)!.add(dir);
-    if (!remoteDbPaths.has(host)) remoteDbPaths.set(host, new Set());
-    remoteDbPaths.get(host)!.add(path);
+    const key = remoteKey(host, port ?? undefined);
+    if (!remoteDirs.has(key)) {
+      remoteDirs.set(key, { host, port: port ?? undefined, dirs: new Set() });
+    }
+    remoteDirs.get(key)!.dirs.add(dir);
+    if (!remoteDbPaths.has(key)) {
+      remoteDbPaths.set(key, {
+        host,
+        port: port ?? undefined,
+        paths: new Set(),
+      });
+    }
+    remoteDbPaths.get(key)!.paths.add(path);
   };
 
-  addRemote(row.alpha_host, row.alpha_remote_db);
-  addRemote(row.beta_host, row.beta_remote_db);
+  addRemote(row.alpha_host, row.alpha_port, row.alpha_remote_db);
+  addRemote(row.beta_host, row.beta_port, row.beta_remote_db);
 
-  for (const [host, dirs] of remoteDirs) {
+  for (const { host, port, dirs } of remoteDirs.values()) {
     for (const dir of dirs) {
       if (!dir.includes(CLI_NAME)) {
         const msg = `skipping remote cleanup for ${host}:${dir} (outside ${CLI_NAME})`;
@@ -149,6 +173,7 @@ export async function resetSession({
         host,
         path: dir,
         logger,
+        port,
       });
     }
   }
@@ -170,43 +195,75 @@ export async function resetSession({
 
   clearSessionRuntime(sessionDb, id);
 
-  const remoteLog = logger ? { logger } : undefined;
-  for (const [host, pathsSet] of remoteDbPaths) {
-    for (const path of pathsSet) {
-      await ensureRemoteParentDir(host, path, remoteLog);
+  for (const { host, port, paths } of remoteDbPaths.values()) {
+    for (const path of paths) {
+      await ensureRemoteParentDir({
+        host,
+        port,
+        path,
+        logger,
+      });
     }
   }
 
   logger?.info("session reset complete", { sessionId: id });
 }
 
-type Endpoint = { root: string; host?: string };
+type Endpoint = { root: string; host?: string; port?: number };
 
 // Minimal mutagen-like endpoint parsing.
 // - local: "~/work" or "/abs/path" -> {root: absolute path, host: undefined}
 // - remote: "user@host:~/work" or "host:/abs" -> {root: as-given (keep ~ for remote), host}
 // Windows drive-letter paths like "C:\x" won’t be mistaken as remote (colon rule).
-function parseEndpoint(spec: string): Endpoint {
-  // treat as local if absolute path (starts with /) or starts with ~ or looks like
-  // absolute windows path, AND does not contain a colon.
-  const colon = spec.indexOf(":");
-  if (colon <= 0) {
-    // no colon so definitely not remote  (or starts with :)
-    return { root: spec || "~" };
+export function parseEndpoint(spec: string): Endpoint {
+  const trimmed = spec.trim();
+  if (!trimmed) return { root: "~" };
+  const looksLikeWindows = /^[A-Za-z]:[\\/]/.test(trimmed);
+  if (
+    looksLikeWindows ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    trimmed === "~" ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../")
+  ) {
+    return { root: trimmed };
   }
 
-  // treat as remote if there is a colon AND (contains "@", or
-  // starts with something that clearly looks like a host)
-  const looksLikeWindows = /^[A-Za-z]:[\\]/.test(spec);
-  if (looksLikeWindows || spec.startsWith("/") || spec.startsWith("~")) {
-    // absolute path or relative to home -- definitely not remote
-    return { root: spec || "~" };
+  const match = /^(?<hostPart>[^:]+)(?::(?<portPart>[^:]*))?:(?<path>.*)$/.exec(
+    trimmed,
+  );
+  if (!match) {
+    return { root: trimmed };
   }
 
-  // not obviously a path, and does have a colon
-  const host = spec.slice(0, colon);
-  const root = spec.slice(colon + 1);
-  return { host, root: root || "~" };
+  const { hostPart, portPart, path } = match.groups as {
+    hostPart: string;
+    portPart?: string;
+    path: string;
+  };
+
+  if (!path || (path[0] !== "/" && !path.startsWith("~/"))) {
+    throw new Error(
+      `Remote paths must start with '/' or '~/' (got '${path || ""}')`,
+    );
+  }
+
+  let port: number | undefined;
+  if (portPart !== undefined) {
+    if (portPart === "") {
+      port = 22;
+    } else if (/^\d+$/.test(portPart)) {
+      port = Number(portPart);
+      if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid SSH port '${portPart}'`);
+      }
+    } else {
+      throw new Error(`Invalid SSH port '${portPart}'`);
+    }
+  }
+
+  return { host: hostPart, port, root: path };
 }
 
 function parseLabelPairs(pairs: string[]): Record<string, string> {
@@ -268,7 +325,9 @@ export async function newSession({
         beta_root: b.root,
         prefer: (prefer || "alpha").toLowerCase(),
         alpha_host: a.host ?? null,
+        alpha_port: a.port ?? null,
         beta_host: b.host ?? null,
+        beta_port: b.port ?? null,
         hash_alg: hash,
         compress,
       },
@@ -293,9 +352,19 @@ export async function newSession({
 
       // proactively create parent dirs on remotes
       if (a.host && alphaRemoteDb)
-        await ensureRemoteParentDir(a.host, alphaRemoteDb, logger);
+        await ensureRemoteParentDir({
+          host: a.host,
+          port: a.port ?? undefined,
+          path: alphaRemoteDb,
+          logger,
+        });
       if (b.host && betaRemoteDb)
-        await ensureRemoteParentDir(b.host, betaRemoteDb, logger);
+        await ensureRemoteParentDir({
+          host: b.host,
+          port: b.port ?? undefined,
+          path: betaRemoteDb,
+          logger,
+        });
     }
 
     const paths = materializeSessionPaths(id);

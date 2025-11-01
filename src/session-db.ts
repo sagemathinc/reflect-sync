@@ -98,7 +98,9 @@ export interface SessionCreateInput {
   beta_root: string;
   prefer: Side;
   alpha_host?: string | null;
+  alpha_port?: number | null;
   beta_host?: string | null;
+  beta_port?: number | null;
   alpha_remote_db?: string | null;
   beta_remote_db?: string | null;
   remote_scan_cmd?: string | null;
@@ -113,7 +115,9 @@ export interface SessionPatch {
   beta_root?: string;
   prefer?: Side;
   alpha_host?: string | null;
+  alpha_port?: number | null;
   beta_host?: string | null;
+  beta_port?: number | null;
   alpha_remote_db?: string | null;
   beta_remote_db?: string | null;
   remote_scan_cmd?: string | null;
@@ -141,7 +145,9 @@ export interface SessionRow {
   beta_root: string;
   prefer: Side;
   alpha_host: string | null;
+  alpha_port: number | null;
   beta_host: string | null;
+  beta_port: number | null;
   alpha_remote_db: string | null;
   beta_remote_db: string | null;
   remote_scan_cmd: string | null;
@@ -180,7 +186,9 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
 
         prefer           TEXT NOT NULL CHECK (prefer IN ('alpha','beta')),
         alpha_host       TEXT,
+        alpha_port       INTEGER,
         beta_host        TEXT,
+        beta_port        INTEGER,
         alpha_remote_db  TEXT,
         beta_remote_db   TEXT,
         remote_scan_cmd  TEXT DEFAULT '${CLI_NAME} scan',
@@ -282,6 +290,19 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
       CREATE INDEX IF NOT EXISTS idx_session_logs_sid_id
         ON session_logs(session_id, id);
     `);
+
+  const ensureColumn = (table: string, column: string, defSql: string) => {
+    const existing = db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as { name: string }[];
+    if (!existing.some((row) => row.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${defSql}`);
+    }
+  };
+
+  ensureColumn("sessions", "alpha_port", "INTEGER");
+  ensureColumn("sessions", "beta_port", "INTEGER");
+
   return db;
 }
 
@@ -305,11 +326,13 @@ export function createSession(
       INSERT INTO sessions(
         created_at, updated_at, name,
         alpha_root, beta_root, prefer,
-        alpha_host, beta_host, alpha_remote_db, beta_remote_db,
+        alpha_host, alpha_port,
+        beta_host, beta_port,
+        alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
         hash_alg, compress
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const info = stmt.run(
       now,
@@ -319,7 +342,9 @@ export function createSession(
       input.beta_root,
       input.prefer,
       input.alpha_host ?? null,
+      input.alpha_port ?? null,
       input.beta_host ?? null,
+      input.beta_port ?? null,
       input.alpha_remote_db ?? null,
       input.beta_remote_db ?? null,
       input.remote_scan_cmd ?? `${CLI_NAME} scan`,

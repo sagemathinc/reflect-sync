@@ -98,6 +98,11 @@ function requireSessionRow(sessionDb: string, ref: string): SessionRow {
   return row;
 }
 
+function fmtRemoteEndpoint(host: string, port: number | null, root: string) {
+  const hostPart = port != null ? `${host}:${port}` : host;
+  return `${hostPart}:${root}`;
+}
+
 // Spawn scheduler for a session row
 function spawnSchedulerForSession(sessionDb: string, row: any): number {
   // Ensure DB file paths exist (materialize if needed)
@@ -128,9 +133,15 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
 
   if (row.alpha_host) {
     args.push("--alpha-host", row.alpha_host);
+    if (row.alpha_port != null) {
+      args.push("--alpha-port", String(row.alpha_port));
+    }
   }
   if (row.beta_host) {
     args.push("--beta-host", row.beta_host);
+    if (row.beta_port != null) {
+      args.push("--beta-port", String(row.beta_port));
+    }
   }
   if (row.alpha_remote_db) {
     args.push("--alpha-remote-db", row.alpha_remote_db);
@@ -182,9 +193,11 @@ export function registerSessionCommands(program: Command) {
   addSessionDbOption(
     program
       .command("create")
-      .description("Create a new sync session (mutagen-like endpoint syntax)")
-      .argument("<alpha>", "alpha endpoint (local path or user@host:path)")
-      .argument("<beta>", "beta endpoint (local path or user@host:path)")
+      .description(
+        "Create a new sync session (mutagen-like endpoints; remote specs accept host[:port]:/path)",
+      )
+      .argument("<alpha>", "alpha endpoint (local path or user@host:[port:]path)")
+      .argument("<beta>", "beta endpoint (local path or user@host:[port:]path)")
       .option("-n, --name <name>", "human-friendly session name")
       .addOption(
         new Option("--prefer <side>", "conflict preference")
@@ -297,10 +310,10 @@ export function registerSessionCommands(program: Command) {
 
         for (const r of rows) {
           const alphaPath = r.alpha_host
-            ? `${r.alpha_host}:${r.alpha_root}`
+            ? fmtRemoteEndpoint(r.alpha_host, r.alpha_port, r.alpha_root)
             : fmtLocalPath(r.alpha_root);
           const betaPath = r.beta_host
-            ? `${r.beta_host}:${r.beta_root}`
+            ? fmtRemoteEndpoint(r.beta_host, r.beta_port, r.beta_root)
             : fmtLocalPath(r.beta_root);
 
           table.addRow(

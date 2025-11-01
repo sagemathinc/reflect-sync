@@ -80,15 +80,21 @@ Two ways to do it:
 
 ```bash
 reflect create user@alpha.example.com:/tmp/alpha /tmp/beta
+# or specify a non-default SSH port
+reflect create /tmp/beta alpha.example.com:2222:/srv/alpha
 ```
 
 or
 
 ```bash
 reflect create /tmp/beta user@alpha.example.com:/tmp/alpha
+# default port 22 can also be written with a double colon
+reflect create /tmp/beta alpha.example.com::/srv/alpha
 ```
 
 The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON deltas, and ingest them locally.
+
+> Remote paths must begin with `/` or `~/`. The optional `:<port>` segment lives between the host and the path (`host:2222:/path`). A bare single colon or a double colon (`host:/path`, `host::/path`) uses the default port 22.
 
 > Advanced plumbing commands (`scan`, `watch`, `scheduler`, …) are hidden from the default help to keep the interface ergonomic. Run `reflect --help --advanced` if you need to see or invoke them directly.
 
@@ -279,4 +285,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-

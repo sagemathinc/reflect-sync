@@ -69,6 +69,7 @@ function capture(
 
 export async function estimateLinkClass(
   host?: string,
+  port?: number,
 ): Promise<"local" | "fast" | "medium" | "slow"> {
   if (!host) return "local";
   // [ ] TODO: this link speed test seems bad, since it's just
@@ -76,11 +77,12 @@ export async function estimateLinkClass(
   // little to do with the actual bandwidth (?).
   const t0 = Date.now();
   const TIMEOUT = 2000;
-  const { code } = await capture(
-    "ssh",
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", host, "true"],
-    TIMEOUT,
-  );
+  const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2"];
+  if (port != null) {
+    args.push("-p", String(port));
+  }
+  args.push(host, "true");
+  const { code } = await capture("ssh", args, TIMEOUT);
   if (code) {
     throw Error(`cannot connect to ${host}`);
   }
@@ -93,12 +95,13 @@ export async function estimateLinkClass(
 
 async function chooseCompressionAuto(
   host: string | undefined,
+  port?: number,
 ): Promise<RsyncCompressSpec> {
   if (!host) {
     // no compression locally
     return "none";
   }
-  const link = await estimateLinkClass(host);
+  const link = await estimateLinkClass(host, port);
   if (link == "local") return "none";
   if (link === "fast") return "lz4";
   if (link == "medium") return "zstd";
@@ -111,8 +114,9 @@ export async function resolveCompression(
   host: string | undefined,
   // user config, if any
   compress: RsyncCompressSpec | "auto" | undefined,
+  port?: number,
 ): Promise<RsyncCompressSpec> {
   return !compress || compress === "auto"
-    ? await chooseCompressionAuto(host)
+    ? await chooseCompressionAuto(host, port)
     : compress;
 }
