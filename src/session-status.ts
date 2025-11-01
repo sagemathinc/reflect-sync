@@ -1,6 +1,6 @@
 // src/session-status.ts
 import { Command, Option } from "commander";
-import { ensureSessionDb, getSessionDbPath } from "./session-db.js";
+import { ensureSessionDb, getSessionDbPath, resolveSessionRow } from "./session-db.js";
 import { type Database } from "./db.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 
@@ -225,7 +225,7 @@ export function registerSessionStatus(sessionCmd: Command) {
   sessionCmd
     .command("status")
     .description("show runtime status of a sync session")
-    .argument("<id>", "session id (integer)")
+    .argument("<id-or-name>", "session id or name")
     .addOption(
       new Option("--session-db <file>", "path to sessions database").default(
         getSessionDbPath(),
@@ -233,16 +233,18 @@ export function registerSessionStatus(sessionCmd: Command) {
     )
     .option("--json", "output JSON instead of human text", false)
     .action((idArg: string, opts: { sessionDb: string; json?: boolean }) => {
-      const id = Number(idArg);
-      if (!Number.isFinite(id)) {
-        console.error("session status: <id> must be a number");
-        process.exit(2);
+      const ref = idArg.trim();
+      const row = resolveSessionRow(opts.sessionDb, ref);
+      if (!row) {
+        console.error(`session status: session '${ref}' not found`);
+        process.exit(1);
       }
+      const id = row.id;
       const db = ensureSessionDb(opts.sessionDb);
       try {
         const sess = getSession(db, id);
         if (!sess) {
-          console.error(`session status: session ${id} not found`);
+          console.error(`session status: session '${ref}' not found`);
           process.exit(1);
         }
         const labels = tryGetLabels(db, id);

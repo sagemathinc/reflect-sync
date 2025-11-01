@@ -1,5 +1,6 @@
 import {
   loadSessionById,
+  loadSessionByName,
   createSession,
   deleteSessionById,
   deriveSessionPaths,
@@ -158,13 +159,31 @@ export async function newSession({
   const a = parseEndpoint(alphaSpec);
   const b = parseEndpoint(betaSpec);
   compress = `${compress}${compressLevel ? ":" + compressLevel : ""}`;
+  let sessionName: string | undefined;
+  if (typeof name === "string") {
+    const trimmed = name.trim();
+    if (trimmed) {
+      if (/^\d+$/.test(trimmed)) {
+        throw new Error(
+          "Session name must include non-numeric characters (pure integers are reserved for IDs).",
+        );
+      }
+      const existing = loadSessionByName(sessionDb, trimmed);
+      if (existing) {
+        throw new Error(
+          `Session name '${trimmed}' is already in use (id=${existing.id}).`,
+        );
+      }
+      sessionName = trimmed;
+    }
+  }
 
   let id = 0;
   try {
     id = createSession(
       sessionDb,
       {
-        name: name ?? null,
+        name: sessionName,
         alpha_root: a.root,
         beta_root: b.root,
         prefer: (prefer || "alpha").toLowerCase(),

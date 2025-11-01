@@ -1,6 +1,6 @@
 // session-flush.ts
 import { Command } from "commander";
-import { ensureSessionDb, getSessionDbPath } from "./session-db.js";
+import { ensureSessionDb, getSessionDbPath, resolveSessionRow } from "./session-db.js";
 
 export function registerSessionFlush(sessionCmd: Command) {
   sessionCmd
@@ -8,7 +8,7 @@ export function registerSessionFlush(sessionCmd: Command) {
     .description(
       "force a session to converge (drain micro events + full cycles)",
     )
-    .argument("<id>", "session id (integer)")
+    .argument("<id-or-name>", "session id or name")
     .option(
       "--session-db <file>",
       "path to sessions database",
@@ -18,14 +18,15 @@ export function registerSessionFlush(sessionCmd: Command) {
     .option("--timeout <ms>", "max time to wait", "30000")
     .action(
       async (
-        idArg: string,
+        ref: string,
         opts: { sessionDb: string; noWait: boolean; timeout: string },
       ) => {
-        const id = Number(idArg);
-        if (!Number.isFinite(id)) {
-          console.error("session flush: <id> must be a number");
-          process.exit(2);
+        const row = resolveSessionRow(opts.sessionDb, ref.trim());
+        if (!row) {
+          console.error(`session flush: session '${ref}' not found`);
+          process.exit(1);
         }
+        const id = row.id;
         const timeoutMs = Math.max(0, Number(opts.timeout ?? "30000")) || 30000;
 
         const db = ensureSessionDb(opts.sessionDb);

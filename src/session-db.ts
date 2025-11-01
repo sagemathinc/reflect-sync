@@ -437,6 +437,37 @@ export function loadSessionById(
   }
 }
 
+export function loadSessionByName(
+  sessionDbPath: string,
+  name: string,
+): SessionRow | undefined {
+  const db = open(sessionDbPath);
+  try {
+    const row = db
+      .prepare(`SELECT * FROM sessions WHERE name = ?`)
+      .get(name) as SessionRow | undefined;
+    return row;
+  } finally {
+    db.close();
+  }
+}
+
+function isNumericString(value: string): boolean {
+  return /^\d+$/.test(value);
+}
+
+export function resolveSessionRow(
+  sessionDbPath: string,
+  ref: string,
+): SessionRow | undefined {
+  const trimmed = ref.trim();
+  if (!trimmed) return undefined;
+  if (isNumericString(trimmed)) {
+    return loadSessionById(sessionDbPath, Number(trimmed));
+  }
+  return loadSessionByName(sessionDbPath, trimmed);
+}
+
 /* ============================================================================
    Heartbeat & state
 ============================================================================ */

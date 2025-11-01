@@ -9,10 +9,12 @@ import {
   selectSessions,
   parseSelectorTokens,
   loadSessionById,
+  resolveSessionRow,
   setDesiredState,
   setActualState,
   deriveSessionPaths,
   recordHeartbeat,
+  type SessionRow,
 } from "./session-db.js";
 import { stopPid, terminateSession, newSession } from "./session-manage.js";
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
@@ -81,6 +83,14 @@ function renderRows(
       `(${absolute ? new Date(row.ts).toISOString() : fmtAgo(row.ts)}) ${row.level.toUpperCase()}${scope} ${row.message}${meta}`,
     );
   }
+}
+
+function requireSessionRow(sessionDb: string, ref: string): SessionRow {
+  const row = resolveSessionRow(sessionDb, ref);
+  if (!row) {
+    throw new Error(`session '${ref}' not found`);
+  }
+  return row;
 }
 
 // Spawn scheduler for a session row
@@ -307,7 +317,7 @@ export function registerSessionCommands(program: Command) {
     program
       .command("logs")
       .description("Show recent logs for a session")
-      .argument("<id>", "session id")
+      .argument("<id-or-name>", "session id or name")
       .option("--tail <n>", "number of log entries to display", (v: string) =>
         Number.parseInt(v, 10),
       )
@@ -322,13 +332,16 @@ export function registerSessionCommands(program: Command) {
       )
       .option("-f, --follow", "follow log output", false)
       .option("--json", "emit newline-delimited JSON", false)
-      .action(async (idStr: string, opts: any, command: Command) => {
+      .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
-        const id = Number(idStr);
-        if (!Number.isFinite(id) || id <= 0) {
-          console.error("invalid session id", idStr);
+        let row: SessionRow;
+        try {
+          row = requireSessionRow(sessionDb, ref);
+        } catch (err) {
+          console.error((err as Error).message);
           return;
         }
+        const id = row.id;
         const minLevel = parseLogLevelOption(opts.level);
         const tail = clampPositive(opts.tail, 200);
         const sinceTs =
@@ -387,24 +400,26 @@ export function registerSessionCommands(program: Command) {
     program
       .command("pause")
       .description("Pause sync for one or more sessions")
-      .argument("<id...>", "session id(s)")
-      .action((ids: string[], opts: { sessionDb?: string }, command: Command) => {
+      .argument("<id-or-name...>", "session id(s) or name(s)")
+      .action((refs: string[], opts: { sessionDb?: string }, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
-        ids.map(Number).forEach((id) => {
-          const row = loadSessionById(sessionDb, id);
-          if (!row) {
-            console.error(`session ${id} not found`);
-            return;
+        for (const ref of refs) {
+          let row: SessionRow;
+          try {
+            row = requireSessionRow(sessionDb, ref);
+          } catch (err) {
+            console.error((err as Error).message);
+            continue;
           }
           const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
-          setDesiredState(sessionDb, id, "paused");
-          setActualState(sessionDb, id, "paused");
+          setDesiredState(sessionDb, row.id, "paused");
+          setActualState(sessionDb, row.id, "paused");
           console.log(
             ok
-              ? `paused session ${id} (pid ${row.scheduler_pid})`
-              : `session ${id} was not running`,
+              ? `paused session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
+              : `session ${row.name ?? row.id} was not running`,
           );
-        });
+        }
       }),
   );
 
@@ -412,27 +427,29 @@ export function registerSessionCommands(program: Command) {
     program
       .command("resume")
       .description("Resume sync for one or more sessions")
-      .argument("<id...>", "session id(s)")
-      .action((ids: string[], opts: { sessionDb?: string }, command: Command) => {
+      .argument("<id-or-name...>", "session id(s) or name(s)")
+      .action((refs: string[], opts: { sessionDb?: string }, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
-        ids.map(Number).forEach((id) => {
-          const row = loadSessionById(sessionDb, id);
-          if (!row) {
-            console.error(`session ${id} not found`);
-            return;
+        for (const ref of refs) {
+          let row: SessionRow;
+          try {
+            row = requireSessionRow(sessionDb, ref);
+          } catch (err) {
+            console.error((err as Error).message);
+            continue;
           }
           const pid = spawnSchedulerForSession(sessionDb, row);
-          setDesiredState(sessionDb, id, "running");
-          setActualState(sessionDb, id, pid ? "running" : "error");
+          setDesiredState(sessionDb, row.id, "running");
+          setActualState(sessionDb, row.id, pid ? "running" : "error");
           if (pid) {
-            recordHeartbeat(sessionDb, id, "running", pid);
+            recordHeartbeat(sessionDb, row.id, "running", pid);
           }
           console.log(
             pid
-              ? `resumed session ${id} (pid ${pid})`
-              : `failed to resume session ${id}`,
+              ? `resumed session ${row.name ?? row.id} (pid ${pid})`
+              : `failed to resume session ${row.name ?? row.id}`,
           );
-        });
+        }
       }),
   );
 
@@ -440,10 +457,29 @@ export function registerSessionCommands(program: Command) {
     program
       .command("reset")
       .description("Reset sync for one or more sessions")
-      .argument("<id...>", "session id(s)")
-      .action((ids: string[]) => {
-        console.log("reset: TODO", ids);
-      }),
+      .argument("<id-or-name...>", "session id(s) or name(s)")
+      .action(
+        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+          const sessionDb = resolveSessionDb(opts, command);
+          const resolved: SessionRow[] = [];
+          for (const ref of refs) {
+            try {
+              resolved.push(requireSessionRow(sessionDb, ref));
+            } catch (err) {
+              console.error((err as Error).message);
+            }
+          }
+          if (!resolved.length) {
+            process.exitCode = 1;
+            return;
+          }
+          console.error(
+            "reset command is not implemented yet for sessions:",
+            resolved.map((row) => row.name ?? row.id).join(", "),
+          );
+          process.exitCode = 1;
+        },
+      ),
   );
 
   addSessionDbOption(
@@ -451,24 +487,30 @@ export function registerSessionCommands(program: Command) {
       .command("terminate")
       .description("Stop and remove all session state")
       .option("--force", "terminate even if can't delete remote db")
-      .argument("<id...>", "session id(s)")
+      .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
         async (
-          ids: string[],
+          refs: string[],
           options: { force?: boolean; sessionDb?: string },
           command: Command,
         ) => {
           const sessionDb = resolveSessionDb(options, command);
           const cliLogger = new ConsoleLogger(getLogLevel());
-          for (const id0 of ids) {
-            const id = Number(id0);
+          for (const ref of refs) {
+            let row: SessionRow;
+            try {
+              row = requireSessionRow(sessionDb, ref);
+            } catch (err) {
+              console.error((err as Error).message);
+              continue;
+            }
             await terminateSession({
-              id,
+              id: row.id,
               logger: cliLogger,
               force: options.force,
               sessionDb,
             });
-            console.log(`terminated session ${id}`);
+            console.log(`terminated session ${row.name ?? row.id}`);
           }
         },
       ),
