@@ -64,10 +64,11 @@ The package exposes the `reflect` CLI (and aliases `rfsync` and `reflect-sync`) 
 ### 1) One machine (both roots local)
 
 ```bash
-reflect session -h
-reflect session create /path/to/alpha /path/to/beta
-reflect session list
-reflect session status 1
+reflect --help
+reflect create /path/to/alpha /path/to/beta
+reflect list
+reflect status 1
+reflect logs 1
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
@@ -78,16 +79,32 @@ reflect session status 1
 Two ways to do it:
 
 ```bash
-reflect session create user@alpha.example.com:/tmp/alpha /tmp/beta
+reflect create user@alpha.example.com:/tmp/alpha /tmp/beta
 ```
 
 or
 
 ```bash
-reflect session create /tmp/beta user@alpha.example.com:/tmp/alpha
+reflect create /tmp/beta user@alpha.example.com:/tmp/alpha
 ```
 
 The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON deltas, and ingest them locally.
+
+> Advanced plumbing commands (`scan`, `watch`, `scheduler`, …) are hidden from the default help to keep the interface ergonomic. Run `reflect --help --advanced` if you need to see or invoke them directly.
+
+### Common CLI commands
+
+```bash
+reflect create <alpha> <beta>         # start a new session
+reflect list                          # list sessions
+reflect status <id>                   # show heartbeat / merge status
+reflect logs <id> [--follow]          # stream recent structured logs
+reflect pause <id...>                 # pause one or more sessions
+reflect resume <id...>                # resume (and auto-start scheduler if needed)
+reflect terminate <id...>             # stop and remove session state
+```
+
+All commands honor `--session-db <path>` if you want to keep session metadata outside the default location.
 
 ---
 
@@ -262,3 +279,4 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+
