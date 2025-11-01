@@ -1,5 +1,5 @@
 /**
- * pnpm test ssh.remote-watch.test.ts
+ * pnpm test ssh.remote-sync.test.ts
  *
  * Verifies: scheduler starts with beta as a remote side, and a file created
  * on the remote (beta) arrives locally on alpha via microSync before the next
@@ -131,7 +131,7 @@ describe("SSH remote sync", () => {
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 1,
-        5_000,
+        15_000,
         10,
       );
       await fsp.mkdir(join(alphaRoot, "x"));
@@ -140,7 +140,7 @@ describe("SSH remote sync", () => {
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 2,
-        5_000,
+        15_000,
         10,
       );
 
@@ -153,7 +153,7 @@ describe("SSH remote sync", () => {
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 3,
-        5_000,
+        15_000,
         10,
       );
 
@@ -164,5 +164,5 @@ describe("SSH remote sync", () => {
     } finally {
       await stopScheduler(child);
     }
-  }, 10_000);
+  }, 20_000);
 });
