@@ -218,9 +218,17 @@ type Endpoint = { root: string; host?: string; port?: number };
 export function parseEndpoint(spec: string): Endpoint {
   const trimmed = spec.trim();
   if (!trimmed) return { root: "~" };
-  const looksLikeWindows = /^[A-Za-z]:[\\/]/.test(trimmed);
+  const looksLikeWindows = /^[A-Za-z]:/.test(trimmed);
+  if (looksLikeWindows && trimmed.length >= 3) {
+    const sep = trimmed[2];
+    if (
+      sep === "\\" ||
+      (sep === "/" && process.platform === "win32")
+    ) {
+      return { root: trimmed };
+    }
+  }
   if (
-    looksLikeWindows ||
     trimmed.startsWith("/") ||
     trimmed.startsWith("~/") ||
     trimmed === "~" ||

@@ -105,7 +105,7 @@ export interface SessionCreateInput {
   beta_remote_db?: string | null;
   remote_scan_cmd?: string | null;
   remote_watch_cmd?: string | null;
-  hash_alg?: string | null;
+  hash_alg: string;
   compress?: string | null;
 }
 
@@ -156,6 +156,7 @@ export interface SessionRow {
   alpha_db: string | null;
   beta_db: string | null;
   events_db: string | null;
+  hash_alg?: string | null;
   desired_state: DesiredState;
   actual_state: ActualState;
   last_heartbeat: number | null;

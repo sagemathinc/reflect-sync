@@ -98,6 +98,18 @@ The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON de
 
 > Advanced plumbing commands (`scan`, `watch`, `scheduler`, …) are hidden from the default help to keep the interface ergonomic. Run `reflect --help --advanced` if you need to see or invoke them directly.
 
+### Running as a daemon
+
+The `reflect daemon` command keeps schedulers alive in the background:
+
+```bash
+reflect daemon start   # fire-and-forget supervisor (writes ~/.local/share/reflect-sync/daemon/reflect.pid)
+reflect daemon status  # quick health check
+reflect daemon stop    # terminate the supervisor
+```
+
+Use `reflect daemon install` to install a user service (systemd on Linux, LaunchAgent on macOS) that launches the daemon on login. The service runs `reflect daemon run` in the foreground, so you can also wire it into your own service manager.
+
 ### Common CLI commands
 
 ```bash
@@ -108,6 +120,8 @@ reflect logs <id-or-name> [--follow]          # stream recent structured logs
 reflect pause <id-or-name...>                 # pause one or more sessions
 reflect resume <id-or-name...>                # resume (and auto-start scheduler if needed)
 reflect terminate <id-or-name...>             # stop and remove session state
+reflect daemon start                          # ensure the background supervisor is running
+reflect daemon stop                           # stop the supervisor (removes the PID file)
 ```
 
 All commands honor `--session-db <path>` if you want to keep session metadata outside the default location.

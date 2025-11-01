@@ -28,6 +28,11 @@ describe("parseEndpoint", () => {
     });
   });
 
+  it("handles short host aliases without a port", () => {
+    expect(parseEndpoint("s:/tmp/b"))
+      .toEqual({ host: "s", port: undefined, root: "/tmp/b" });
+  });
+
   it("requires remote paths to begin with '/' or '~/'", () => {
     expect(() => parseEndpoint("example.org:2222:relative/path")).toThrow(
       "Remote paths must start with '/' or '~/'",

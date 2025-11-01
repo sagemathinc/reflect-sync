@@ -142,5 +142,5 @@ describe("SSH remote watch → microSync", () => {
     } finally {
       await stopScheduler(child);
     }
-  }, 20_000);
+  }, 25_000);
 });

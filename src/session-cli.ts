@@ -1,18 +1,14 @@
 // --- imports near the top of cli.ts (add if not already present)
 import { Command, Option } from "commander";
-import fs from "node:fs";
-import { spawn } from "node:child_process";
 import {
   ensureSessionDb,
   getSessionDbPath,
-  getReflectSyncHome,
   selectSessions,
   parseSelectorTokens,
   loadSessionById,
   resolveSessionRow,
   setDesiredState,
   setActualState,
-  deriveSessionPaths,
   recordHeartbeat,
   type SessionRow,
 } from "./session-db.js";
@@ -25,7 +21,6 @@ import {
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
-import { argsJoin } from "./remote.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 import {
   ConsoleLogger,
@@ -36,6 +31,8 @@ import {
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { fmtLocalPath } from "./session-status.js";
+import { spawnSchedulerForSession } from "./session-runner.js";
+import { registerSessionDaemon } from "./session-daemon.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -101,66 +98,6 @@ function requireSessionRow(sessionDb: string, ref: string): SessionRow {
 function fmtRemoteEndpoint(host: string, port: number | null, root: string) {
   const hostPart = port != null ? `${host}:${port}` : host;
   return `${hostPart}:${root}`;
-}
-
-// Spawn scheduler for a session row
-function spawnSchedulerForSession(sessionDb: string, row: any): number {
-  // Ensure DB file paths exist (materialize if needed)
-  const home = getReflectSyncHome();
-  const sessDir = deriveSessionPaths(row.id, home).dir;
-  fs.mkdirSync(sessDir, { recursive: true });
-
-  const args: string[] = process.env.REFLECT_BUNDLED ? [] : [process.argv[1]];
-  args.push(
-    "scheduler",
-    "--alpha-root",
-    row.alpha_root,
-    "--beta-root",
-    row.beta_root,
-    "--alpha-db",
-    row.alpha_db,
-    "--beta-db",
-    row.beta_db,
-    "--base-db",
-    row.base_db,
-    "--prefer",
-    row.prefer,
-    "--hash",
-    row.hash_alg,
-    "--compress",
-    row.compress ?? "auto",
-  );
-
-  if (row.alpha_host) {
-    args.push("--alpha-host", row.alpha_host);
-    if (row.alpha_port != null) {
-      args.push("--alpha-port", String(row.alpha_port));
-    }
-  }
-  if (row.beta_host) {
-    args.push("--beta-host", row.beta_host);
-    if (row.beta_port != null) {
-      args.push("--beta-port", String(row.beta_port));
-    }
-  }
-  if (row.alpha_remote_db) {
-    args.push("--alpha-remote-db", row.alpha_remote_db);
-  }
-  if (row.beta_remote_db) {
-    args.push("--beta-remote-db", row.beta_remote_db);
-  }
-  args.push("--session-id", String(row.id));
-  args.push("--session-db", sessionDb);
-
-  console.log(`${process.execPath} ${argsJoin(args)}`);
-  // Important: keep stdio detached so it runs in background (daemon-esque)
-  const child = spawn(process.execPath, args, {
-    stdio: "ignore",
-    detached: true,
-    env: process.env,
-  });
-  child.unref();
-  return child.pid ?? 0;
 }
 
 export function registerSessionCommands(program: Command) {
@@ -550,4 +487,5 @@ export function registerSessionCommands(program: Command) {
   registerSessionMonitor(program);
   registerSessionFlush(program);
   registerSessionStatus(program);
+  registerSessionDaemon(program);
 }
