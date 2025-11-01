@@ -15,7 +15,7 @@ import {
   recordHeartbeat,
 } from "./session-db.js";
 import { stopPid, terminateSession, newSession } from "./session-manage.js";
-import { registerSessionStatus } from "./session-status.js";
+import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
 import { argsJoin } from "./remote.js";
@@ -26,10 +26,7 @@ import {
   parseLogLevel,
   type LogLevel,
 } from "./logger.js";
-import {
-  fetchSessionLogs,
-  type SessionLogRow,
-} from "./session-logs.js";
+import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -47,7 +44,9 @@ function parseLogLevelOption(raw?: string): LogLevel | undefined {
   if (!raw) return undefined;
   const lvl = raw.toLowerCase();
   if (!LOG_LEVELS.includes(lvl as LogLevel)) {
-    console.error(`invalid level '${raw}', expected one of ${LOG_LEVELS.join(", ")}`);
+    console.error(
+      `invalid level '${raw}', expected one of ${LOG_LEVELS.join(", ")}`,
+    );
     process.exit(1);
   }
   return lvl as LogLevel;
@@ -55,7 +54,7 @@ function parseLogLevelOption(raw?: string): LogLevel | undefined {
 
 function renderRows(
   rows: SessionLogRow[],
-  { json }: { json: boolean },
+  { json, absolute }: { json: boolean; absolute: boolean },
 ) {
   for (const row of rows) {
     if (json) {
@@ -71,12 +70,14 @@ function renderRows(
       console.log(JSON.stringify(payload));
       continue;
     }
-    const ts = new Date(row.ts).toISOString();
     const scope = row.scope ? ` [${row.scope}]` : "";
-    const meta = row.meta && Object.keys(row.meta).length
-      ? ` ${JSON.stringify(row.meta)}`
-      : "";
-    console.log(`${ts} ${row.level.toUpperCase()}${scope} ${row.message}${meta}`);
+    const meta =
+      row.meta && Object.keys(row.meta).length
+        ? ` ${JSON.stringify(row.meta)}`
+        : "";
+    console.log(
+      `(${absolute ? new Date(row.ts).toISOString() : fmtAgo(row.ts)}) ${row.level.toUpperCase()}${scope} ${row.message}${meta}`,
+    );
   }
 }
 
@@ -276,6 +277,7 @@ export function registerSessionCommands(program: Command) {
     .option("--since <ms>", "only show logs with ts >= ms since epoch", (v) =>
       Number.parseInt(v, 10),
     )
+    .option("--absolute", "show times as absolute timestamps", false)
     .option(
       "--level <level>",
       `minimum log level (${LOG_LEVELS.join(", ")})`,
@@ -311,7 +313,7 @@ export function registerSessionCommands(program: Command) {
           return;
         }
       } else {
-        renderRows(rows, { json: !!opts.json });
+        renderRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
         lastId = rows[rows.length - 1].id;
       }
 
@@ -330,7 +332,7 @@ export function registerSessionCommands(program: Command) {
             order: "asc",
           });
           if (rows.length) {
-            renderRows(rows, { json: !!opts.json });
+            renderRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
             lastId = rows[rows.length - 1].id;
           }
         };
