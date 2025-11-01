@@ -16,6 +16,36 @@ export function argsJoin(args: string[]): string {
 
 const remoteWhichCache = new Map<string, string>();
 
+// timeout in seconds for any ssh command attempt
+const TIMEOUT = 5;
+
+async function ssh(
+  host: string,
+  args: string[],
+  verbose: boolean | undefined,
+  what: string | undefined,
+): Promise<{ stdout: string; stderr: string }> {
+  if (verbose) console.log("$ ssh", argsJoin(args));
+  let stdout = "",
+    stderr = "";
+  await new Promise<void>((resolve, reject) => {
+    const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+    p.stdout!.on("data", (c) => (stdout += c));
+    p.stderr!.on("data", (c) => (stderr += c));
+    p.once("exit", (c) =>
+      !c
+        ? resolve()
+        : reject(
+            new Error(
+              `${what ?? argsJoin(args)} failed on ${host} (exit ${c}) -- ${stderr}`,
+            ),
+          ),
+    );
+    p.once("error", reject);
+  });
+  return { stdout, stderr };
+}
+
 export async function remoteWhich(
   host: string,
   cmd: string,
@@ -26,6 +56,8 @@ export async function remoteWhich(
     return remoteWhichCache.get(key)!;
   }
   const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
     "-C",
     "-T",
     "-o",
@@ -33,16 +65,7 @@ export async function remoteWhich(
     host,
     `sh -lc 'which ${cmd}'`,
   ];
-
-  if (verbose) console.log("$ ssh", argsJoin(args));
-  const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "inherit"] });
-  let out = "";
-  p.stdout!.on("data", (c) => (out += c));
-  const code: number | null = await new Promise((res) =>
-    p.once("exit", (c) => res(c)),
-  );
-  if (code !== 0)
-    throw new Error(`'which ${cmd}' failed on ${host} (exit ${code})`);
+  let { stdout: out } = await ssh(host, args, verbose, `which ${cmd}`);
   out = out.trim();
   remoteWhichCache.set(key, out);
   return out;
@@ -62,22 +85,18 @@ export async function resolveRemoteHome(
   // Fallback: getent passwd <user> | cut -d: -f6
   const cmd =
     'cd ~ 2>/dev/null && pwd -P || (getent passwd "$(id -un)" | cut -d: -f6)';
-  const args = ["-C", "-T", "-o", "BatchMode=yes", host, `sh -lc ${cmd}`];
-
-  if (verbose) console.log("$ ssh", argsJoin(args));
-
-  const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "inherit"] });
-
-  let out = "";
-  p.stdout!.on("data", (c) => (out += c));
-
-  const code: number | null = await new Promise((res) =>
-    p.once("exit", (c) => res(c)),
-  );
-  if (code !== 0)
-    throw new Error(`Failed to resolve remote HOME on ${host} (exit ${code})`);
-
-  const home = out.trim();
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+    host,
+    `sh -lc ${cmd}`,
+  ];
+  const { stdout } = await ssh(host, args, verbose, cmd);
+  const home = stdout.trim();
   if (!home) throw new Error(`Empty HOME from ${host}`);
   remoteHomeCache.set(host, home);
   return home;
@@ -121,15 +140,41 @@ export async function ensureRemoteParentDir(
   }
   const dirname = posix.dirname(path);
   const cmd = `mkdir -p -- ${shellEscape(dirname)}`;
-  const args = ["-C", "-T", "-o", "BatchMode=yes", host, "--", cmd];
-  if (verbose) console.log("$ ssh", argsJoin(args));
-  await new Promise<void>((resolve, reject) => {
-    const p = spawn("ssh", args, { stdio: ["ignore", "ignore", "inherit"] });
-    p.on("exit", (c) =>
-      c === 0
-        ? resolve()
-        : reject(new Error(`mkdir -p failed on ${host} (exit ${c})`)),
-    );
-    p.on("error", reject);
-  });
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+    host,
+    "--",
+    cmd,
+  ];
+  await ssh(host, args, verbose, cmd);
+}
+
+export async function sshDeleteDirectory({
+  host,
+  path,
+  verbose,
+}: {
+  host: string;
+  path: string;
+  verbose?: boolean;
+}) {
+  path = await expandHome(path, host, verbose);
+  const cmd = `rm -rf -- ${shellEscape(path)}`;
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+    host,
+    "--",
+    cmd,
+  ];
+  await ssh(host, args, verbose, cmd);
 }

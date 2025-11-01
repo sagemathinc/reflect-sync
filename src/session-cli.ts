@@ -2,6 +2,7 @@
 import { Command, Option } from "commander";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import {
   ensureSessionDb,
   getSessionDbPath,
@@ -22,7 +23,11 @@ import {
 import { registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
-import { argsJoin, ensureRemoteParentDir } from "./remote.js";
+import {
+  argsJoin,
+  ensureRemoteParentDir,
+  sshDeleteDirectory,
+} from "./remote.js";
 import { CLI_NAME } from "./constants.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 
@@ -141,15 +146,15 @@ function stopPid(pid: number): boolean {
 
 // ---------- add the "session" subtree ----------
 export function registerSessionCommands(program: Command) {
-  program.option(
-    "--session-db <file>",
-    "override path to sessions.db",
-    getSessionDbPath(),
-  );
-
   const session = program
     .command("session")
-    .description("Manage sync sessions");
+    .description("Manage sync sessions")
+    .option("--verbose")
+    .option(
+      "--session-db <file>",
+      "override path to sessions.db",
+      getSessionDbPath(),
+    );
 
   // Global override for the sessions DB location (optional)
   session.hook("preAction", (thisCmd) => {
@@ -379,34 +384,81 @@ export function registerSessionCommands(program: Command) {
   session
     .command("terminate")
     .description("Stop and remove all session state")
+    .option("--force", "terminate even if can't delete remote db")
     .argument("<id...>", "session id(s)")
-    .action((ids: string[]) => {
+    .action(async (ids: string[], options: { force?: boolean }, command) => {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
+      const opts = { ...command.optsWithGlobals(), ...options };
 
-      ids.map(Number).forEach((id) => {
+      for (const id0 of ids) {
+        const id = Number(id0);
         const row = loadSessionById(sessionDb, id);
         if (!row) {
           console.error(`session ${id} not found`);
-          return;
+          continue;
+        }
+        if (opts.verbose) {
+          console.log(`terminating session ${id}`);
         }
         if (row.scheduler_pid) {
           stopPid(row.scheduler_pid);
         }
+        const host = row.alpha_host || row.beta_host;
+        if (host) {
+          const path = row.alpha_remote_db || row.beta_remote_db;
+          if (path) {
+            const dir = dirname(path);
+            // includes is just a sanity check...
+            if (dir.includes(CLI_NAME)) {
+              // delete it over ssh
+              try {
+                await sshDeleteDirectory({
+                  host,
+                  path: dir,
+                  verbose: opts.verbose,
+                });
+              } catch (err) {
+                if (!opts.force) {
+                  console.error(
+                    `session ${id} -- unable to delete ${host}:${path} -- you could use --force and manually delete`,
+                    err,
+                  );
+                  continue;
+                } else {
+                  // non-fatal
+                  console.warn(
+                    `session ${id} -- failed to delete ${host}:${path}`,
+                    err,
+                  );
+                }
+              }
+            }
+          }
+        }
+
         setDesiredState(sessionDb, id, "stopped");
         setActualState(sessionDb, id, "stopped");
         const dir = deriveSessionPaths(id, getReflectSyncHome()).dir;
         try {
           fs.rmSync(dir, { recursive: true, force: true });
-        } catch {}
-        // [ ] TODO: need to get and delete the REMOTE session via ssh
-        // and if that fails, give an error.  We could allow it only
-        // with termiante --force.  The point is that otherwise a potentially
-        // huge sqlite3 database could be left on the other side, wasting
-        // space forever, and the user needs to be aware of this.
+        } catch (err) {
+          if (opts.force) {
+            console.warn(
+              `session ${id} -- failed to delete ${dir} (you should manually clean up)`,
+              err,
+            );
+          } else {
+            console.error(
+              `session ${id} -- failed to delete ${dir} (consider using --force)`,
+              err,
+            );
+            continue;
+          }
+        }
         deleteSessionById(sessionDb, id);
         console.log(`terminated session ${id}`);
-      });
+      }
     });
 
   registerSessionStatus(session);
