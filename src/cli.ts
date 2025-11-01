@@ -4,6 +4,7 @@ import { Command, Option } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
+import { getSessionDbPath } from "./session-db.js";
 import {
   ConsoleLogger,
   LOG_LEVELS,
@@ -25,8 +26,9 @@ function mergeOptsWithLogger<T extends Record<string, unknown>>(
 ) {
   const globals = command.optsWithGlobals() as Record<string, unknown> & {
     logLevel?: string;
+    advanced?: boolean;
   };
-  const { logLevel: _, ...restGlobals } = globals;
+  const { logLevel: _, advanced: __, ...restGlobals } = globals;
   const level = resolveLogLevel(command);
   const logger = new ConsoleLogger(level);
   return { ...restGlobals, ...opts, logger, logLevel: level };
@@ -44,9 +46,40 @@ program
     `log verbosity (${LOG_LEVELS.join(", ")})`,
     "info",
   )
+  .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
+  .option("-A, --advanced", "show advanced plumbing commands in help output", false)
   .option("--dry-run", "do not modify files", false);
 
 registerSessionCommands(program);
+
+const ADVANCED_COMMANDS = new Set([
+  "scan",
+  "ingest",
+  "merge",
+  "scheduler",
+  "watch",
+]);
+
+const shouldShowAdvanced = () => {
+  const val = program.getOptionValue("advanced");
+  if (typeof val === "boolean") return val;
+  const raw = (program as any).rawArgs as string[] | undefined;
+  return (raw ?? []).some((arg) => arg === "--advanced" || arg === "-A");
+};
+
+program.configureHelp({
+  visibleCommands(cmd) {
+    const showAdvanced = shouldShowAdvanced();
+    return cmd.commands.filter(
+      (c) => showAdvanced || !ADVANCED_COMMANDS.has(c.name()),
+    );
+  },
+});
+
+program.addHelpText(
+  "after",
+  "\nAdvanced plumbing commands are hidden by default. Use `reflect --help --advanced` to show them.\n",
+);
 
 program
   .command("scan")
