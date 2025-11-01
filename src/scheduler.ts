@@ -503,26 +503,38 @@ export async function runScheduler({
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    const ingestArgs = ["ingest", "--db", localDb];
-    remoteLog.debug("ingest watch", { args: argsJoin(ingestArgs) });
-    const ingestP = spawn(CLI_NAME, ingestArgs, {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-
     sshP.stderr?.on("data", (chunk) => {
       remoteLog.debug("ssh stderr", { data: chunk.toString().trim() });
     });
-    ingestP.stderr?.on("data", (chunk) => {
-      remoteLog.debug("ingest stderr", { data: chunk.toString().trim() });
-    });
 
-    const tee = new PassThrough();
-    if (sshP.stdout) {
-      sshP.stdout.pipe(tee);
-      tee.pipe(ingestP.stdin!);
+    const stdout = sshP.stdout;
+    if (!stdout) {
+      remoteLog.error("ssh watch missing stdout");
+      sshP.kill("SIGTERM");
+      return null;
     }
 
-    const rl = readline.createInterface({ input: tee });
+    const tee = new PassThrough();
+    stdout.pipe(tee);
+
+    const ingestStream = new PassThrough();
+    const watchStream = new PassThrough();
+    tee.pipe(ingestStream);
+    tee.pipe(watchStream);
+
+    const ingestAbort = new AbortController();
+    runIngestDelta({
+      db: localDb,
+      logger: remoteLog.child("ingest"),
+      input: ingestStream,
+      abortSignal: ingestAbort.signal,
+    }).catch((err) => {
+      remoteLog.error("ingest watch error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    const rl = readline.createInterface({ input: watchStream });
     rl.on("line", (line) => {
       if (!line) return;
       try {
@@ -540,11 +552,9 @@ export async function runScheduler({
     });
 
     const kill = () => {
+      ingestAbort.abort();
       try {
         rl.close();
-      } catch {}
-      try {
-        ingestP.stdin?.end();
       } catch {}
       try {
         sshP.stdin?.end();
@@ -552,24 +562,23 @@ export async function runScheduler({
       // Give it a moment to exit cleanly on EOF
       setTimeout(() => {
         try {
-          ingestP.kill("SIGTERM");
-        } catch {}
-        try {
           sshP.kill("SIGTERM");
         } catch {}
       }, 300);
+      try {
+        ingestStream.destroy();
+      } catch {}
+      try {
+        watchStream.destroy();
+      } catch {}
+      try {
+        tee.destroy();
+      } catch {}
     };
 
     sshP.on("exit", (code) => {
       kill();
       remoteLog.info("ssh watch exited", { code });
-      if (side === "alpha") alphaStream = null;
-      else betaStream = null;
-    });
-
-    ingestP.on("exit", (code) => {
-      kill();
-      remoteLog.info("ingest exited", { code });
       if (side === "alpha") alphaStream = null;
       else betaStream = null;
     });
