@@ -35,6 +35,7 @@ export interface SessionLogQuery {
   limit?: number;
   minLevel?: LogLevel;
   order?: "asc" | "desc";
+  scope?: string;
 }
 
 export interface SessionLogStoreOptions {
@@ -178,6 +179,7 @@ export function fetchSessionLogs(
     limit = 200,
     minLevel,
     order = "asc",
+    scope,
   }: SessionLogQuery = {},
 ): SessionLogRow[] {
   const db = ensureSessionDb(sessionDbPath);
@@ -197,6 +199,11 @@ export function fetchSessionLogs(
       where.push(`level IN (${levels.map(() => "?").join(",")})`);
       params.push(...levels);
     }
+    if (scope) {
+      where.push("scope = ?");
+      params.push(scope);
+    }
+
     const stmt = db.prepare(
       `SELECT id, session_id, ts, level, scope, message, meta
          FROM session_logs

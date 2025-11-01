@@ -125,7 +125,10 @@ export function registerSessionCommands(program: Command) {
   };
 
   const getLogLevel = () =>
-    parseLogLevel(program.getOptionValue("logLevel") as string | undefined, "info");
+    parseLogLevel(
+      program.getOptionValue("logLevel") as string | undefined,
+      "info",
+    );
 
   addSessionDbOption(
     program
@@ -133,7 +136,10 @@ export function registerSessionCommands(program: Command) {
       .description(
         "Create a new sync session (mutagen-like endpoints; remote specs accept host[:port]:/path)",
       )
-      .argument("<alpha>", "alpha endpoint (local path or user@host:[port:]path)")
+      .argument(
+        "<alpha>",
+        "alpha endpoint (local path or user@host:[port:]path)",
+      )
       .argument("<beta>", "beta endpoint (local path or user@host:[port:]path)")
       .option("-n, --name <name>", "human-friendly session name")
       .addOption(
@@ -287,6 +293,7 @@ export function registerSessionCommands(program: Command) {
       )
       .option("-f, --follow", "follow log output", false)
       .option("--json", "emit newline-delimited JSON", false)
+      .option("--scope <scope>", "only include logs with matching scope")
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -308,6 +315,7 @@ export function registerSessionCommands(program: Command) {
           minLevel,
           sinceTs,
           order: "desc",
+          scope: opts.scope ? String(opts.scope) : undefined,
         }).reverse();
 
         let lastId = 0;
@@ -334,9 +342,13 @@ export function registerSessionCommands(program: Command) {
               afterId: lastId,
               minLevel,
               order: "asc",
+              scope: opts.scope ? String(opts.scope) : undefined,
             });
             if (rows.length) {
-              renderRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
+              renderRows(rows, {
+                json: !!opts.json,
+                absolute: !!opts.absolute,
+              });
               lastId = rows[rows.length - 1].id;
             }
           };
@@ -356,26 +368,28 @@ export function registerSessionCommands(program: Command) {
       .command("pause")
       .description("Pause sync for one or more sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action((refs: string[], opts: { sessionDb?: string }, command: Command) => {
-        const sessionDb = resolveSessionDb(opts, command);
-        for (const ref of refs) {
-          let row: SessionRow;
-          try {
-            row = requireSessionRow(sessionDb, ref);
-          } catch (err) {
-            console.error((err as Error).message);
-            continue;
+      .action(
+        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+          const sessionDb = resolveSessionDb(opts, command);
+          for (const ref of refs) {
+            let row: SessionRow;
+            try {
+              row = requireSessionRow(sessionDb, ref);
+            } catch (err) {
+              console.error((err as Error).message);
+              continue;
+            }
+            const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
+            setDesiredState(sessionDb, row.id, "paused");
+            setActualState(sessionDb, row.id, "paused");
+            console.log(
+              ok
+                ? `paused session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
+                : `session ${row.name ?? row.id} was not running`,
+            );
           }
-          const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
-          setDesiredState(sessionDb, row.id, "paused");
-          setActualState(sessionDb, row.id, "paused");
-          console.log(
-            ok
-              ? `paused session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
-              : `session ${row.name ?? row.id} was not running`,
-          );
-        }
-      }),
+        },
+      ),
   );
 
   addSessionDbOption(
@@ -383,29 +397,31 @@ export function registerSessionCommands(program: Command) {
       .command("resume")
       .description("Resume sync for one or more sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action((refs: string[], opts: { sessionDb?: string }, command: Command) => {
-        const sessionDb = resolveSessionDb(opts, command);
-        for (const ref of refs) {
-          let row: SessionRow;
-          try {
-            row = requireSessionRow(sessionDb, ref);
-          } catch (err) {
-            console.error((err as Error).message);
-            continue;
+      .action(
+        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+          const sessionDb = resolveSessionDb(opts, command);
+          for (const ref of refs) {
+            let row: SessionRow;
+            try {
+              row = requireSessionRow(sessionDb, ref);
+            } catch (err) {
+              console.error((err as Error).message);
+              continue;
+            }
+            const pid = spawnSchedulerForSession(sessionDb, row);
+            setDesiredState(sessionDb, row.id, "running");
+            setActualState(sessionDb, row.id, pid ? "running" : "error");
+            if (pid) {
+              recordHeartbeat(sessionDb, row.id, "running", pid);
+            }
+            console.log(
+              pid
+                ? `resumed session ${row.name ?? row.id} (pid ${pid})`
+                : `failed to resume session ${row.name ?? row.id}`,
+            );
           }
-          const pid = spawnSchedulerForSession(sessionDb, row);
-          setDesiredState(sessionDb, row.id, "running");
-          setActualState(sessionDb, row.id, pid ? "running" : "error");
-          if (pid) {
-            recordHeartbeat(sessionDb, row.id, "running", pid);
-          }
-          console.log(
-            pid
-              ? `resumed session ${row.name ?? row.id} (pid ${pid})`
-              : `failed to resume session ${row.name ?? row.id}`,
-          );
-        }
-      }),
+        },
+      ),
   );
 
   addSessionDbOption(

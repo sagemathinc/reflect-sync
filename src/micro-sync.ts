@@ -9,7 +9,7 @@ import {
   stat as fsStat,
 } from "node:fs/promises";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
-import type { SpawnOptions } from "node:child_process";
+import { run as runRsync, type RsyncProgressEvent } from "./rsync.js";
 import {
   isCompressing,
   rsyncCompressionArgs,
@@ -26,17 +26,6 @@ export type MicroSyncDeps = {
   betaPort?: number;
   prefer: "alpha" | "beta";
   dryRun: boolean;
-  spawnTask: (
-    cmd: string,
-    args: string[],
-    okCodes?: number[],
-    extra?: SpawnOptions,
-  ) => Promise<{
-    code: number | null;
-    ms: number;
-    ok: boolean;
-    lastZero: boolean;
-  }>;
   log: (
     level: "info" | "warn" | "error",
     source: string,
@@ -56,7 +45,6 @@ export function makeMicroSync({
   betaPort,
   prefer,
   dryRun,
-  spawnTask,
   log,
   compress,
   logger,
@@ -154,6 +142,10 @@ export function makeMicroSync({
     extra: string[] = [],
   ): Promise<boolean> {
     const compArgs = rsyncCompressionArgs(compress);
+    const progressScope =
+      direction === "alpha->beta"
+        ? "micro.rsync.alpha->beta"
+        : "micro.rsync.beta->alpha";
 
     if (direction === "alpha->beta") {
       const { from, to, transport } = rsyncRoots(
@@ -165,24 +157,35 @@ export function makeMicroSync({
         betaPort,
         compress,
       );
-      const res = await spawnTask(
-        "rsync",
-        [
-          ...(dryRun ? ["-n"] : []),
-          ...transport,
-          "-a",
-          "-I",
-          "--relative",
-          "--from0",
-          ...compArgs,
-          ...extra,
-          `--files-from=${listFile}`,
-          from,
-          to,
-        ],
-        [0, 23, 24],
-      );
-      return !!res.lastZero;
+      const res = await runRsync("rsync", [
+        ...(dryRun ? ["-n"] : []),
+        ...transport,
+        "-a",
+        "-I",
+        "--relative",
+        "--from0",
+        ...compArgs,
+        ...extra,
+        `--files-from=${listFile}`,
+        from,
+        to,
+      ], [0, 23, 24], {
+        logger,
+        logLevel: "info",
+        onProgress: (event: RsyncProgressEvent) => {
+          logger.info("progress", {
+            scope: progressScope,
+            stage: "micro",
+            direction,
+            transferredBytes: event.transferredBytes,
+            totalBytes: event.totalBytes ?? null,
+            percent: event.percent,
+            speed: event.speed ?? null,
+            etaMilliseconds: event.etaMilliseconds ?? null,
+          });
+        },
+      });
+      return res.zero;
     } else {
       const { from, to, transport } = rsyncRoots(
         betaRoot,
@@ -193,24 +196,35 @@ export function makeMicroSync({
         alphaPort,
         compress,
       );
-      const res = await spawnTask(
-        "rsync",
-        [
-          ...(dryRun ? ["-n"] : []),
-          ...transport,
-          "-a",
-          "-I",
-          "--relative",
-          "--from0",
-          ...compArgs,
-          ...extra,
-          `--files-from=${listFile}`,
-          from,
-          to,
-        ],
-        [0, 23, 24],
-      );
-      return !!res.lastZero;
+      const res = await runRsync("rsync", [
+        ...(dryRun ? ["-n"] : []),
+        ...transport,
+        "-a",
+        "-I",
+        "--relative",
+        "--from0",
+        ...compArgs,
+        ...extra,
+        `--files-from=${listFile}`,
+        from,
+        to,
+      ], [0, 23, 24], {
+        logger,
+        logLevel: "info",
+        onProgress: (event: RsyncProgressEvent) => {
+          logger.info("progress", {
+            scope: progressScope,
+            stage: "micro",
+            direction,
+            transferredBytes: event.transferredBytes,
+            totalBytes: event.totalBytes ?? null,
+            percent: event.percent,
+            speed: event.speed ?? null,
+            etaMilliseconds: event.etaMilliseconds ?? null,
+          });
+        },
+      });
+      return res.zero;
     }
   }
 

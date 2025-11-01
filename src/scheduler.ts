@@ -7,7 +7,7 @@
 // * Local watchers only; remote changes arrive via remote watch stream.
 // * Full-cycle still uses "reflect merge" (see merge.ts).
 
-import { spawn, SpawnOptions, ChildProcess } from "node:child_process";
+import { spawn, ChildProcess } from "node:child_process";
 import chokidar from "chokidar";
 import path from "node:path";
 import { Command, Option } from "commander";
@@ -310,50 +310,6 @@ export async function runScheduler({
     } catch {}
     const scopeLogger = scoped(source);
     scopeLogger[level](msg, details ?? undefined);
-  }
-
-  // ---------- helpers ----------
-  function spawnTask(
-    cmd: string,
-    args: string[],
-    okCodes: number[] = [0],
-    extra: SpawnOptions = {},
-  ): Promise<{
-    code: number | null;
-    ms: number;
-    ok: boolean;
-    lastZero: boolean;
-  }> {
-    const procLog = scoped("process");
-    procLog.debug("spawn", { cmd, args: argsJoin(args) });
-    return new Promise((resolve) => {
-      const t0 = Date.now();
-      let lastZero = false;
-      const p = spawn(cmd, args, {
-        stdio: extra.stdio ?? "ignore",
-        ...extra,
-      });
-      p.once("exit", (code) => {
-        lastZero = code === 0;
-        const ok = code !== null && okCodes.includes(code);
-        procLog.debug("exit", {
-          cmd,
-          code,
-          ok,
-          elapsedMs: Date.now() - t0,
-        });
-        resolve({ code, ms: Date.now() - t0, ok, lastZero });
-      });
-      p.once("error", () => {
-        procLog.warn("spawn failed", { cmd });
-        resolve({
-          code: 1,
-          ms: Date.now() - t0,
-          ok: okCodes.includes(1),
-          lastZero: false,
-        });
-      });
-    });
   }
 
   const clamp = (x: number, lo: number, hi: number) =>
@@ -671,7 +627,6 @@ export async function runScheduler({
     betaPort,
     prefer,
     dryRun,
-    spawnTask,
     compress,
     log,
     logger,
