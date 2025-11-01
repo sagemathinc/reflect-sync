@@ -2,81 +2,29 @@
 import { Command, Option } from "commander";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { dirname } from "node:path";
 import {
   ensureSessionDb,
   getSessionDbPath,
   getReflectSyncHome,
-  getOrCreateEngineId,
-  createSession,
-  updateSession,
   selectSessions,
   parseSelectorTokens,
-  materializeSessionPaths,
   loadSessionById,
   setDesiredState,
   setActualState,
   deriveSessionPaths,
   recordHeartbeat,
-  deleteSessionById,
 } from "./session-db.js";
+import { stopPid, terminateSession, newSession } from "./session-manage.js";
 import { registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
-import {
-  argsJoin,
-  ensureRemoteParentDir,
-  sshDeleteDirectory,
-} from "./remote.js";
-import { CLI_NAME } from "./constants.js";
+import { argsJoin } from "./remote.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
-
-type Endpoint = { root: string; host?: string };
-
-// Minimal mutagen-like endpoint parsing.
-// - local: "~/work" or "/abs/path" -> {root: absolute path, host: undefined}
-// - remote: "user@host:~/work" or "host:/abs" -> {root: as-given (keep ~ for remote), host}
-// Windows drive-letter paths like "C:\x" won’t be mistaken as remote (colon rule).
-export function parseEndpoint(spec: string): Endpoint {
-  // treat as local if absolute path (starts with /) or starts with ~ or looks like
-  // absolute windows path, AND does not contain a colon.
-  const colon = spec.indexOf(":");
-  if (colon <= 0) {
-    // no colon so definitely not remote  (or starts with :)
-    return { root: spec || "~" };
-  }
-
-  // treat as remote if there is a colon AND (contains "@", or
-  // starts with something that clearly looks like a host)
-  const looksLikeWindows = /^[A-Za-z]:[\\]/.test(spec);
-  if (looksLikeWindows || spec.startsWith("/") || spec.startsWith("~")) {
-    // absolute path or relative to home -- definitely not remote
-    return { root: spec || "~" };
-  }
-
-  // not obviously a path, and does have a colon
-  const host = spec.slice(0, colon);
-  const root = spec.slice(colon + 1);
-  return { host, root: root || "~" };
-}
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
   acc.push(val);
   return acc;
-}
-
-function parseLabelPairs(pairs: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const p of pairs || []) {
-    const i = p.indexOf("=");
-    if (i <= 0) throw new Error(`Invalid label "${p}", expected k=v`);
-    const k = p.slice(0, i).trim();
-    const v = p.slice(i + 1).trim();
-    if (!k) throw new Error(`Invalid label key in "${p}"`);
-    out[k] = v;
-  }
-  return out;
 }
 
 // Spawn scheduler for a session row
@@ -133,17 +81,6 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
   return child.pid ?? 0;
 }
 
-// Attempt to stop a scheduler by PID
-function stopPid(pid: number): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, "SIGTERM");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // ---------- add the "session" subtree ----------
 export function registerSessionCommands(program: Command) {
   const session = program
@@ -194,59 +131,15 @@ export function registerSessionCommands(program: Command) {
       "",
     )
     .action(async (alphaSpec: string, betaSpec: string, opts: any) => {
-      if (opts.listHashes) {
-        console.log(listSupportedHashes().join("\n"));
-        return;
-      }
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
-      ensureSessionDb(sessionDb);
-
-      const a = parseEndpoint(alphaSpec);
-      const b = parseEndpoint(betaSpec);
-      const compress = `${opts.compress}${opts.compressLevel ? ":" + opts.compressLevel : ""}`;
-
-      const id = createSession(
-        sessionDb,
-        {
-          name: opts.name ?? null,
-          alpha_root: a.root,
-          beta_root: b.root,
-          prefer: (opts.prefer || "alpha").toLowerCase(),
-          alpha_host: a.host ?? null,
-          beta_host: b.host ?? null,
-          hash_alg: opts.hash,
-          compress,
-        },
-        parseLabelPairs(opts.label || []),
-      );
-
-      const engineId = getOrCreateEngineId(getReflectSyncHome()); // persistent local origin id
-      // [ ] TODO: should instead use a remote version of getReflectSyncHome here:
-      const nsBase = `~/.local/share/${CLI_NAME}/by-origin/${engineId}/sessions/${id}`;
-
-      let alphaRemoteDb: string | null = null;
-      let betaRemoteDb: string | null = null;
-
-      if (a.host) alphaRemoteDb = `${nsBase}/alpha.db`;
-      if (b.host) betaRemoteDb = `${nsBase}/beta.db`;
-
-      if (alphaRemoteDb || betaRemoteDb) {
-        updateSession(sessionDb, id, {
-          alpha_remote_db: alphaRemoteDb,
-          beta_remote_db: betaRemoteDb,
-        });
-
-        // proactively create parent dirs on remotes
-        if (a.host && alphaRemoteDb)
-          await ensureRemoteParentDir(a.host, alphaRemoteDb, opts.verbose);
-        if (b.host && betaRemoteDb)
-          await ensureRemoteParentDir(b.host, betaRemoteDb, opts.verbose);
+      let id;
+      try {
+        id = await newSession({ alphaSpec, betaSpec, ...opts, sessionDb });
+      } catch (err) {
+        console.error("failed to create session", err);
+        return;
       }
-
-      const paths = materializeSessionPaths(id);
-      updateSession(sessionDb, id, paths);
-
       console.log(`created session ${id}${opts.name ? ` (${opts.name})` : ""}`);
       if (!opts.paused) {
         const row = loadSessionById(sessionDb, id)!;
@@ -393,70 +286,12 @@ export function registerSessionCommands(program: Command) {
 
       for (const id0 of ids) {
         const id = Number(id0);
-        const row = loadSessionById(sessionDb, id);
-        if (!row) {
-          console.error(`session ${id} not found`);
-          continue;
-        }
-        if (opts.verbose) {
-          console.log(`terminating session ${id}`);
-        }
-        if (row.scheduler_pid) {
-          stopPid(row.scheduler_pid);
-        }
-        const host = row.alpha_host || row.beta_host;
-        if (host) {
-          const path = row.alpha_remote_db || row.beta_remote_db;
-          if (path) {
-            const dir = dirname(path);
-            // includes is just a sanity check...
-            if (dir.includes(CLI_NAME)) {
-              // delete it over ssh
-              try {
-                await sshDeleteDirectory({
-                  host,
-                  path: dir,
-                  verbose: opts.verbose,
-                });
-              } catch (err) {
-                if (!opts.force) {
-                  console.error(
-                    `session ${id} -- unable to delete ${host}:${path} -- you could use --force and manually delete`,
-                    err,
-                  );
-                  continue;
-                } else {
-                  // non-fatal
-                  console.warn(
-                    `session ${id} -- failed to delete ${host}:${path}`,
-                    err,
-                  );
-                }
-              }
-            }
-          }
-        }
-
-        setDesiredState(sessionDb, id, "stopped");
-        setActualState(sessionDb, id, "stopped");
-        const dir = deriveSessionPaths(id, getReflectSyncHome()).dir;
-        try {
-          fs.rmSync(dir, { recursive: true, force: true });
-        } catch (err) {
-          if (opts.force) {
-            console.warn(
-              `session ${id} -- failed to delete ${dir} (you should manually clean up)`,
-              err,
-            );
-          } else {
-            console.error(
-              `session ${id} -- failed to delete ${dir} (consider using --force)`,
-              err,
-            );
-            continue;
-          }
-        }
-        deleteSessionById(sessionDb, id);
+        await terminateSession({
+          id,
+          verbose: opts.verbose,
+          force: opts.force,
+          sessionDb,
+        });
         console.log(`terminated session ${id}`);
       }
     });
