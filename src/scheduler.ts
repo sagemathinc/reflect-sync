@@ -36,6 +36,7 @@ import {
   type SessionLoggerHandle,
 } from "./session-logs.js";
 import { runMerge } from "./merge.js";
+import { runScan } from "./scan.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -751,6 +752,7 @@ export async function runScheduler({
     let a: any, b: any;
     const scanAlpha = async () => {
       const tAlphaStart = Date.now();
+      const scanLogger = scoped("scan.alpha");
       log(
         "info",
         "scan",
@@ -764,18 +766,37 @@ export async function runScheduler({
             remoteDb: alphaRemoteDb!,
             numericIds,
           })
-        : await spawnTask(
-            CLI_NAME,
-            [
-              "scan",
-              "--root",
-              alphaRoot,
-              "--db",
-              alphaDb,
-              "--hash",
-              hash,
-            ].concat(numericIds ? ["--numeric-ids"] : []),
-          );
+        : await (async () => {
+            try {
+              await runScan({
+                root: alphaRoot,
+                db: alphaDb,
+                emitDelta: false,
+                hash,
+                vacuum: false,
+                numericIds,
+                logger: scanLogger,
+              });
+              return {
+                code: 0,
+                ok: true,
+                lastZero: true,
+                ms: Date.now() - tAlphaStart,
+              };
+            } catch (err) {
+              const duration = Date.now() - tAlphaStart;
+              scanLogger.error("scan failed", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+              return {
+                code: 1,
+                ok: false,
+                lastZero: false,
+                ms: duration,
+                error: err,
+              };
+            }
+          })();
       seedHotFromDb(
         alphaDb,
         hotAlphaMgr,
@@ -786,6 +807,7 @@ export async function runScheduler({
     };
     const scanBeta = async () => {
       const tBetaStart = Date.now();
+      const scanLogger = scoped("scan.beta");
       log(
         "info",
         "scan",
@@ -799,12 +821,37 @@ export async function runScheduler({
             remoteDb: betaRemoteDb!,
             numericIds,
           })
-        : await spawnTask(
-            CLI_NAME,
-            ["scan", "--root", betaRoot, "--db", betaDb, "--hash", hash].concat(
-              numericIds ? ["--numeric-ids"] : [],
-            ),
-          );
+        : await (async () => {
+            try {
+              await runScan({
+                root: betaRoot,
+                db: betaDb,
+                emitDelta: false,
+                hash,
+                vacuum: false,
+                numericIds,
+                logger: scanLogger,
+              });
+              return {
+                code: 0,
+                ok: true,
+                lastZero: true,
+                ms: Date.now() - tBetaStart,
+              };
+            } catch (err) {
+              const duration = Date.now() - tBetaStart;
+              scanLogger.error("scan failed", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+              return {
+                code: 1,
+                ok: false,
+                lastZero: false,
+                ms: duration,
+                error: err,
+              };
+            }
+          })();
       seedHotFromDb(
         betaDb,
         hotBetaMgr,
