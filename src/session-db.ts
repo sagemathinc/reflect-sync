@@ -10,7 +10,7 @@ import { defaultHashAlg } from "./hash.js";
 // Paths & Home
 
 export function getReflectSyncHome(): string {
-  const explicit = process.env.RFSYNC_HOME?.trim();
+  const explicit = process.env.REFLECT_HOME?.trim();
   if (explicit) {
     return ensureDir(expandHome(explicit));
   }

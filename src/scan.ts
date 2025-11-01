@@ -24,14 +24,14 @@ import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 declare global {
   // Set during bundle by Rollup banner.
   // Contains the *bundled* worker source as a single ESM string.
-  var __RFSYNC_HASH_WORKER__: string | undefined;
+  var __REFLECT_HASH_WORKER__: string | undefined;
 }
 
 function makeHashWorker(alg: string): Worker {
-  let injected = globalThis.__RFSYNC_HASH_WORKER__;
+  let injected = globalThis.__REFLECT_HASH_WORKER__;
 
   // bundle mode:
-  if (process.env.RFSYNC_BUNDLED === "1" && injected) {
+  if (process.env.REFLECT_BUNDLED === "1" && injected) {
     // Defensive: if an older build accidentally left a data: URL, strip & decode it.
     if (injected.startsWith("data:text/")) {
       const i = injected.indexOf(",");

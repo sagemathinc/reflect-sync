@@ -15,13 +15,13 @@ import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // extremely verbose -- showing all output of rsync, which
 // can be massive, of course.
-const verbose2 = !!process.env.RFSYNC_VERBOSE2;
+const verbose2 = !!process.env.REFLECT_VERBOSE2;
 
-const RFSYNC_COPY_CHUNK = Number(process.env.RFSYNC_COPY_CHUNK ?? 10_000);
-const RFSYNC_COPY_CONCURRENCY = Number(
-  process.env.RFSYNC_COPY_CONCURRENCY ?? 2,
+const REFLECT_COPY_CHUNK = Number(process.env.REFLECT_COPY_CHUNK ?? 10_000);
+const REFLECT_COPY_CONCURRENCY = Number(
+  process.env.REFLECT_COPY_CONCURRENCY ?? 2,
 );
-const RFSYNC_DIR_CHUNK = Number(process.env.RFSYNC_DIR_CHUNK ?? 20_000);
+const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
 
 type RsyncLogOptions = {
   logger?: Logger;
@@ -103,8 +103,8 @@ export async function rsyncCopyDirsChunked(
 ): Promise<void> {
   if (!dirRpaths.length) return;
   const { logger, debug } = resolveLogContext(opts);
-  const chunkSize = opts.chunkSize ?? RFSYNC_DIR_CHUNK;
-  const concurrency = opts.concurrency ?? Math.min(4, RFSYNC_COPY_CONCURRENCY);
+  const chunkSize = opts.chunkSize ?? REFLECT_DIR_CHUNK;
+  const concurrency = opts.concurrency ?? Math.min(4, REFLECT_COPY_CONCURRENCY);
 
   const sorted = Array.from(new Set(dirRpaths)).sort(); // stable, deduped
   const batches = chunk(sorted, chunkSize);
@@ -165,8 +165,8 @@ export async function rsyncCopyChunked(
   if (!fileRpaths.length) return { ok: true };
   const { logger, debug } = resolveLogContext(opts);
 
-  const chunkSize = opts.chunkSize ?? RFSYNC_COPY_CHUNK;
-  const concurrency = opts.concurrency ?? RFSYNC_COPY_CONCURRENCY;
+  const chunkSize = opts.chunkSize ?? REFLECT_COPY_CHUNK;
+  const concurrency = opts.concurrency ?? REFLECT_COPY_CONCURRENCY;
 
   // Sort for locality; dedupe
   const sorted = Array.from(new Set(fileRpaths)).sort();

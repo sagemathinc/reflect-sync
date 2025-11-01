@@ -16,7 +16,7 @@ export function isDirectRun(
   metaUrl: string,
   argv1 = process.argv[1] ?? "",
 ): boolean {
-  if (process.env.RFSYNC_BUNDLED) {
+  if (process.env.REFLECT_BUNDLED) {
     return false;
   }
   try {

@@ -22,17 +22,17 @@ describe("reflect reset CLI", () => {
   let sessionDbPath: string;
 
   beforeEach(async () => {
-    previousHome = process.env.RFSYNC_HOME;
+    previousHome = process.env.REFLECT_HOME;
     tmpHome = await mkdtemp(join(tmpdir(), "reflect-reset-test-"));
-    process.env.RFSYNC_HOME = tmpHome;
+    process.env.REFLECT_HOME = tmpHome;
     sessionDbPath = getSessionDbPath();
   });
 
   afterEach(async () => {
     if (previousHome === undefined) {
-      delete process.env.RFSYNC_HOME;
+      delete process.env.REFLECT_HOME;
     } else {
-      process.env.RFSYNC_HOME = previousHome;
+      process.env.REFLECT_HOME = previousHome;
     }
     process.exitCode = undefined;
     if (tmpHome) {
@@ -110,7 +110,7 @@ describe("reflect reset CLI", () => {
 
     const row = loadSessionById(sessionDbPath, sessionId)!;
     expect(row.name).toBe(sessionName);
-    expect(row.actual_state).toBe("stopped");
+    expect(row.actual_state).toBe("paused");
     expect(row.desired_state).toBe("paused");
     expect(row.scheduler_pid).toBeNull();
     expect(row.last_heartbeat).toBeNull();

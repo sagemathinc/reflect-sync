@@ -19,8 +19,8 @@ export default {
     sourcemap: false,
     banner: `
       // reflect-sync SEA banner
-      process.env.RFSYNC_BUNDLED = '1';
-      globalThis.__RFSYNC_HASH_WORKER__ = ${JSON.stringify(workerSrc)};
+      process.env.REFLECT_BUNDLED = '1';
+      globalThis.__REFLECT_HASH_WORKER__ = ${JSON.stringify(workerSrc)};
     `,
   },
   external: (id) => id.startsWith("node:"),

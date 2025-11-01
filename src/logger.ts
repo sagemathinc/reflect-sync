@@ -50,7 +50,7 @@ export interface LoggerOptions {
 const defaultClock = () => Date.now();
 
 function isEchoSuppressed(): boolean {
-  const raw = process.env.RFSYNC_DISABLE_LOG_ECHO;
+  const raw = process.env.REFLECT_DISABLE_LOG_ECHO;
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   if (!normalized) return false;

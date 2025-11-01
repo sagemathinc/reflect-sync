@@ -2,8 +2,8 @@
 
 SSH integration tests for reflex-sync.
 
-Skips unless both:
-- env variable RFSYNC_SKIP_SSH_TEST is NOT set
+- Skips unless both:
+- env variable REFLECT_SKIP_SSH_TEST is NOT set
 - sshd is reachable on localhost
 
 It:
@@ -82,7 +82,7 @@ async function runScanOverSshIntoIngest(opts: {
   });
 }
 
-const sshEnabled = process.env.RFSYNC_SKIP_SSH_TEST === undefined;
+const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
 
 (sshEnabled ? describe : describe.skip)(
   "SSH: remote scan -> local ingest",

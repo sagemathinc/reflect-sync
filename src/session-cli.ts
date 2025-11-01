@@ -105,7 +105,7 @@ function spawnSchedulerForSession(sessionDb: string, row: any): number {
   const sessDir = deriveSessionPaths(row.id, home).dir;
   fs.mkdirSync(sessDir, { recursive: true });
 
-  const args: string[] = process.env.RFSYNC_BUNDLED ? [] : [process.argv[1]];
+  const args: string[] = process.env.REFLECT_BUNDLED ? [] : [process.argv[1]];
   args.push(
     "scheduler",
     "--alpha-root",
@@ -374,7 +374,7 @@ export function registerSessionCommands(program: Command) {
         if (!opts.follow) return;
 
         const intervalMs = clampPositive(
-          Number(process.env.RFSYNC_LOG_FOLLOW_INTERVAL ?? 1000),
+          Number(process.env.REFLECT_LOG_FOLLOW_INTERVAL ?? 1000),
           1000,
         );
 

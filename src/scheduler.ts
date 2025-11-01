@@ -167,12 +167,12 @@ const MAX_BACKOFF_MS = envNum("SCHED_MAX_BACKOFF_MS", 600_000);
 const JITTER_MS = envNum("SCHED_JITTER_MS", 500);
 
 const DEFAULT_CONSOLE_LEVEL = parseLogLevel(
-  process.env.RFSYNC_LOG_LEVEL,
+  process.env.REFLECT_LOG_LEVEL,
   "info",
 );
 
 const DEFAULT_SESSION_ECHO_LEVEL = parseLogLevel(
-  process.env.RFSYNC_SESSION_ECHO_LEVEL ?? process.env.RFSYNC_LOG_LEVEL,
+  process.env.REFLECT_SESSION_ECHO_LEVEL ?? process.env.REFLECT_LOG_LEVEL,
   "info",
 );
 
