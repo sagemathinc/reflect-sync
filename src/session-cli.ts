@@ -27,6 +27,8 @@ import {
   type LogLevel,
 } from "./logger.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
+import { AsciiTable3, AlignmentEnum } from "ascii-table3";
+import { fmtLocalPath } from "./session-status.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -249,27 +251,49 @@ export function registerSessionCommands(program: Command) {
           return;
         }
 
+        const table = new AsciiTable3("Sessions")
+          .setHeading(
+            "ID",
+            "Name",
+            "State (actual/desired)",
+            "Prefer",
+            "Alpha",
+            "Beta",
+            "PID",
+          )
+          .setStyle("unicode-round");
+
+        const alignments = [
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+          AlignmentEnum.LEFT,
+        ];
+        alignments.forEach((align, idx) => table.setAlign(idx, align));
+
         for (const r of rows) {
-          const left = r.alpha_host
+          const alphaPath = r.alpha_host
             ? `${r.alpha_host}:${r.alpha_root}`
-            : r.alpha_root;
-          const right = r.beta_host
+            : fmtLocalPath(r.alpha_root);
+          const betaPath = r.beta_host
             ? `${r.beta_host}:${r.beta_root}`
-            : r.beta_root;
-          console.log(
-            [
-              `id=${r.id}`,
-              r.name ? `name=${r.name}` : "",
-              `state=${r.actual_state}/${r.desired_state}`,
-              `prefer=${r.prefer}`,
-              `alpha=${left}`,
-              `beta=${right}`,
-              r.scheduler_pid ? `pid=${r.scheduler_pid}` : "",
-            ]
-              .filter(Boolean)
-              .join("  "),
+            : fmtLocalPath(r.beta_root);
+
+          table.addRow(
+            String(r.id),
+            r.name ?? "-",
+            `${r.actual_state}/${r.desired_state}`,
+            r.prefer,
+            alphaPath,
+            betaPath,
+            r.scheduler_pid ? String(r.scheduler_pid) : "-",
           );
         }
+
+        console.log(table.toString());
       }),
   );
 
