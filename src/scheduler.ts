@@ -36,6 +36,7 @@ import {
   type SessionLoggerHandle,
 } from "./session-logs.js";
 import { runMerge } from "./merge.js";
+import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 
 export type SchedulerOptions = {
@@ -406,40 +407,65 @@ export async function runScheduler({
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    const ingestArgs = ["ingest", "--db", params.localDb];
-    remoteLog.debug("ingest start", { args: argsJoin(ingestArgs) });
-    const ingestP = spawn(CLI_NAME, ingestArgs, {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-
     sshP.stderr?.on("data", (chunk) => {
       remoteLog.debug("ssh stderr", {
         host: params.host,
         data: chunk.toString().trim(),
       });
     });
-    ingestP.stderr?.on("data", (chunk) => {
-      remoteLog.debug("ingest stderr", {
-        data: chunk.toString().trim(),
-      });
-    });
+    const stdout = sshP.stdout;
+    if (!stdout) {
+      sshP.kill("SIGTERM");
+      lastRemoteScan.ok = false;
+      return {
+        code: 1,
+        ms: Date.now() - t0,
+        ok: false,
+        lastZero: false,
+      };
+    }
 
-    if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
+    const abortController = new AbortController();
+    const ingestPromise = runIngestDelta({
+      db: params.localDb,
+      logger: remoteLog.child("ingest"),
+      input: stdout,
+      abortSignal: abortController.signal,
+    });
 
     const wait = (p: ChildProcess) =>
       new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
-    const [sshCode, ingestCode] = await Promise.all([
-      wait(sshP),
-      wait(ingestP),
-    ]);
-    const ok = sshCode === 0 && ingestCode === 0;
+
+    let sshCode: number | null = null;
+    let ingestError: unknown = null;
+    try {
+      await Promise.all([
+        wait(sshP).then((code) => {
+          sshCode = code;
+          return code;
+        }),
+        ingestPromise,
+      ]);
+    } catch (err) {
+      ingestError = err;
+      abortController.abort();
+      sshCode = await wait(sshP);
+    }
+
+    const ok = sshCode === 0 && !ingestError;
     lastRemoteScan.ok = ok;
     if (lastRemoteScan.ok) {
-      // could be now but this is more conservative/safe.
       lastRemoteScan.whenOk = lastRemoteScan.start;
     }
+
+    if (ingestError) {
+      remoteLog.error("ingest error", {
+        error: ingestError instanceof Error ? ingestError.message : String(ingestError),
+      });
+    }
+
     return {
-      code: ok ? 0 : (sshCode ?? ingestCode),
+      code: ok ? 0 : sshCode ?? 1,
       ms: Date.now() - t0,
       ok,
       lastZero: ok,

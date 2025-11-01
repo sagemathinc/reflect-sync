@@ -36,17 +36,21 @@ function buildProgram(): Command {
   return program;
 }
 
-export type IngestDeltaOptions = {
+export interface IngestDeltaOptions {
   db: string;
   logger?: Logger;
   logLevel?: LogLevel;
-};
+  input?: NodeJS.ReadableStream;
+  abortSignal?: AbortSignal;
+}
 
 export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
   const {
     db: dbPath,
     logger: providedLogger,
     logLevel = "info",
+    input = process.stdin,
+    abortSignal,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
 
@@ -252,27 +256,84 @@ ON CONFLICT(path) DO UPDATE SET
     db.close();
   };
 
-  const rl = readline.createInterface({ input: process.stdin });
-  rl.on("line", (line) => {
-    if (!line) return;
-    try {
-      const r = JSON.parse(line);
-      buf.push(r);
-      if (buf.length >= BATCH) {
-        flush();
+  await new Promise<void>((resolve, reject) => {
+    const rl = readline.createInterface({ input });
+
+    function handleLine(line: string) {
+      if (!line) return;
+      try {
+        const r = JSON.parse(line);
+        buf.push(r);
+        if (buf.length >= BATCH) {
+          flush();
+        }
+      } catch (err) {
+        logger.warn("ingest skipped malformed line", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
-    } catch {
-      // ignore malformed lines
     }
-  });
-  rl.on("close", () => {
-    flush();
-    finalize();
-  });
-  process.on("SIGINT", () => {
-    flush();
-    finalize();
-    process.exit(0);
+
+    function handleError(err: unknown) {
+      rl.removeListener("line", handleLine);
+      rl.removeAllListeners();
+      cleanup();
+      finalize();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+
+    function handleClose() {
+      rl.removeListener("line", handleLine);
+      rl.removeAllListeners();
+      cleanup();
+      try {
+        flush();
+        finalize();
+        resolve();
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+
+    function handleSigint() {
+      cleanup();
+      flush();
+      finalize();
+      process.exit(0);
+    }
+
+    function onAbort() {
+      cleanup();
+      rl.close();
+      reject(new Error("ingest aborted"));
+    }
+
+    function cleanup() {
+      input.off("error", handleError);
+      rl.off("close", handleClose);
+      if (input === process.stdin) {
+        process.off("SIGINT", handleSigint);
+      }
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
+    }
+
+    rl.on("line", handleLine);
+    rl.once("close", handleClose);
+    input.once("error", handleError);
+
+    if (input === process.stdin) {
+      process.on("SIGINT", handleSigint);
+    }
+
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        onAbort();
+      } else {
+        abortSignal.addEventListener("abort", onAbort);
+      }
+    }
   });
 }
 
