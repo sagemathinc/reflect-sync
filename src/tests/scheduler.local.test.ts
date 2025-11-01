@@ -23,7 +23,6 @@ function startScheduler(opts: {
   betaDb: string;
   baseDb: string;
   prefer?: "alpha" | "beta";
-  verbose?: boolean;
   env?: NodeJS.ProcessEnv;
 }): ChildProcess {
   const args = [
@@ -41,8 +40,6 @@ function startScheduler(opts: {
     "--prefer",
     opts.prefer ?? "alpha",
   ];
-  if (opts.verbose) args.push("--verbose");
-
   // Use node to run the ESM CLI directly
   const child = spawn(process.execPath, args, {
     stdio: ["ignore", "inherit", "inherit"],
@@ -123,7 +120,6 @@ describe("scheduler (local watchers + microSync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      verbose: false,
     });
 
     try {

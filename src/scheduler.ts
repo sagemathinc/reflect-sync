@@ -30,6 +30,11 @@ import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
 import { argsJoin } from "./remote.js";
+import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
+import {
+  createSessionLogger,
+  type SessionLoggerHandle,
+} from "./session-logs.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -38,7 +43,6 @@ export type SchedulerOptions = {
   betaDb: string;
   baseDb: string;
   prefer: "alpha" | "beta";
-  verbose: boolean;
   dryRun: boolean;
 
   hash: string;
@@ -54,6 +58,7 @@ export type SchedulerOptions = {
 
   sessionDb?: string;
   sessionId?: number;
+  logger?: Logger;
 };
 
 // ---------- CLI ----------
@@ -76,7 +81,6 @@ function buildProgram(): Command {
         .choices(["alpha", "beta"])
         .default("alpha"),
     )
-    .option("--verbose", "enable verbose logging", false)
     .addOption(
       new Option("--hash <algorithm>", "content hash algorithm")
         .choices(listSupportedHashes())
@@ -115,7 +119,7 @@ function buildProgram(): Command {
   return program;
 }
 
-function cliOptsToSchedulerOptions(opts): SchedulerOptions {
+export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
   const out: SchedulerOptions = {
     alphaRoot: String(opts.alphaRoot),
     betaRoot: String(opts.betaRoot),
@@ -123,7 +127,6 @@ function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     betaDb: String(opts.betaDb),
     baseDb: String(opts.baseDb),
     prefer: String(opts.prefer).toLowerCase() as "alpha" | "beta",
-    verbose: !!opts.verbose,
     dryRun: !!opts.dryRun,
     hash: String(opts.hash),
     alphaHost: opts.alphaHost?.trim() || undefined,
@@ -160,6 +163,27 @@ const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
 const MAX_BACKOFF_MS = envNum("SCHED_MAX_BACKOFF_MS", 600_000);
 const JITTER_MS = envNum("SCHED_JITTER_MS", 500);
 
+const LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
+
+const DEFAULT_CONSOLE_LEVEL = parseLogLevel(
+  process.env.RFSYNC_LOG_LEVEL,
+  "info",
+);
+
+const DEFAULT_SESSION_ECHO_LEVEL = parseLogLevel(
+  process.env.RFSYNC_SESSION_ECHO_LEVEL ?? process.env.RFSYNC_LOG_LEVEL,
+  "info",
+);
+
+function parseLogLevel(raw: string | undefined, fallback: LogLevel): LogLevel {
+  if (!raw) return fallback;
+  const normalized = raw.toLowerCase();
+  for (const lvl of LOG_LEVELS) {
+    if (lvl === normalized) return lvl;
+  }
+  return fallback;
+}
+
 // ---------- core (exported) ----------
 export async function runScheduler({
   alphaRoot,
@@ -168,7 +192,6 @@ export async function runScheduler({
   betaDb,
   baseDb,
   prefer,
-  verbose,
   dryRun,
   hash,
   alphaHost,
@@ -180,6 +203,7 @@ export async function runScheduler({
   compress,
   sessionDb,
   sessionId,
+  logger: providedLogger,
 }: SchedulerOptions): Promise<void> {
   if (!alphaRoot || !betaRoot)
     throw new Error("Need --alpha-root and --beta-root");
@@ -187,6 +211,34 @@ export async function runScheduler({
     throw new Error(
       "Both sides remote is not supported yet (rsync two-remote).",
     );
+
+  let sessionLogHandle: SessionLoggerHandle | null = null;
+  let logger: Logger;
+  console.log("LOG", { sessionDb, sessionId });
+  if (providedLogger) {
+    console.log("LOG: 1");
+    logger = providedLogger.child("scheduler");
+  } else if (sessionDb && Number.isFinite(sessionId)) {
+    console.log("LOG: 2");
+    sessionLogHandle = createSessionLogger(sessionDb, sessionId!, {
+      scope: "scheduler",
+      echoLevel: DEFAULT_SESSION_ECHO_LEVEL,
+    });
+    logger = sessionLogHandle.logger;
+  } else {
+    console.log("LOG: 3");
+
+    logger = new ConsoleLogger(DEFAULT_CONSOLE_LEVEL).child("scheduler");
+  }
+
+  const scopeCache = new Map<string, Logger>();
+  const scoped = (scope: string) => {
+    const existing = scopeCache.get(scope);
+    if (existing) return existing;
+    const next = logger.child(scope);
+    scopeCache.set(scope, next);
+    return next;
+  };
 
   // ---------- scheduler state ----------
   let running = false,
@@ -201,20 +253,23 @@ export async function runScheduler({
   compress = await resolveCompression(alphaHost || betaHost, compress);
 
   // Resolve ~ for any remote paths once up-front
-  alphaRoot = await expandHome(alphaRoot, alphaHost, verbose);
-  betaRoot = await expandHome(betaRoot, betaHost, verbose);
+  const remoteLogConfig = { logger };
+
+  alphaRoot = await expandHome(alphaRoot, alphaHost, remoteLogConfig);
+  betaRoot = await expandHome(betaRoot, betaHost, remoteLogConfig);
   alphaRemoteDb = await expandHome(
     alphaRemoteDb || `~/.local/share/${CLI_NAME}/alpha.db`,
     alphaHost,
-    verbose,
+    remoteLogConfig,
   );
   betaRemoteDb = await expandHome(
     betaRemoteDb || `~/.local/share/${CLI_NAME}/beta.db`,
     betaHost,
-    verbose,
+    remoteLogConfig,
   );
   const numericIds =
-    (await isRoot(alphaHost, verbose)) && (await isRoot(betaHost, verbose));
+    (await isRoot(alphaHost, remoteLogConfig)) &&
+    (await isRoot(betaHost, remoteLogConfig));
 
   // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 2000);
@@ -238,7 +293,7 @@ export async function runScheduler({
     level: "info" | "warn" | "error",
     source: string,
     msg: string,
-    details?: any,
+    details?: Record<string, unknown> | undefined,
   ) {
     try {
       logStmt.run(
@@ -249,11 +304,8 @@ export async function runScheduler({
         details ? JSON.stringify(details) : null,
       );
     } catch {}
-    if (verbose || level !== "info")
-      console.log(
-        `${level === "error" ? "⛔" : level === "warn" ? "⚠️" : "ℹ️"} [${source}] ${msg}`,
-        details ? JSON.stringify(details) : "",
-      );
+    const scopeLogger = scoped(source);
+    scopeLogger[level](msg, details ?? undefined);
   }
 
   // ---------- helpers ----------
@@ -268,20 +320,28 @@ export async function runScheduler({
     ok: boolean;
     lastZero: boolean;
   }> {
-    if (verbose) console.log(`${cmd} ${argsJoin(args)}`);
+    const procLog = scoped("process");
+    procLog.debug("spawn", { cmd, args: argsJoin(args) });
     return new Promise((resolve) => {
       const t0 = Date.now();
       let lastZero = false;
       const p = spawn(cmd, args, {
-        stdio: verbose ? "inherit" : "ignore",
+        stdio: extra.stdio ?? "ignore",
         ...extra,
       });
       p.on("exit", (code) => {
         lastZero = code === 0;
         const ok = code !== null && okCodes.includes(code);
+        procLog.debug("exit", {
+          cmd,
+          code,
+          ok,
+          elapsedMs: Date.now() - t0,
+        });
         resolve({ code, ms: Date.now() - t0, ok, lastZero });
       });
       p.on("error", () => {
+        procLog.warn("spawn failed", { cmd });
         resolve({
           code: 1,
           ms: Date.now() - t0,
@@ -320,7 +380,7 @@ export async function runScheduler({
   }> {
     const t0 = Date.now();
     // if remote command not known, determine it from the PATH
-    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, { verbose });
+    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, { logger });
     const sshArgs = [
       "-C",
       params.host,
@@ -350,20 +410,32 @@ export async function runScheduler({
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
-    if (verbose) console.log("$ ssh", argsJoin(sshArgs));
+    const remoteLog = scoped("remote");
+    remoteLog.debug("ssh scan", {
+      host: params.host,
+      args: argsJoin(sshArgs),
+    });
 
     const sshP = spawn("ssh", sshArgs, {
-      stdio: ["ignore", "pipe", verbose ? "inherit" : "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     const ingestArgs = ["ingest", "--db", params.localDb];
-    if (verbose) console.log(CLI_NAME, argsJoin(ingestArgs));
+    remoteLog.debug("ingest start", { args: argsJoin(ingestArgs) });
     const ingestP = spawn(CLI_NAME, ingestArgs, {
-      stdio: [
-        "pipe",
-        verbose ? "inherit" : "ignore",
-        verbose ? "inherit" : "ignore",
-      ],
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+
+    sshP.stderr?.on("data", (chunk) => {
+      remoteLog.debug("ssh stderr", {
+        host: params.host,
+        data: chunk.toString().trim(),
+      });
+    });
+    ingestP.stderr?.on("data", (chunk) => {
+      remoteLog.debug("ingest stderr", {
+        data: chunk.toString().trim(),
+      });
     });
 
     if (sshP.stdout && ingestP.stdin) sshP.stdout.pipe(ingestP.stdin);
@@ -400,7 +472,7 @@ export async function runScheduler({
     if (!host) return null;
     const root = side === "alpha" ? alphaRoot : betaRoot;
     const localDb = side === "alpha" ? alphaDb : betaDb;
-    remoteCommand ??= await remoteWhich(host, CLI_NAME, { verbose });
+    remoteCommand ??= await remoteWhich(host, CLI_NAME, { logger });
     const sshArgs = [
       "-C",
       "-T",
@@ -411,20 +483,25 @@ export async function runScheduler({
       "--root",
       root,
     ];
-    if (verbose) console.log("$ ssh", argsJoin(sshArgs));
+    const remoteLog = scoped(`remote.${side}`);
+    remoteLog.debug("ssh watch", { args: argsJoin(sshArgs) });
 
     // stdin=pipe so we can send EOF to make remote `watch` exit
     const sshP = spawn("ssh", sshArgs, {
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     const ingestArgs = ["ingest", "--db", localDb];
+    remoteLog.debug("ingest watch", { args: argsJoin(ingestArgs) });
     const ingestP = spawn(CLI_NAME, ingestArgs, {
-      stdio: [
-        "pipe",
-        verbose ? "inherit" : "ignore",
-        verbose ? "inherit" : "ignore",
-      ],
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+
+    sshP.stderr?.on("data", (chunk) => {
+      remoteLog.debug("ssh stderr", { data: chunk.toString().trim() });
+    });
+    ingestP.stderr?.on("data", (chunk) => {
+      remoteLog.debug("ingest stderr", { data: chunk.toString().trim() });
     });
 
     const tee = new PassThrough();
@@ -471,14 +548,16 @@ export async function runScheduler({
       }, 300);
     };
 
-    sshP.on("exit", () => {
+    sshP.on("exit", (code) => {
       kill();
+      remoteLog.info("ssh watch exited", { code });
       if (side === "alpha") alphaStream = null;
       else betaStream = null;
     });
 
-    ingestP.on("exit", () => {
+    ingestP.on("exit", (code) => {
       kill();
+      remoteLog.info("ingest exited", { code });
       if (side === "alpha") alphaStream = null;
       else betaStream = null;
     });
@@ -516,10 +595,10 @@ export async function runScheduler({
     betaHost,
     prefer,
     dryRun,
-    verbose,
     spawnTask,
     compress,
     log,
+    logger,
   });
 
   function scheduleHotFlush() {
@@ -569,7 +648,7 @@ export async function runScheduler({
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-          verbose,
+          logger: scoped("hot.alpha"),
         });
 
   const hotBetaMgr =
@@ -580,7 +659,7 @@ export async function runScheduler({
           ttlMs: HOT_TTL_MS,
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-          verbose,
+          logger: scoped("hot.beta"),
         });
 
   const shallowAlpha =
@@ -667,12 +746,7 @@ export async function runScheduler({
       const covered = minimalCover(dirs).slice(0, maxDirs);
       if (mgr != null) covered.forEach((d) => mgr.add(d));
       remoteAdd?.(covered);
-      if (verbose)
-        log(
-          "info",
-          "watch",
-          `seeded ${covered.length} hot dirs from ${dbPath}`,
-        );
+      log("info", "watch", `seeded ${covered.length} hot dirs from ${dbPath}`);
     } catch {
       // may not exist yet
     } finally {
@@ -715,10 +789,7 @@ export async function runScheduler({
               alphaDb,
               "--hash",
               hash,
-            ].concat(
-              verbose ? ["--verbose"] : [],
-              numericIds ? ["--numeric-ids"] : [],
-            ),
+            ].concat(numericIds ? ["--numeric-ids"] : []),
           );
       seedHotFromDb(
         alphaDb,
@@ -746,7 +817,6 @@ export async function runScheduler({
         : await spawnTask(
             CLI_NAME,
             ["scan", "--root", betaRoot, "--db", betaDb, "--hash", hash].concat(
-              verbose ? ["--verbose"] : [],
               numericIds ? ["--numeric-ids"] : [],
             ),
           );
@@ -785,7 +855,6 @@ export async function runScheduler({
     if (alphaHost) mArgs.push("--alpha-host", alphaHost);
     if (betaHost) mArgs.push("--beta-host", betaHost);
     if (dryRun) mArgs.push("--dry-run");
-    if (verbose) mArgs.push("--verbose");
 
     const m = await spawnTask(CLI_NAME, mArgs);
 
@@ -1019,12 +1088,7 @@ export async function runScheduler({
         continue;
       }
 
-      log(
-        "info",
-        "scheduler",
-        "watching",
-        `next full scan in ${nextDelayMs} ms`,
-      );
+      log("info", "scheduler", `watching: next full scan in ${nextDelayMs} ms`);
       await idleWaitWithCommandPolling(nextDelayMs);
     }
   }
@@ -1037,7 +1101,6 @@ export async function runScheduler({
     baseDb,
     prefer,
     dryRun,
-    verbose,
     alphaHost,
     betaHost,
     alphaRemoteDb,
@@ -1063,6 +1126,12 @@ export async function runScheduler({
     try {
       db.close();
     } catch {}
+    if (sessionLogHandle) {
+      try {
+        sessionLogHandle.close();
+      } catch {}
+      sessionLogHandle = null;
+    }
 
     if (hbTimer) {
       clearInterval(hbTimer);
@@ -1080,6 +1149,7 @@ export async function runScheduler({
   process.once("SIGTERM", onSig);
 
   await loop();
+  await cleanup();
 }
 
 cliEntrypoint<SchedulerOptions>(

@@ -3,9 +3,6 @@ import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Database } from "../db";
 
-// Toggle for noisy child output while debugging, by default.
-const VERBOSE = false;
-
 const DIST = resolve(__dirname, "../../dist");
 
 export function wait(ms: number) {
@@ -62,18 +59,15 @@ export async function mkCase(tmpBase: string, name: string): Promise<Roots> {
 export async function sync(
   r: Roots,
   prefer: "alpha" | "beta" = "alpha",
-  verbose: boolean | undefined = undefined,
+  _verbose: boolean | undefined = undefined,
   args?: string[],
   args2?: string[],
 ) {
-  const verboseArg = verbose || VERBOSE ? ["--verbose"] : [];
-
   await runDist("scan.js", [
     "--root",
     r.aRoot,
     "--db",
     r.aDb,
-    ...verboseArg,
     ...(args ?? []),
   ]);
   await runDist("scan.js", [
@@ -81,7 +75,6 @@ export async function sync(
     r.bRoot,
     "--db",
     r.bDb,
-    ...verboseArg,
     ...(args ?? []),
   ]);
   await runDist("merge.js", [
@@ -97,7 +90,6 @@ export async function sync(
     r.baseDb,
     "--prefer",
     prefer,
-    ...verboseArg,
     ...(args2 ?? []),
   ]);
 }

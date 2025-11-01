@@ -15,6 +15,7 @@ import {
   rsyncCompressionArgs,
   type RsyncCompressSpec,
 } from "./rsync-compression.js";
+import type { Logger } from "./logger.js";
 
 export type MicroSyncDeps = {
   alphaRoot: string;
@@ -23,7 +24,6 @@ export type MicroSyncDeps = {
   betaHost?: string;
   prefer: "alpha" | "beta";
   dryRun: boolean;
-  verbose?: boolean;
   spawnTask: (
     cmd: string,
     args: string[],
@@ -42,6 +42,7 @@ export type MicroSyncDeps = {
     details?: any,
   ) => void;
   compress?: RsyncCompressSpec;
+  logger: Logger;
 };
 
 export function makeMicroSync({
@@ -51,13 +52,15 @@ export function makeMicroSync({
   betaHost,
   prefer,
   dryRun,
-  verbose,
   spawnTask,
   log,
   compress,
+  logger,
 }: MicroSyncDeps) {
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
+
+  const microLogger = logger.child("micro");
 
   // Echo suppression prevents one-sided “echo” events from bouncing back
   // immediately after we ourselves copied the file to that side.
@@ -296,13 +299,17 @@ export function makeMicroSync({
                 await cpReflinkFromList(alphaRoot, betaRoot, listFiles);
                 ok = true;
               } catch (e: any) {
-                if (verbose)
-                  log(
-                    "warn",
-                    "realtime",
-                    "reflink alpha→beta failed; falling back to rsync",
-                    { err: String(e?.message || e) },
-                  );
+                const meta = { err: String(e?.message || e) };
+                log(
+                  "warn",
+                  "realtime",
+                  "reflink alpha→beta failed; falling back to rsync",
+                  meta,
+                );
+                microLogger.warn(
+                  "reflink alpha→beta failed; falling back to rsync",
+                  meta,
+                );
               }
             }
             if (!ok) {
@@ -368,13 +375,17 @@ export function makeMicroSync({
                 await cpReflinkFromList(betaRoot, alphaRoot, listFiles);
                 ok = true;
               } catch (e: any) {
-                if (verbose)
-                  log(
-                    "warn",
-                    "realtime",
-                    "reflink beta→alpha failed; falling back to rsync",
-                    { err: String(e?.message || e) },
-                  );
+                const meta = { err: String(e?.message || e) };
+                log(
+                  "warn",
+                  "realtime",
+                  "reflink beta→alpha failed; falling back to rsync",
+                  meta,
+                );
+                microLogger.warn(
+                  "reflink beta→alpha failed; falling back to rsync",
+                  meta,
+                );
               }
             }
             if (!ok) {

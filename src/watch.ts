@@ -14,7 +14,6 @@ import {
   isRecent,
 } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
-import { inspect } from "node:util";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 
 // ---------- types ----------
@@ -24,7 +23,6 @@ type WatchOpts = {
   hotDepth: number;
   hotTtlMs: number;
   maxHotWatchers: number;
-  verbose?: boolean;
 };
 
 // ---------- helpers ----------
@@ -39,13 +37,6 @@ function relR(root: string, abs: string): string {
 const parentDir = (r: string) => norm(path.posix.dirname(r || ".")); // "" -> "."
 const isPlainRel = (r: string) =>
   !!r && !r.startsWith("/") && !r.startsWith("../") && !r.includes("..");
-
-// STDERR logging only when verbose
-function vlog(verbose: boolean | undefined, ...args: any[]) {
-  if (verbose) {
-    process.stderr.write(inspect(args));
-  }
-}
 
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
   const path = relR(root, abs);
@@ -101,8 +92,7 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
 
 // ---------- core ----------
 export async function runWatch(opts: WatchOpts): Promise<void> {
-  const { root, shallowDepth, hotDepth, hotTtlMs, maxHotWatchers, verbose } =
-    opts;
+  const { root, shallowDepth, hotDepth, hotTtlMs, maxHotWatchers } = opts;
 
   // Ensure process terminate when stdin closes (so this also closes when
   // used via ssh)
@@ -131,7 +121,6 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       hotDepth,
       ttlMs: hotTtlMs,
       maxWatchers: maxHotWatchers,
-      verbose: false, // since it would go to stdout
     },
   );
 
@@ -174,10 +163,6 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   }
 
   wireShallow();
-  vlog(
-    verbose,
-    `watch: root=${rootAbs} shallowDepth=${shallowDepth} hotDepth=${hotDepth} ttlMs=${hotTtlMs} max=${maxHotWatchers}`,
-  );
 
   // Control channel
   serveJsonControl(hotMgr, async () => {
@@ -224,8 +209,7 @@ function buildProgram() {
       "--max-hot-watchers <n>",
       "max concurrent hot watchers",
       String(MAX_WATCHERS),
-    )
-    .option("--verbose", "log to stderr", false);
+    );
 
   return program;
 }
@@ -238,7 +222,6 @@ async function mainFromCli() {
     hotDepth: string;
     hotTtlMs: string;
     maxHotWatchers: string;
-    verbose?: boolean;
   };
 
   await runWatch({
@@ -247,7 +230,6 @@ async function mainFromCli() {
     hotDepth: Number(opts.hotDepth),
     hotTtlMs: Number(opts.hotTtlMs),
     maxHotWatchers: Number(opts.maxHotWatchers),
-    verbose: !!opts.verbose,
   });
 }
 

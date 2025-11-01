@@ -271,6 +271,21 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         );
         CREATE INDEX IF NOT EXISTS idx_session_commands_pending
           ON session_commands(session_id, acked, ts);
+
+      CREATE TABLE IF NOT EXISTS session_logs (
+          id          INTEGER PRIMARY KEY,
+          session_id  INTEGER NOT NULL,
+          ts          INTEGER NOT NULL,
+          level       TEXT NOT NULL,
+          scope       TEXT,
+          message     TEXT NOT NULL,
+          meta        TEXT,
+          FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_logs_sid_ts
+        ON session_logs(session_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_session_logs_sid_id
+        ON session_logs(session_id, id);
     `);
   return db;
 }
@@ -746,4 +761,3 @@ export class SessionWriter {
     }
   }
 }
-

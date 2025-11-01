@@ -23,7 +23,6 @@ function startSchedulerRemote(opts: {
   betaDb: string;
   baseDb: string;
   prefer?: "alpha" | "beta";
-  verbose?: boolean;
 }): ChildProcess {
   const args = [
     SCHED,
@@ -42,10 +41,6 @@ function startSchedulerRemote(opts: {
     "--beta-host",
     "localhost", // mark beta as remote so scheduler uses ssh-based watch/scan
   ];
-  if (opts.verbose) {
-    args.push("--verbose");
-  }
-
   // Make full cycles slow; micro-sync snappy for the test
   const env = {
     ...process.env,

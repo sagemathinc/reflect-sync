@@ -4,6 +4,12 @@
 import { homedir } from "node:os";
 import { join, posix } from "node:path";
 import { spawn } from "node:child_process";
+import type { Logger } from "./logger.js";
+
+type RemoteLogOptions = {
+  logger?: Logger;
+  verbose?: boolean;
+};
 
 // single-quote safe escape for sh -lc
 function shellEscape(s: string): string {
@@ -22,10 +28,11 @@ const TIMEOUT = 5;
 async function ssh(
   host: string,
   args: string[],
-  verbose: boolean | undefined,
+  log: RemoteLogOptions | undefined,
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
-  if (verbose) console.log("$ ssh", argsJoin(args));
+  log?.logger?.debug("ssh exec", { host, command: argsJoin(args), label: what });
+  if (log?.verbose) console.log("$ ssh", argsJoin(args));
   let stdout = "",
     stderr = "";
   await new Promise<void>((resolve, reject) => {
@@ -49,7 +56,11 @@ async function ssh(
 export async function remoteWhich(
   host: string,
   cmd: string,
-  { verbose, noCache }: { verbose?: boolean; noCache?: boolean } = {},
+  {
+    logger,
+    verbose,
+    noCache,
+  }: { logger?: Logger; verbose?: boolean; noCache?: boolean } = {},
 ): Promise<string> {
   const key = `${host}:${cmd}`;
   if (!noCache && remoteWhichCache.has(key)) {
@@ -65,7 +76,8 @@ export async function remoteWhich(
     host,
     `sh -lc 'which ${cmd}'`,
   ];
-  let { stdout: out } = await ssh(host, args, verbose, `which ${cmd}`);
+  const logCfg: RemoteLogOptions | undefined = logger || verbose ? { logger, verbose } : undefined;
+  let { stdout: out } = await ssh(host, args, logCfg, `which ${cmd}`);
   out = out.trim();
   remoteWhichCache.set(key, out);
   return out;
@@ -75,7 +87,7 @@ const remoteHomeCache = new Map<string, string>();
 
 export async function resolveRemoteHome(
   host: string,
-  verbose?: boolean,
+  log?: RemoteLogOptions,
 ): Promise<string> {
   if (remoteHomeCache.has(host)) return remoteHomeCache.get(host)!;
 
@@ -95,34 +107,34 @@ export async function resolveRemoteHome(
     host,
     `sh -lc ${cmd}`,
   ];
-  const { stdout } = await ssh(host, args, verbose, cmd);
+  const { stdout } = await ssh(host, args, log, cmd);
   const home = stdout.trim();
   if (!home) throw new Error(`Empty HOME from ${host}`);
   remoteHomeCache.set(host, home);
   return home;
 }
 
-export async function isRoot(host?: string, verbose?: boolean) {
+export async function isRoot(host?: string, log?: RemoteLogOptions) {
   if (!host) {
     return process.geteuid?.() === 0;
   }
   // this isn't technically the same as being root, but
   // we cache it and implemented it above, so are going with it for now
-  return (await resolveRemoteHome(host, verbose)) == "/root";
+  return (await resolveRemoteHome(host, log)) == "/root";
 }
 
 export async function expandHome(
   p: string,
   host?: string,
-  verbose?: boolean,
+  log?: RemoteLogOptions,
 ): Promise<string> {
   if (!p || p[0] !== "~") return p;
   if (p === "~") {
-    const base = host ? await resolveRemoteHome(host, verbose) : homedir();
+    const base = host ? await resolveRemoteHome(host, log) : homedir();
     return base;
   }
   if (p.startsWith("~/")) {
-    const base = host ? await resolveRemoteHome(host, verbose) : homedir();
+    const base = host ? await resolveRemoteHome(host, log) : homedir();
     return join(base, p.slice(2));
   }
   // "~user" not handled intentionally
@@ -132,7 +144,7 @@ export async function expandHome(
 export async function ensureRemoteParentDir(
   host: string,
   path: string,
-  verbose?: boolean,
+  log?: RemoteLogOptions,
 ): Promise<void> {
   if (path.startsWith("~/")) {
     // relative to HOME
@@ -151,19 +163,22 @@ export async function ensureRemoteParentDir(
     "--",
     cmd,
   ];
-  await ssh(host, args, verbose, cmd);
+  await ssh(host, args, log, cmd);
 }
 
 export async function sshDeleteDirectory({
   host,
   path,
+  logger,
   verbose,
 }: {
   host: string;
   path: string;
+  logger?: Logger;
   verbose?: boolean;
 }) {
-  path = await expandHome(path, host, verbose);
+  const logCfg: RemoteLogOptions | undefined = logger || verbose ? { logger, verbose } : undefined;
+  path = await expandHome(path, host, logCfg);
   const cmd = `rm -rf -- ${shellEscape(path)}`;
   const args = [
     "-o",
@@ -176,5 +191,5 @@ export async function sshDeleteDirectory({
     "--",
     cmd,
   ];
-  await ssh(host, args, verbose, cmd);
+  await ssh(host, args, logCfg, cmd);
 }

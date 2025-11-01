@@ -24,7 +24,6 @@ function startSchedulerRemote(opts: {
   betaDb: string;
   baseDb: string;
   prefer?: "alpha" | "beta";
-  verbose?: boolean;
 }): ChildProcess {
   const args = [
     SCHED,
@@ -44,10 +43,6 @@ function startSchedulerRemote(opts: {
     "--beta-host",
     "localhost", // mark beta as remote so scheduler uses ssh-based watch/scan
   ];
-  if (opts.verbose) {
-    args.push("--verbose");
-  }
-
   // Make full cycles very FAST
   const env = {
     ...process.env,
@@ -63,9 +58,7 @@ function startSchedulerRemote(opts: {
   };
 
   return spawn(process.execPath, args, {
-    stdio: opts.verbose
-      ? ["inherit", "inherit", "inherit"]
-      : ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "ignore", "inherit"],
     env,
   });
 }
@@ -124,7 +117,6 @@ describe("SSH remote sync", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      verbose: false,
     });
 
     try {

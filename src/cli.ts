@@ -80,7 +80,11 @@ program
   .option("--base-db <path>", "base sqlite", "base.db")
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-  .option("--compress <algo>", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
+  .option(
+    "--compress <algo>",
+    "[auto|zstd|lz4|zlib|zlibx|none][:level]",
+    "auto",
+  )
   .option(
     "--session-id <id>",
     "optional session id to enable heartbeats, report state, etc",
@@ -131,7 +135,11 @@ program
     "--remote-command <cmd>",
     "absolute path to remote reflect-sync command",
   )
-  .option("--compress <algo>", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
+  .option(
+    "--compress <algo>",
+    "[auto|zstd|lz4|zlib|zlibx|none][:level]",
+    "auto",
+  )
   .option("--session-id <id>", "optional session id to enable heartbeats")
   .option("--session-db <path>", "path to session database")
   .option("--disable-hot-watch", "only sync during the full sync cycle", false)
@@ -144,8 +152,12 @@ program
       process.exit(1);
     }
     // Import and run in-process so we can manage lifecycle cleanly
-    const { runScheduler } = await import("./scheduler.js");
-    await runScheduler({ ...command.optsWithGlobals(), ...opts });
+    const { runScheduler, cliOptsToSchedulerOptions } = await import(
+      "./scheduler.js"
+    );
+    await runScheduler(
+      cliOptsToSchedulerOptions({ ...command.optsWithGlobals(), ...opts }),
+    );
   });
 
 program

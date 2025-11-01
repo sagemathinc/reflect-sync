@@ -4,6 +4,7 @@ import path from "node:path";
 import ignore from "ignore";
 import { access, readFile, stat } from "node:fs/promises";
 import { IGNORE_FILE, MAX_WATCHERS } from "./constants.js";
+import type { Logger } from "./logger.js";
 
 export type HotWatchEvent =
   | "add"
@@ -32,8 +33,7 @@ export interface HotWatchOptions {
    * If it returns true, the event is dropped.
    */
   isIgnored?: (rpath: string, isDir: boolean) => boolean;
-
-  verbose?: boolean;
+  logger?: Logger;
 }
 
 // POSIX-normalize path (also makes Windows separators into '/')
@@ -67,7 +67,8 @@ export function minimalCover(dirs: string[]): string[] {
 export class HotWatchManager {
   private map = new Map<string, { watcher: FSWatcher; expiresAt: number }>();
   private lru: string[] = []; // oldest first
-  private opts: Required<HotWatchOptions>;
+  private opts: Required<Omit<HotWatchOptions, "logger">>;
+  private logger?: Logger;
 
   // local ignore matcher (hot-reloaded)
   private ig: ReturnType<typeof ignore> | null = null;
@@ -87,8 +88,8 @@ export class HotWatchManager {
         pollInterval: 50,
       },
       isIgnored: opts.isIgnored ?? (() => false),
-      verbose: !!opts.verbose,
     };
+    this.logger = opts.logger?.child("hotwatch");
 
     // kick off initial load of ignore and watch it for changes
     this.reloadIg();
@@ -164,9 +165,7 @@ export class HotWatchManager {
       return;
     }
 
-    if (this.opts.verbose) {
-      console.log("hot-watcher: watch ", anchorAbs);
-    }
+    this.logger?.debug("watch", { anchor: anchorAbs });
     const watcher = chokidar.watch(anchorAbs, {
       persistent: true,
       ignoreInitial: true,

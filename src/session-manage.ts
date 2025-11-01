@@ -13,6 +13,7 @@ import { ensureRemoteParentDir, sshDeleteDirectory } from "./remote.js";
 import { dirname } from "node:path";
 import { CLI_NAME } from "./constants.js";
 import { rm } from "node:fs/promises";
+import type { Logger } from "./logger.js";
 
 // Attempt to stop a scheduler by PID
 export function stopPid(pid: number): boolean {
@@ -28,12 +29,12 @@ export function stopPid(pid: number): boolean {
 export async function terminateSession({
   sessionDb,
   id,
-  verbose,
+  logger,
   force,
 }: {
   sessionDb: string;
   id: number;
-  verbose?: boolean;
+  logger?: Logger;
   force?: boolean;
 }) {
   const row = loadSessionById(sessionDb, id);
@@ -41,9 +42,7 @@ export async function terminateSession({
     console.error(`session ${id} not found`);
     return;
   }
-  if (verbose) {
-    console.log(`terminating session ${id}`);
-  }
+  logger?.info("terminating session", { sessionId: id });
   if (row.scheduler_pid) {
     stopPid(row.scheduler_pid);
   }
@@ -59,7 +58,7 @@ export async function terminateSession({
           await sshDeleteDirectory({
             host,
             path: dir,
-            verbose: verbose,
+            logger,
           });
         } catch (err) {
           if (!force) {
@@ -152,7 +151,7 @@ export async function newSession({
   hash,
   label,
   name,
-  verbose,
+  logger,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
 
@@ -195,9 +194,9 @@ export async function newSession({
 
       // proactively create parent dirs on remotes
       if (a.host && alphaRemoteDb)
-        await ensureRemoteParentDir(a.host, alphaRemoteDb, verbose);
+        await ensureRemoteParentDir(a.host, alphaRemoteDb, logger);
       if (b.host && betaRemoteDb)
-        await ensureRemoteParentDir(b.host, betaRemoteDb, verbose);
+        await ensureRemoteParentDir(b.host, betaRemoteDb, logger);
     }
 
     const paths = materializeSessionPaths(id);
@@ -211,7 +210,7 @@ export async function newSession({
         await terminateSession({
           sessionDb,
           id,
-          verbose,
+          logger,
           force: true,
         });
       } catch {}

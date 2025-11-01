@@ -20,11 +20,59 @@ import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
 import { argsJoin } from "./remote.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
+import { ConsoleLogger, LOG_LEVELS, type LogLevel } from "./logger.js";
+import {
+  fetchSessionLogs,
+  type SessionLogRow,
+} from "./session-logs.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
   acc.push(val);
   return acc;
+}
+
+function clampPositive(value: number | undefined, fallback: number): number {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  return fallback;
+}
+
+function parseLogLevelOption(raw?: string): LogLevel | undefined {
+  if (!raw) return undefined;
+  const lvl = raw.toLowerCase();
+  if (!LOG_LEVELS.includes(lvl as LogLevel)) {
+    console.error(`invalid level '${raw}', expected one of ${LOG_LEVELS.join(", ")}`);
+    process.exit(1);
+  }
+  return lvl as LogLevel;
+}
+
+function renderRows(
+  rows: SessionLogRow[],
+  { json }: { json: boolean },
+) {
+  for (const row of rows) {
+    if (json) {
+      const payload = {
+        id: row.id,
+        session_id: row.session_id,
+        ts: row.ts,
+        level: row.level,
+        scope: row.scope,
+        message: row.message,
+        meta: row.meta ?? null,
+      };
+      console.log(JSON.stringify(payload));
+      continue;
+    }
+    const ts = new Date(row.ts).toISOString();
+    const scope = row.scope ? ` [${row.scope}]` : "";
+    const meta = row.meta && Object.keys(row.meta).length
+      ? ` ${JSON.stringify(row.meta)}`
+      : "";
+    console.log(`${ts} ${row.level.toUpperCase()}${scope} ${row.message}${meta}`);
+  }
 }
 
 // Spawn scheduler for a session row
@@ -86,7 +134,6 @@ export function registerSessionCommands(program: Command) {
   const session = program
     .command("session")
     .description("Manage sync sessions")
-    .option("--verbose")
     .option(
       "--session-db <file>",
       "override path to sessions.db",
@@ -134,8 +181,15 @@ export function registerSessionCommands(program: Command) {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       let id;
+      const cliLogger = new ConsoleLogger("info");
       try {
-        id = await newSession({ alphaSpec, betaSpec, ...opts, sessionDb });
+        id = await newSession({
+          alphaSpec,
+          betaSpec,
+          ...opts,
+          sessionDb,
+          logger: cliLogger,
+        });
       } catch (err) {
         console.error("failed to create session", err);
         return;
@@ -202,6 +256,84 @@ export function registerSessionCommands(program: Command) {
   registerSessionMonitor(session);
 
   registerSessionFlush(session);
+
+  session
+    .command("logs")
+    .description("Show recent logs for a session")
+    .argument("<id>", "session id")
+    .option("--tail <n>", "number of log entries to display", (v: string) =>
+      Number.parseInt(v, 10),
+    )
+    .option("--since <ms>", "only show logs with ts >= ms since epoch", (v) =>
+      Number.parseInt(v, 10),
+    )
+    .option(
+      "--level <level>",
+      `minimum log level (${LOG_LEVELS.join(", ")})`,
+      (v: string) => v.trim().toLowerCase(),
+    )
+    .option("-f, --follow", "follow log output", false)
+    .option("--json", "emit newline-delimited JSON", false)
+    .action(async (idStr: string, opts: any) => {
+      const sessionDb =
+        program.getOptionValue("sessionDb") || getSessionDbPath();
+      const id = Number(idStr);
+      if (!Number.isFinite(id) || id <= 0) {
+        console.error("invalid session id", idStr);
+        return;
+      }
+      const minLevel = parseLogLevelOption(opts.level);
+      const tail = clampPositive(opts.tail, 200);
+      const sinceTs =
+        opts.since != null && Number.isFinite(Number(opts.since))
+          ? Number(opts.since)
+          : undefined;
+      let rows = fetchSessionLogs(sessionDb, id, {
+        limit: tail,
+        minLevel,
+        sinceTs,
+        order: "desc",
+      }).reverse();
+
+      let lastId = 0;
+      if (!rows.length) {
+        if (!opts.follow) {
+          console.log("no logs");
+          return;
+        }
+      } else {
+        renderRows(rows, { json: !!opts.json });
+        lastId = rows[rows.length - 1].id;
+      }
+
+      if (!opts.follow) return;
+
+      const intervalMs = clampPositive(
+        Number(process.env.RFSYNC_LOG_FOLLOW_INTERVAL ?? 1000),
+        1000,
+      );
+
+      await new Promise<void>((resolve) => {
+        const tick = () => {
+          rows = fetchSessionLogs(sessionDb, id, {
+            afterId: lastId,
+            minLevel,
+            order: "asc",
+          });
+          if (rows.length) {
+            renderRows(rows, { json: !!opts.json });
+            lastId = rows[rows.length - 1].id;
+          }
+        };
+        const timer = setInterval(tick, intervalMs);
+        const stop = () => {
+          clearInterval(timer);
+          resolve();
+        };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+    });
 
   // `$CLI_NAME} session pause <id...>`
   session
@@ -283,12 +415,13 @@ export function registerSessionCommands(program: Command) {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       const opts = { ...command.optsWithGlobals(), ...options };
+      const cliLogger = new ConsoleLogger("info");
 
       for (const id0 of ids) {
         const id = Number(id0);
         await terminateSession({
           id,
-          verbose: opts.verbose,
+          logger: cliLogger,
           force: opts.force,
           sessionDb,
         });
