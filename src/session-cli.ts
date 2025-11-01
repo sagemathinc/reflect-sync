@@ -241,6 +241,7 @@ export function registerSessionCommands(program: Command) {
         },
         [] as string[],
       )
+      .option("--json", "output JSON instead of a table", false)
       .action((opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         const sels = parseSelectorTokens(opts.selector || []);
@@ -248,6 +249,11 @@ export function registerSessionCommands(program: Command) {
 
         if (!rows.length) {
           console.log("no sessions");
+          return;
+        }
+
+        if (opts.json) {
+          console.log(JSON.stringify(rows, null, 2));
           return;
         }
 
