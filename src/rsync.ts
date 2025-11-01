@@ -23,6 +23,17 @@ const REFLECT_COPY_CONCURRENCY = Number(
 );
 const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
 
+const PROGRESS_ARGS = [
+  "--outbuf=L",
+  "--no-inc-recursive",
+  "--info=progress2",
+  "--no-human-readable",
+];
+
+const MAX_PROGRESS_UPDATES_PER_SEC = Number(
+  process.env.REFLECT_PROGRESS_MAX_HZ ?? 3,
+);
+
 type RsyncLogOptions = {
   logger?: Logger;
   verbose?: boolean | string;
@@ -32,6 +43,15 @@ type RsyncLogOptions = {
 
 type RsyncRunOptions = RsyncLogOptions & {
   dryRun?: boolean | string;
+  onProgress?: (event: RsyncProgressEvent) => void;
+};
+
+export type RsyncProgressEvent = {
+  transferredBytes: number;
+  percent: number;
+  totalBytes?: number;
+  speed?: string;
+  etaMilliseconds?: number;
 };
 
 function toBoolVerbose(v?: boolean | string): boolean {
@@ -101,6 +121,8 @@ export async function rsyncCopyDirsChunked(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    progressScope?: string;
+    progressMeta?: Record<string, unknown>;
   } = {},
 ): Promise<void> {
   if (!dirRpaths.length) return;
@@ -128,23 +150,26 @@ export async function rsyncCopyDirsChunked(
     listFiles.push(lf);
   }
 
+  const { progressScope, progressMeta } = opts;
+  const scope = progressScope ?? label;
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
     if (debug) {
       logger.debug(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
     }
-      await rsyncCopyDirs(
-        fromRoot,
-        toRoot,
-        lf,
-        `${label} (dirs chunk ${idx + 1})`,
-        {
-          dryRun: opts.dryRun,
-          verbose: opts.verbose,
-          logger,
-          logLevel: opts.logLevel,
-          sshPort: opts.sshPort,
-        },
-      );
+    await rsyncCopyDirs(fromRoot, toRoot, lf, `${label} (dirs chunk ${idx + 1})`, {
+      dryRun: opts.dryRun,
+      verbose: opts.verbose,
+      logger,
+      logLevel: opts.logLevel,
+      sshPort: opts.sshPort,
+      progressScope: scope,
+      progressMeta: {
+        ...(progressMeta ?? {}),
+        label,
+        chunkIndex: idx + 1,
+        chunkCount: listFiles.length,
+      },
+    });
   });
 }
 
@@ -164,6 +189,8 @@ export async function rsyncCopyChunked(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    progressScope?: string;
+    progressMeta?: Record<string, unknown>;
   } = {},
 ): Promise<{ ok: boolean }> {
   if (!fileRpaths.length) return { ok: true };
@@ -175,6 +202,8 @@ export async function rsyncCopyChunked(
   // Sort for locality; dedupe
   const sorted = Array.from(new Set(fileRpaths)).sort();
   const batches = chunk(sorted, chunkSize);
+  const { progressScope, progressMeta } = opts;
+  const scope = progressScope ?? label;
 
   if (debug) {
     logger.debug(
@@ -192,6 +221,12 @@ export async function rsyncCopyChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        progressScope: scope,
+        progressMeta: {
+          ...(progressMeta ?? {}),
+          label,
+          phase: "precreate-dirs",
+        },
       });
     }
   }
@@ -213,6 +248,12 @@ export async function rsyncCopyChunked(
     if (debug) {
       logger.debug(`>>> rsync copy ${label} [${idx + 1}/${listFiles.length}]`);
     }
+    const chunkMeta = {
+      ...(progressMeta ?? {}),
+      label,
+      chunkIndex: idx + 1,
+      chunkCount: listFiles.length,
+    };
     const { ok } = await rsyncCopy(
       fromRoot,
       toRoot,
@@ -225,6 +266,8 @@ export async function rsyncCopyChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        progressScope: scope,
+        progressMeta: chunkMeta,
       },
     );
     if (!ok) allOk = false;
@@ -355,20 +398,87 @@ export function run(
   cmd: string,
   args: string[],
   okCodes: number[] = [0],
-  opts: RsyncLogOptions = {},
+  opts: RsyncRunOptions = {},
 ): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
   const t = Date.now();
   const { logger, debug } = resolveLogContext(opts);
-  if (debug) logger.debug("rsync exec", { cmd, args: argsJoin(args) });
+  const wantProgress = typeof opts.onProgress === "function";
+  const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : args;
+  if (debug) logger.debug("rsync exec", { cmd, args: argsJoin(finalArgs) });
+
+  const throttleMs =
+    wantProgress && MAX_PROGRESS_UPDATES_PER_SEC > 0
+      ? Math.max(10, Math.floor(1000 / MAX_PROGRESS_UPDATES_PER_SEC))
+      : 0;
+
   return new Promise((resolve) => {
-    // ignore is critical for stdio since we don't read the output
-    // and there is a lot, so it would otherwise DEADLOCK.
-    const p = spawn(cmd, args, {
-      stdio: verbose2 ? "inherit" : ["ignore", "ignore", "ignore"],
+    const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
+      ? ["ignore", "pipe", "pipe"]
+      : verbose2
+        ? "inherit"
+        : ["ignore", "ignore", "ignore"];
+
+    const child = spawn(cmd, finalArgs, {
+      stdio,
     });
-    p.on("exit", (code) => {
+
+    let lastEmit = 0;
+    let lastPercent = -1;
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+
+    if (wantProgress && child.stdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdoutBuffer += chunk;
+        const pieces = stdoutBuffer.split(/[\r\n]+/);
+        stdoutBuffer = pieces.pop() ?? "";
+        for (const piece of pieces) {
+          const event = parseProgressLine(piece);
+          if (!event) continue;
+          const now = Date.now();
+          if (event.percent < lastPercent) {
+            continue;
+          }
+          if (
+            event.percent === lastPercent &&
+            now - lastEmit < throttleMs
+          ) {
+            continue;
+          }
+          lastPercent = event.percent;
+          lastEmit = now;
+          try {
+            opts.onProgress?.(event);
+          } catch (err) {
+            if (debug) {
+              logger.warn("rsync onProgress handler failed", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        }
+      });
+    }
+
+    if (wantProgress && child.stderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        stderrBuffer += chunk;
+      });
+    }
+
+    child.on("exit", (code) => {
       const zero = code === 0;
       const ok = code !== null && okCodes.includes(code!);
+      if (wantProgress && lastPercent < 100 && ok) {
+        try {
+          opts.onProgress?.({
+            transferredBytes: NaN,
+            percent: 100,
+          });
+        } catch {}
+      }
       resolve({ code, ok, zero });
       if (debug) {
         logger.debug("rsync exit", {
@@ -378,10 +488,24 @@ export function run(
           elapsedMs: Date.now() - t,
         });
       }
+      if (!ok && stderrBuffer && !debug) {
+        logger.warn("rsync stderr", {
+          stderr: truncateMiddle(stderrBuffer, 400),
+        });
+      }
     });
-    p.on("error", () =>
-      resolve({ code: 1, ok: okCodes.includes(1), zero: false }),
-    );
+
+    child.on("error", (err) => {
+      if (wantProgress && stderrBuffer) {
+        logger.warn("rsync stderr", {
+          stderr: truncateMiddle(stderrBuffer, 400),
+        });
+      }
+      logger.error("rsync spawn error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      resolve({ code: 1, ok: okCodes.includes(1), zero: false });
+    });
   });
 }
 
@@ -409,6 +533,54 @@ export function chunk<T>(arr: T[], n: number): T[][] {
   return out;
 }
 
+function parseProgressLine(line: string): RsyncProgressEvent | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return null;
+  const percentToken = parts[1];
+  if (!percentToken.endsWith("%")) return null;
+  const transferred = Number(parts[0].replace(/,/g, ""));
+  if (!Number.isFinite(transferred)) return null;
+  const percent = Number(percentToken.slice(0, -1));
+  if (!Number.isFinite(percent)) return null;
+  const speed = parts[2];
+  const eta = parts[3];
+  const totalBytes =
+    percent > 0 ? Math.round((transferred * 100) / percent) : undefined;
+  return {
+    transferredBytes: transferred,
+    percent,
+    totalBytes,
+    speed,
+    etaMilliseconds: parseEta(eta),
+  };
+}
+
+function parseEta(token?: string): number | undefined {
+  if (!token) return undefined;
+  const segments = token.split(":").map((s) => Number(s));
+  if (segments.some((n) => Number.isNaN(n))) return undefined;
+  if (segments.length === 3) {
+    const [h, m, s] = segments;
+    return (h * 3600 + m * 60 + s) * 1000;
+  }
+  if (segments.length === 2) {
+    const [m, s] = segments;
+    return (m * 60 + s) * 1000;
+  }
+  if (segments.length === 1) {
+    return segments[0] * 1000;
+  }
+  return undefined;
+}
+
+function truncateMiddle(input: string, max = 200): string {
+  if (input.length <= max) return input;
+  const half = Math.floor((max - 3) / 2);
+  return `${input.slice(0, half)}...${input.slice(-half)}`;
+}
+
 export async function rsyncCopy(
   fromRoot: string,
   toRoot: string,
@@ -421,6 +593,8 @@ export async function rsyncCopy(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    progressScope?: string;
+    progressMeta?: Record<string, unknown>;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -442,8 +616,26 @@ export async function rsyncCopy(
     to,
   ];
   applySshTransport(args, from, to, opts, opts.compress);
-
-  const res = await run("rsync", args, [0, 23, 24], opts); // accept partials
+  const { progressScope, progressMeta, ...runOpts } = opts;
+  const scope = progressScope ?? label;
+  const progressHandler = runOpts.logger
+    ? (event: RsyncProgressEvent) => {
+        runOpts.logger!.info("progress", {
+          scope,
+          label,
+          transferredBytes: event.transferredBytes,
+          totalBytes: event.totalBytes ?? null,
+          percent: event.percent,
+          speed: event.speed ?? null,
+          etaMilliseconds: event.etaMilliseconds ?? null,
+          ...progressMeta,
+        });
+      }
+    : undefined;
+  const res = await run("rsync", args, [0, 23, 24], {
+    ...runOpts,
+    onProgress: progressHandler,
+  }); // accept partials
   if (debug) {
     logger.debug(`>>> rsync ${label}: done`, {
       code: res.code,
@@ -464,6 +656,8 @@ export async function rsyncCopyDirs(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    progressScope?: string;
+    progressMeta?: Record<string, unknown>;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -484,7 +678,26 @@ export async function rsyncCopyDirs(
     to,
   ];
   applySshTransport(args, from, to, opts);
-  const res = await run("rsync", args, [0, 23, 24], opts);
+  const { progressScope, progressMeta, ...runOpts } = opts;
+  const scope = progressScope ?? label;
+  const progressHandler = runOpts.logger
+    ? (event: RsyncProgressEvent) => {
+        runOpts.logger!.info("progress", {
+          scope,
+          label,
+          transferredBytes: event.transferredBytes,
+          totalBytes: event.totalBytes ?? null,
+          percent: event.percent,
+          speed: event.speed ?? null,
+          etaMilliseconds: event.etaMilliseconds ?? null,
+          ...progressMeta,
+        });
+      }
+    : undefined;
+  const res = await run("rsync", args, [0, 23, 24], {
+    ...runOpts,
+    onProgress: progressHandler,
+  });
   if (debug) {
     logger.debug(`>>> rsync ${label} (dirs): done`, {
       code: res.code,

@@ -1336,7 +1336,14 @@ export async function runMerge({
               beta,
               toBetaRelative,
               "alpha→beta",
-              rsyncOpts,
+              {
+                ...rsyncOpts,
+                progressScope: "merge.copy.alpha->beta",
+                progressMeta: {
+                  stage: "copy",
+                  direction: "alpha->beta",
+                },
+              },
             )
           ).ok;
           copyBetaAlphaOk = (
@@ -1346,7 +1353,14 @@ export async function runMerge({
               alpha,
               toAlphaRelative,
               "beta→alpha",
-              rsyncOpts,
+              {
+                ...rsyncOpts,
+                progressScope: "merge.copy.beta->alpha",
+                progressMeta: {
+                  stage: "copy",
+                  direction: "beta->alpha",
+                },
+              },
             )
           ).ok;
         }
@@ -1360,7 +1374,14 @@ export async function runMerge({
             beta,
             toBetaRelative,
             "alpha→beta",
-            rsyncOpts,
+            {
+              ...rsyncOpts,
+              progressScope: "merge.copy.alpha->beta",
+              progressMeta: {
+                stage: "copy",
+                direction: "alpha->beta",
+              },
+            },
           )
         ).ok;
         copyBetaAlphaOk = (
@@ -1370,7 +1391,14 @@ export async function runMerge({
             alpha,
             toAlphaRelative,
             "beta→alpha",
-            rsyncOpts,
+            {
+              ...rsyncOpts,
+              progressScope: "merge.copy.beta->alpha",
+              progressMeta: {
+                stage: "copy",
+                direction: "beta->alpha",
+              },
+            },
           )
         ).ok;
         done();
