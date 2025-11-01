@@ -17,7 +17,13 @@ import {
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import { createHash } from "node:crypto";
 import { updateSession } from "./session-db.js";
-import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
+import {
+  ConsoleLogger,
+  type Logger,
+  type LogLevel,
+  LOG_LEVELS,
+  parseLogLevel,
+} from "./logger.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -58,7 +64,12 @@ function buildProgram(): Command {
       "auto",
     )
     .option("--session-id <id>", "optional session id to enable heartbeats")
-    .option("--session-db <path>", "path to session database");
+    .option("--session-db <path>", "path to session database")
+    .option(
+      "--log-level <level>",
+      `log verbosity (${LOG_LEVELS.join(", ")})`,
+      "info",
+    );
 }
 
 type MergeRsyncOptions = {
@@ -70,14 +81,14 @@ type MergeRsyncOptions = {
   alphaHost?: string;
   betaHost?: string;
   prefer: "alpha" | "beta";
-  lwwEpsilonMs: string;
+  lwwEpsilonMs?: string;
   dryRun: boolean | string;
   verbose?: boolean | string;
   compress?: string;
   sessionId?: number;
   sessionDb?: string;
   logger?: Logger;
-  logLevel?: LogLevel;
+  logLevel?: LogLevel | string;
 };
 
 // ---------- helpers ----------
@@ -106,10 +117,12 @@ export async function runMerge({
   logLevel = "info",
   verbose,
 }: MergeRsyncOptions) {
-  const logger = providedLogger ?? new ConsoleLogger(logLevel);
-  const debug = toBoolVerbose(verbose) || logLevel === "debug";
+  const level =
+    typeof logLevel === "string" ? parseLogLevel(logLevel, "info") : logLevel ?? "info";
+  const logger = providedLogger ?? new ConsoleLogger(level);
+  const debug = toBoolVerbose(verbose) || level === "debug";
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
-  const rsyncOpts = { dryRun, verbose: debug, compress, logger, logLevel };
+  const rsyncOpts = { dryRun, verbose: debug, compress, logger, logLevel: level };
 
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);
@@ -1668,7 +1681,7 @@ export async function runMerge({
     );
   }
 
-  main();
+  await main();
 }
 
 cliEntrypoint<MergeRsyncOptions>(import.meta.url, buildProgram, runMerge, {

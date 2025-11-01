@@ -35,6 +35,7 @@ import {
   createSessionLogger,
   type SessionLoggerHandle,
 } from "./session-logs.js";
+import { runMerge } from "./merge.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -816,58 +817,72 @@ export async function runScheduler({
 
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
-    const mArgs = [
-      "merge",
-      "--alpha-root",
-      alphaRoot,
-      "--beta-root",
-      betaRoot,
-      "--alpha-db",
-      alphaDb,
-      "--beta-db",
-      betaDb,
-      "--base-db",
-      baseDb,
-      "--prefer",
-      prefer,
-      "--compress",
-      compress!,
-    ];
-    if (sessionDb && sessionId) {
-      mArgs.push("--session-db", sessionDb, "--session-id", String(sessionId));
+    const mergeLogger = scoped("merge");
+    const mergeStart = Date.now();
+    let mergeOk = false;
+    let mergeError: unknown = null;
+    try {
+      await runMerge({
+        alphaRoot,
+        betaRoot,
+        alphaDb,
+        betaDb,
+        baseDb,
+        alphaHost,
+        betaHost,
+        prefer,
+        dryRun,
+        compress,
+        sessionDb,
+        sessionId,
+        logger: mergeLogger,
+        // if the session logger (to database) is enabled, then
+        // ensure merge logs everything to our logger.
+        verbose: !!sessionLogHandle,
+      });
+      mergeOk = true;
+    } catch (err) {
+      mergeError = err;
+      mergeLogger.error("merge failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    if (alphaHost) mArgs.push("--alpha-host", alphaHost);
-    if (betaHost) mArgs.push("--beta-host", betaHost);
-    if (dryRun) mArgs.push("--dry-run");
-
-    const m = await spawnTask(CLI_NAME, mArgs);
+    const mergeMs = Date.now() - mergeStart;
 
     const ms = Date.now() - t0;
     lastCycleMs = ms;
     log("info", "scheduler", `cycle complete in ${ms} ms`, {
       scanAlphaMs: a.ms,
       scanBetaMs: b.ms,
-      mergeMs: m.ms,
-      codes: { a: a.code, b: b.code, m: m.code },
+      mergeMs,
+      mergeOk,
     });
 
     // Backoff on merge errors
-    if (m.code && m.code !== 0) {
-      sessionWriter?.error(`merge/rsync exit code ${m.code}`);
-      const code = m.code ?? -1;
-      const warn = code === 23 || code === 24;
-      const enospc = code === 28;
+    if (!mergeOk) {
+      const message =
+        mergeError instanceof Error
+          ? mergeError.message
+          : mergeError
+            ? String(mergeError)
+            : "merge failed";
+      sessionWriter?.error(`merge failed: ${message}`);
+      const lower = message.toLowerCase();
+      const enospc = lower.includes("enospc") || lower.includes("no space");
+      const warn =
+        lower.includes("partial") ||
+        lower.includes("some files could not be transferred");
       if (enospc) {
-        log("error", "rsync", "ENOSPC; backoff", { code });
+        log("error", "merge", "ENOSPC; backoff", { message });
         backoffMs = Math.min(
           backoffMs ? backoffMs * 2 : 10_000,
           MAX_BACKOFF_MS,
         );
       } else if (warn) {
-        log("warn", "rsync", "partial; backoff a bit", { code });
+        log("warn", "merge", "partial transfer; backoff", { message });
         backoffMs = Math.min(backoffMs ? backoffMs + 5_000 : 5_000, 60_000);
       } else {
-        log("error", "rsync", "unexpected error; backoff", { code });
+        log("error", "merge", "unexpected error; backoff", { message });
         backoffMs = Math.min(
           backoffMs ? backoffMs * 2 : 10_000,
           MAX_BACKOFF_MS,
@@ -881,7 +896,7 @@ export async function runScheduler({
       lastCycleMs,
       scanAlphaMs: a.ms ?? 0,
       scanBetaMs: b.ms ?? 0,
-      mergeMs: m.ms ?? 0,
+      mergeMs,
       backoffMs,
     });
   }
