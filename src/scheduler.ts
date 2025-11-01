@@ -30,7 +30,7 @@ import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
 import { argsJoin } from "./remote.js";
-import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
+import { ConsoleLogger, type Logger, parseLogLevel } from "./logger.js";
 import {
   createSessionLogger,
   type SessionLoggerHandle,
@@ -163,8 +163,6 @@ const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
 const MAX_BACKOFF_MS = envNum("SCHED_MAX_BACKOFF_MS", 600_000);
 const JITTER_MS = envNum("SCHED_JITTER_MS", 500);
 
-const LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
-
 const DEFAULT_CONSOLE_LEVEL = parseLogLevel(
   process.env.RFSYNC_LOG_LEVEL,
   "info",
@@ -174,15 +172,6 @@ const DEFAULT_SESSION_ECHO_LEVEL = parseLogLevel(
   process.env.RFSYNC_SESSION_ECHO_LEVEL ?? process.env.RFSYNC_LOG_LEVEL,
   "info",
 );
-
-function parseLogLevel(raw: string | undefined, fallback: LogLevel): LogLevel {
-  if (!raw) return fallback;
-  const normalized = raw.toLowerCase();
-  for (const lvl of LOG_LEVELS) {
-    if (lvl === normalized) return lvl;
-  }
-  return fallback;
-}
 
 // ---------- core (exported) ----------
 export async function runScheduler({
@@ -214,20 +203,15 @@ export async function runScheduler({
 
   let sessionLogHandle: SessionLoggerHandle | null = null;
   let logger: Logger;
-  console.log("LOG", { sessionDb, sessionId });
   if (providedLogger) {
-    console.log("LOG: 1");
     logger = providedLogger.child("scheduler");
   } else if (sessionDb && Number.isFinite(sessionId)) {
-    console.log("LOG: 2");
     sessionLogHandle = createSessionLogger(sessionDb, sessionId!, {
       scope: "scheduler",
       echoLevel: DEFAULT_SESSION_ECHO_LEVEL,
     });
     logger = sessionLogHandle.logger;
   } else {
-    console.log("LOG: 3");
-
     logger = new ConsoleLogger(DEFAULT_CONSOLE_LEVEL).child("scheduler");
   }
 

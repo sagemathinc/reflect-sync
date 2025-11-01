@@ -18,6 +18,7 @@ import { getDb } from "./db.js";
 import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { CLI_NAME } from "./constants.js";
+import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
 
 // SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are for skew/future handling.
 // See comments in the original version for rationale.
@@ -31,18 +32,23 @@ function buildProgram(): Command {
     .description("Ingest NDJSON deltas from stdin into a local sqlite db");
 
   program.requiredOption("--db <path>", "sqlite db file");
-  program.option("--verbose", "enable verbose logging", false);
 
   return program;
 }
 
 export type IngestDeltaOptions = {
   db: string;
-  verbose: boolean;
+  logger?: Logger;
+  logLevel?: LogLevel;
 };
 
 export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
-  const { db: dbPath, verbose } = opts;
+  const {
+    db: dbPath,
+    logger: providedLogger,
+    logLevel = "info",
+  } = opts;
+  const logger = providedLogger ?? new ConsoleLogger(logLevel);
 
   let skew: number | null = null; // local time = remote time + skew
   const nowLocal = () => Date.now();
@@ -69,6 +75,9 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 
   // ---------- db ----------
   const db = getDb(dbPath);
+  let processedRows = 0;
+  let closed = false;
+  logger.info("ingest start", { db: dbPath });
 
   // Files: upsert minimal metadata; only overwrite hash/hashed_ctime when provided
   const upsertFile = db.prepare(`
@@ -141,9 +150,9 @@ ON CONFLICT(path) DO UPDATE SET
   );
 
   const tx = db.transaction((rows: any[]) => {
-    if (verbose) {
-      console.log(`ingest-delta: ${rows.length} rows`);
-    }
+    if (!rows.length) return;
+    processedRows += rows.length;
+    logger.debug("ingest batch", { rows: rows.length });
     const now = Date.now();
     for (const r of rows) {
       if (r.kind === "time") {
@@ -236,6 +245,13 @@ ON CONFLICT(path) DO UPDATE SET
     buf.length = 0;
   }
 
+  const finalize = () => {
+    if (closed) return;
+    closed = true;
+    logger.info("ingest complete", { rows: processedRows, db: dbPath });
+    db.close();
+  };
+
   const rl = readline.createInterface({ input: process.stdin });
   rl.on("line", (line) => {
     if (!line) return;
@@ -251,11 +267,11 @@ ON CONFLICT(path) DO UPDATE SET
   });
   rl.on("close", () => {
     flush();
-    db.close();
+    finalize();
   });
   process.on("SIGINT", () => {
     flush();
-    db.close();
+    finalize();
     process.exit(0);
   });
 }

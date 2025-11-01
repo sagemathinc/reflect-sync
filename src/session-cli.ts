@@ -20,7 +20,12 @@ import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionFlush } from "./session-flush.js";
 import { argsJoin } from "./remote.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
-import { ConsoleLogger, LOG_LEVELS, type LogLevel } from "./logger.js";
+import {
+  ConsoleLogger,
+  LOG_LEVELS,
+  parseLogLevel,
+  type LogLevel,
+} from "./logger.js";
 import {
   fetchSessionLogs,
   type SessionLogRow,
@@ -181,7 +186,11 @@ export function registerSessionCommands(program: Command) {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       let id;
-      const cliLogger = new ConsoleLogger("info");
+      const level = parseLogLevel(
+        program.getOptionValue("logLevel") as string | undefined,
+        "info",
+      );
+      const cliLogger = new ConsoleLogger(level);
       try {
         id = await newSession({
           alphaSpec,
@@ -415,7 +424,11 @@ export function registerSessionCommands(program: Command) {
       const sessionDb =
         program.getOptionValue("sessionDb") || getSessionDbPath();
       const opts = { ...command.optsWithGlobals(), ...options };
-      const cliLogger = new ConsoleLogger("info");
+      const level = parseLogLevel(
+        program.getOptionValue("logLevel") as string | undefined,
+        "info",
+      );
+      const cliLogger = new ConsoleLogger(level);
 
       for (const id0 of ids) {
         const id = Number(id0);

@@ -17,9 +17,21 @@ import {
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import { createHash } from "node:crypto";
 import { updateSession } from "./session-db.js";
+import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
+
+function toBoolVerbose(v?: boolean | string): boolean {
+  if (typeof v === "string") {
+    const trimmed = v.trim().toLowerCase();
+    if (!trimmed || trimmed === "false" || trimmed === "0" || trimmed === "off") {
+      return false;
+    }
+    return true;
+  }
+  return !!v;
+}
 
 function buildProgram(): Command {
   const program = new Command();
@@ -46,8 +58,7 @@ function buildProgram(): Command {
       "auto",
     )
     .option("--session-id <id>", "optional session id to enable heartbeats")
-    .option("--session-db <path>", "path to session database")
-    .option("--verbose", "enable verbose logging", false);
+    .option("--session-db <path>", "path to session database");
 }
 
 type MergeRsyncOptions = {
@@ -61,10 +72,12 @@ type MergeRsyncOptions = {
   prefer: "alpha" | "beta";
   lwwEpsilonMs: string;
   dryRun: boolean | string;
-  verbose: boolean | string;
+  verbose?: boolean | string;
   compress?: string;
   sessionId?: number;
   sessionDb?: string;
+  logger?: Logger;
+  logLevel?: LogLevel;
 };
 
 // ---------- helpers ----------
@@ -86,24 +99,28 @@ export async function runMerge({
   prefer,
   lwwEpsilonMs,
   dryRun,
-  verbose,
   compress,
   sessionDb,
   sessionId,
+  logger: providedLogger,
+  logLevel = "info",
+  verbose,
 }: MergeRsyncOptions) {
+  const logger = providedLogger ?? new ConsoleLogger(logLevel);
+  const debug = toBoolVerbose(verbose) || logLevel === "debug";
   const EPS = Number(lwwEpsilonMs || "3000") || 3000;
-  const rsyncOpts = { dryRun, verbose, compress };
+  const rsyncOpts = { dryRun, verbose: debug, compress, logger, logLevel };
 
   const alphaIg = await loadIgnoreFile(alphaRoot);
   const betaIg = await loadIgnoreFile(betaRoot);
 
   const t = (label: string) => {
-    if (!verbose) return () => {};
-    console.log(`[phase] ${label}: running...`);
+    if (!debug) return () => {};
+    logger.debug(`[phase] ${label}: running...`);
     const t0 = Date.now();
     return () => {
       const dt = Date.now() - t0;
-      console.log(`[phase] ${label}: ${dt} ms`);
+      logger.debug(`[phase] ${label}: ${dt} ms`);
     };
   };
 
@@ -157,9 +174,9 @@ export async function runMerge({
     let done = t("compute digests");
     const digestAlpha = computeSideDigest("alpha");
     const digestBeta = computeSideDigest("beta");
-    if (verbose) {
-      console.log("[digest] alpha:", digestAlpha);
-      console.log("[digest] beta :", digestBeta);
+    if (debug) {
+      logger.debug("[digest] alpha", { digest: digestAlpha });
+      logger.debug("[digest] beta", { digest: digestBeta });
     }
     if (sessionDb && sessionId) {
       updateSession(sessionDb, sessionId, {
@@ -174,8 +191,8 @@ export async function runMerge({
     if (digestAlpha == digestBeta) {
       // if both sides are identical the 3-way merge isn't going to do
       // anything. We're definitely in sync.
-      if (verbose) {
-        console.log(
+      if (debug) {
+        logger.debug(
           "[merge] no-op: both sides are equal; skipping planning/rsync",
         );
       }
@@ -430,13 +447,17 @@ export async function runMerge({
     done = t("derive plan arrays");
     const count = (tbl: string) =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).get() as any).n as number;
-    if (verbose) {
-      console.log(
-        `Planner input counts: changedA=${count("tmp_changedA")} changedB=${count("tmp_changedB")} deletedA=${count("tmp_deletedA")} deletedB=${count("tmp_deletedB")}`,
-      );
-      console.log(
-        `Planner dir counts  : d_changedA=${count("tmp_dirs_changedA")} d_changedB=${count("tmp_dirs_changedB")} d_deletedA=${count("tmp_dirs_deletedA")} d_deletedB=${count("tmp_dirs_deletedB")}`,
-      );
+    if (debug) {
+      logger.debug("planner input counts", {
+        changedA: count("tmp_changedA"),
+        changedB: count("tmp_changedB"),
+        deletedA: count("tmp_deletedA"),
+        deletedB: count("tmp_deletedB"),
+        d_changedA: count("tmp_dirs_changedA"),
+        d_changedB: count("tmp_dirs_changedB"),
+        d_deletedA: count("tmp_dirs_deletedA"),
+        d_deletedB: count("tmp_dirs_deletedB"),
+      });
     }
 
     // ---------- Build copy/delete plans (FILES) with LWW ----------
@@ -960,7 +981,7 @@ export async function runMerge({
 
     // ---------- APPLY IGNORES ----------
     done = t("ignores");
-    const before = verbose
+    const before = debug
       ? {
           toBeta: toBeta.length,
           toAlpha: toAlpha.length,
@@ -971,7 +992,7 @@ export async function runMerge({
           delDirsInBeta: delDirsInBeta.length,
           delDirsInAlpha: delDirsInAlpha.length,
         }
-      : {};
+      : undefined;
 
     const ignore = (x: string[]) => filterIgnored(x, alphaIg, betaIg);
     toBeta = ignore(toBeta);
@@ -985,7 +1006,7 @@ export async function runMerge({
     delDirsInBeta = ignoreDirs(delDirsInBeta);
     delDirsInAlpha = ignoreDirs(delDirsInAlpha);
 
-    if (verbose) {
+    if (debug && before) {
       const after = {
         toBeta: toBeta.length,
         toAlpha: toAlpha.length,
@@ -999,7 +1020,7 @@ export async function runMerge({
       const delta = Object.fromEntries(
         Object.entries(after).map(([k, v]) => [k, (before as any)[k] - v]),
       );
-      console.log("Ignores filtered plan counts (dropped):", delta);
+      logger.debug("ignores filtered plan counts", { dropped: delta });
     }
 
     const dropInternal = (xs: string[]) =>
@@ -1019,20 +1040,20 @@ export async function runMerge({
       const toBetaSet = new Set(toBeta);
       const beforeN = delInBeta.length;
       delInBeta = delInBeta.filter((r) => !toBetaSet.has(r));
-      if (verbose && beforeN !== delInBeta.length) {
-        console.warn(
-          `planner safety: alpha→beta file overlap dropped=${beforeN - delInBeta.length}`,
-        );
+      if (debug && beforeN !== delInBeta.length) {
+        logger.warn("planner safety: alpha→beta file overlap", {
+          dropped: beforeN - delInBeta.length,
+        });
       }
     }
     if (toAlpha.length && delInAlpha.length) {
       const toAlphaSet = new Set(toAlpha);
       const beforeN = delInAlpha.length;
       delInAlpha = delInAlpha.filter((r) => !toAlphaSet.has(r));
-      if (verbose && beforeN !== delInAlpha.length) {
-        console.warn(
-          `planner safety: beta→alpha file overlap dropped=${beforeN - delInAlpha.length}`,
-        );
+      if (debug && beforeN !== delInAlpha.length) {
+        logger.warn("planner safety: beta→alpha file overlap", {
+          dropped: beforeN - delInAlpha.length,
+        });
       }
     }
 
@@ -1068,9 +1089,12 @@ export async function runMerge({
       delDirsInBeta = delDirsInBeta.filter(
         (d) => !anyIncomingUnderDir(outgoingFromBetaSorted, d),
       );
-      if (verbose && beforeN !== delDirsInBeta.length) {
-        console.warn(
-          `planner safety: kept ${beforeN - delDirsInBeta.length} beta dirs (preferred source has outgoing under them)`,
+      if (debug && beforeN !== delDirsInBeta.length) {
+        logger.warn(
+          "planner safety: preserved beta dirs with outgoing descendants",
+          {
+            kept: beforeN - delDirsInBeta.length,
+          },
         );
       }
     }
@@ -1080,9 +1104,12 @@ export async function runMerge({
       delDirsInAlpha = delDirsInAlpha.filter(
         (d) => !anyIncomingUnderDir(outgoingFromAlphaSorted, d),
       );
-      if (verbose && beforeN !== delDirsInAlpha.length) {
-        console.warn(
-          `planner safety: kept ${beforeN - delDirsInAlpha.length} alpha dirs (preferred source has outgoing under them)`,
+      if (debug && beforeN !== delDirsInAlpha.length) {
+        logger.warn(
+          "planner safety: preserved alpha dirs with outgoing descendants",
+          {
+            kept: beforeN - delDirsInAlpha.length,
+          },
         );
       }
     }
@@ -1102,21 +1129,22 @@ export async function runMerge({
     );
     const droppedAlphaDirs = beforeDelDirsInAlpha - delDirsInAlpha.length;
 
-    if (verbose && (droppedBetaDirs || droppedAlphaDirs)) {
-      console.warn(
-        `planner safety: dir-delete clamped (beta=${droppedBetaDirs}, alpha=${droppedAlphaDirs})`,
-      );
+    if (debug && (droppedBetaDirs || droppedAlphaDirs)) {
+      logger.warn("planner safety: dir-delete clamped", {
+        beta: droppedBetaDirs,
+        alpha: droppedAlphaDirs,
+      });
     }
     done();
 
-    if (verbose) {
+    if (debug) {
       const againBeta = toBeta.filter((r) => delInBetaSet.has(r)).length;
       const againAlpha = toAlpha.filter((r) => delInAlphaSet.has(r)).length;
       if (againBeta || againAlpha) {
-        console.error(
+        logger.error(
           "planner invariant failed: copy/delete not disjoint after clamp",
+          { againBeta, againAlpha },
         );
-        console.error({ againBeta, againAlpha });
       }
     }
 
@@ -1150,21 +1178,19 @@ export async function runMerge({
       await writeFile(listDelDirsInAlpha, join0(delDirsInAlpha));
       done();
 
-      if (verbose) {
-        console.log(`Plan:
-  alpha→beta copies : ${toBeta.length}
-  beta→alpha copies : ${toAlpha.length}
-  deletions in beta : ${delInBeta.length}
-  deletions in alpha: ${delInAlpha.length}
-  dirs create beta  : ${toBetaDirs.length}
-  dirs create alpha : ${toAlphaDirs.length}
-  dirs delete beta  : ${delDirsInBeta.length}
-  dirs delete alpha : ${delDirsInAlpha.length}
-  prefer side       : ${prefer}
-  dry-run           : ${dryRun}
-  verbose           : ${verbose}
-`);
-      }
+      logger.info("merge plan", {
+        copiesAlphaToBeta: toBeta.length,
+        copiesBetaToAlpha: toAlpha.length,
+        deletionsInBeta: delInBeta.length,
+        deletionsInAlpha: delInAlpha.length,
+        dirsCreateBeta: toBetaDirs.length,
+        dirsCreateAlpha: toAlphaDirs.length,
+        dirsDeleteBeta: delDirsInBeta.length,
+        dirsDeleteAlpha: delDirsInAlpha.length,
+        prefer,
+        dryRun,
+        debug,
+      });
 
       // ---------- rsync ----------
       let copyAlphaBetaOk = false;
@@ -1261,8 +1287,10 @@ export async function runMerge({
         } catch (e) {
           // Fallback: if any cp --reflink failed (e.g., subtrees on different filesystems),
           // fall back to your current rsync path for the affected direction(s).
-          if (verbose) {
-            console.warn("reflink copy failed; falling back to rsync:", e);
+          if (debug) {
+            logger.warn("reflink copy failed; falling back to rsync", {
+              error: String(e),
+            });
           }
           done();
           done = t("rsync: 3) copy files -- falling back to rsync");
@@ -1321,9 +1349,10 @@ export async function runMerge({
         );
         const beforeN = delDirsInBeta.length;
         delDirsInBeta = delDirsInBeta.filter((d) => !isChangedB.get(d)?.one);
-        if (verbose && beforeN !== delDirsInBeta.length) {
-          console.warn(
-            `clamped ${beforeN - delDirsInBeta.length} dir deletions in beta (dir existed on beta & prefer=beta)`,
+        if (debug && beforeN !== delDirsInBeta.length) {
+          logger.warn(
+            "clamped dir deletions in beta due to prefer=beta",
+            { kept: beforeN - delDirsInBeta.length },
           );
         }
       }
@@ -1333,9 +1362,10 @@ export async function runMerge({
         );
         const beforeN = delDirsInAlpha.length;
         delDirsInAlpha = delDirsInAlpha.filter((d) => !isChangedA.get(d)?.one);
-        if (verbose && beforeN !== delDirsInAlpha.length) {
-          console.warn(
-            `clamped ${beforeN - delDirsInAlpha.length} dir deletions in alpha (dir existed on alpha & prefer=alpha)`,
+        if (debug && beforeN !== delDirsInAlpha.length) {
+          logger.warn(
+            "clamped dir deletions in alpha due to prefer=alpha",
+            { kept: beforeN - delDirsInAlpha.length },
           );
         }
       }
@@ -1364,11 +1394,11 @@ export async function runMerge({
       );
       done();
 
-      if (verbose) console.log("rsync's all done, now updating database");
+      logger.info("rsync complete, updating base database");
 
       if (dryRun) {
-        console.log("(dry-run) skipping base updates");
-        console.log("Merge complete.");
+        logger.info("(dry-run) skipping base updates");
+        logger.info("Merge complete.");
         return;
       }
 
@@ -1408,11 +1438,11 @@ export async function runMerge({
       }
 
       function timed(label: string, fn: () => void) {
-        if (!verbose) return void fn();
+        if (!debug) return void fn();
         const t0 = Date.now();
         fn();
         const dt = Date.now() - t0;
-        if (dt > 10) console.log(`[plan] ${label}: ${dt} ms`);
+        if (dt > 10) logger.debug(`[plan] ${label}`, { durationMs: dt });
       }
 
       timed("insert plan tables", () => {
@@ -1442,19 +1472,19 @@ export async function runMerge({
         CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_alpha_rpath ON plan_dirs_del_alpha(rpath);
       `);
 
-      if (verbose) {
+      if (debug) {
         const c = (t: string) =>
           (db.prepare(`SELECT COUNT(*) n FROM ${t}`).get() as any).n;
-        console.log(
-          `Plan table counts: to_beta=${c("plan_to_beta")} to_alpha=${c("plan_to_alpha")} del_beta=${c(
-            "plan_del_beta",
-          )} del_alpha=${c("plan_del_alpha")}`,
-        );
-        console.log(
-          `Plan dir counts   : d_to_beta=${c("plan_dirs_to_beta")} d_to_alpha=${c(
-            "plan_dirs_to_alpha",
-          )} d_del_beta=${c("plan_dirs_del_beta")} d_del_alpha=${c("plan_dirs_del_alpha")}`,
-        );
+        logger.debug("plan table counts", {
+          to_beta: c("plan_to_beta"),
+          to_alpha: c("plan_to_alpha"),
+          del_beta: c("plan_del_beta"),
+          del_alpha: c("plan_del_alpha"),
+          dirs_to_beta: c("plan_dirs_to_beta"),
+          dirs_to_alpha: c("plan_dirs_to_alpha"),
+          dirs_del_beta: c("plan_dirs_del_beta"),
+          dirs_del_alpha: c("plan_dirs_del_alpha"),
+        });
       }
 
       // set-based updates (preserve op_ts of chosen side); gate on rsync success
@@ -1615,12 +1645,10 @@ export async function runMerge({
         done();
       } catch (err) {
         // harmless if fails -- may happen if locked
-        if (verbose) {
-          console.log("warning -- sqlite hygiene issue", err);
-        }
+        logger.warn("sqlite hygiene issue", { error: String(err) });
       }
 
-      if (verbose) console.log("Merge complete.");
+      logger.info("Merge complete.");
 
       // Persist digests (after successful non-dry-run merge)
       const up = db.prepare(`REPLACE INTO merge_meta(key,value) VALUES(?,?)`);

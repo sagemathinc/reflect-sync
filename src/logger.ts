@@ -30,6 +30,7 @@ export interface Logger {
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
   error(message: string, meta?: Record<string, unknown>): void;
+  isLevelEnabled(level: LogLevel): boolean;
 }
 
 type Sink = (entry: LogEntry) => void;
@@ -43,6 +44,7 @@ export interface LoggerOptions {
     writer?: EchoWriter;
   };
   clock?: () => number;
+  isLevelEnabled?: (level: LogLevel) => boolean;
 }
 
 const defaultClock = () => Date.now();
@@ -79,18 +81,21 @@ export class StructuredLogger implements Logger {
   private readonly echoWriter: EchoWriter;
   private readonly clock: () => number;
   private readonly scope?: string;
+  private readonly enabled?: (level: LogLevel) => boolean;
 
   constructor({
     scope,
     sink,
     echo,
     clock,
+    isLevelEnabled,
   }: LoggerOptions = {}) {
     this.scope = scope;
     this.sink = sink ?? (() => {});
     this.echoMinLevel = echo?.minLevel;
     this.echoWriter = echo?.writer ?? defaultEchoWriter;
     this.clock = clock ?? defaultClock;
+    this.enabled = isLevelEnabled;
   }
 
   child(scope: string): Logger {
@@ -102,6 +107,7 @@ export class StructuredLogger implements Logger {
         ? { minLevel: this.echoMinLevel, writer: this.echoWriter }
         : undefined,
       clock: this.clock,
+      isLevelEnabled: this.enabled,
     });
   }
 
@@ -134,6 +140,10 @@ export class StructuredLogger implements Logger {
   error(message: string, meta?: Record<string, unknown>): void {
     this.log("error", message, meta);
   }
+
+  isLevelEnabled(_level: LogLevel): boolean {
+    return this.enabled ? this.enabled(_level) : true;
+  }
 }
 
 function shouldEcho(level: LogLevel, minLevel: LogLevel): boolean {
@@ -149,12 +159,61 @@ export class NullLogger implements Logger {
   info(): void {}
   warn(): void {}
   error(): void {}
+  isLevelEnabled(): boolean {
+    return false;
+  }
 }
 
 export class ConsoleLogger extends StructuredLogger {
+  private readonly minLevel: LogLevel;
+
   constructor(minLevel: LogLevel = "info") {
     super({
       echo: { minLevel },
+      isLevelEnabled: (level) => shouldEcho(level, minLevel),
     });
+    this.minLevel = minLevel;
   }
+
+  isLevelEnabled(level: LogLevel): boolean {
+    return shouldEcho(level, this.minLevel);
+  }
+}
+
+export function parseLogLevel(
+  raw: string | undefined,
+  fallback: LogLevel = "info",
+): LogLevel {
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  return LOG_LEVELS.includes(normalized as LogLevel)
+    ? (normalized as LogLevel)
+    : fallback;
+}
+
+export function loggerFromLevel(level?: string): ConsoleLogger {
+  return new ConsoleLogger(parseLogLevel(level));
+}
+
+export function levelAtOrAbove(
+  desired: LogLevel,
+  candidate: LogLevel,
+): boolean {
+  return LEVEL_ORDER[candidate] >= LEVEL_ORDER[desired];
+}
+
+export function minLevelEnabled(
+  logger: Logger | undefined,
+  level: LogLevel,
+): boolean {
+  if (!logger) return false;
+  return logger.isLevelEnabled(level);
+}
+
+export function childOrSelf(
+  logger: Logger | undefined,
+  scope: string,
+): Logger | undefined {
+  if (!logger) return undefined;
+  return logger.child(scope);
 }

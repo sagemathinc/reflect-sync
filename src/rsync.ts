@@ -11,6 +11,7 @@ import {
   rsyncCompressionArgs,
 } from "./rsync-compression.js";
 import { argsJoin } from "./remote.js";
+import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // extremely verbose -- showing all output of rsync, which
 // can be massive, of course.
@@ -21,6 +22,39 @@ const RFSYNC_COPY_CONCURRENCY = Number(
   process.env.RFSYNC_COPY_CONCURRENCY ?? 2,
 );
 const RFSYNC_DIR_CHUNK = Number(process.env.RFSYNC_DIR_CHUNK ?? 20_000);
+
+type RsyncLogOptions = {
+  logger?: Logger;
+  verbose?: boolean | string;
+  logLevel?: LogLevel;
+};
+
+type RsyncRunOptions = RsyncLogOptions & {
+  dryRun?: boolean | string;
+};
+
+function toBoolVerbose(v?: boolean | string): boolean {
+  if (typeof v === "string") {
+    const trimmed = v.trim().toLowerCase();
+    if (!trimmed) return false;
+    if (trimmed === "false" || trimmed === "0" || trimmed === "off") {
+      return false;
+    }
+    return true;
+  }
+  return !!v;
+}
+
+function resolveLogContext(opts: RsyncLogOptions) {
+  const level = opts.logLevel ?? "info";
+  const logger = opts.logger ?? new ConsoleLogger(level);
+  const debug = toBoolVerbose(opts.verbose) || level === "debug";
+  return { logger, debug, level };
+}
+
+function isDebugEnabled(opts: RsyncLogOptions): boolean {
+  return toBoolVerbose(opts.verbose) || opts.logLevel === "debug";
+}
 
 // ----------------------- Helpers -----------------------
 
@@ -63,17 +97,20 @@ export async function rsyncCopyDirsChunked(
     concurrency?: number; // dirs usually OK at 2–4 as well
     dryRun?: boolean | string;
     verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
   } = {},
 ): Promise<void> {
   if (!dirRpaths.length) return;
+  const { logger, debug } = resolveLogContext(opts);
   const chunkSize = opts.chunkSize ?? RFSYNC_DIR_CHUNK;
   const concurrency = opts.concurrency ?? Math.min(4, RFSYNC_COPY_CONCURRENCY);
 
   const sorted = Array.from(new Set(dirRpaths)).sort(); // stable, deduped
   const batches = chunk(sorted, chunkSize);
 
-  if (opts.verbose) {
-    console.log(
+  if (debug) {
+    logger.debug(
       `>>> rsync mkdir ${label}: ${sorted.length} dirs in ${batches.length} batches (chunk=${chunkSize}, conc=${concurrency})`,
     );
   }
@@ -90,8 +127,8 @@ export async function rsyncCopyDirsChunked(
   }
 
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
-    if (opts.verbose) {
-      console.log(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
+    if (debug) {
+      logger.debug(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
     }
     await rsyncCopyDirs(
       fromRoot,
@@ -101,6 +138,8 @@ export async function rsyncCopyDirsChunked(
       {
         dryRun: opts.dryRun,
         verbose: opts.verbose,
+        logger,
+        logLevel: opts.logLevel,
       },
     );
   });
@@ -119,9 +158,12 @@ export async function rsyncCopyChunked(
     dryRun?: boolean | string;
     verbose?: boolean | string;
     compress?: RsyncCompressSpec;
+    logger?: Logger;
+    logLevel?: LogLevel;
   } = {},
 ): Promise<{ ok: boolean }> {
   if (!fileRpaths.length) return { ok: true };
+  const { logger, debug } = resolveLogContext(opts);
 
   const chunkSize = opts.chunkSize ?? RFSYNC_COPY_CHUNK;
   const concurrency = opts.concurrency ?? RFSYNC_COPY_CONCURRENCY;
@@ -130,8 +172,8 @@ export async function rsyncCopyChunked(
   const sorted = Array.from(new Set(fileRpaths)).sort();
   const batches = chunk(sorted, chunkSize);
 
-  if (opts.verbose) {
-    console.log(
+  if (debug) {
+    logger.debug(
       `>>> rsync copy ${label}: ${sorted.length} files in ${batches.length} batches (chunk=${chunkSize}, conc=${concurrency})`,
     );
   }
@@ -143,6 +185,8 @@ export async function rsyncCopyChunked(
       await rsyncCopyDirsChunked(workDir, fromRoot, toRoot, dirs, `${label}`, {
         dryRun: opts.dryRun,
         verbose: opts.verbose,
+        logger,
+        logLevel: opts.logLevel,
       });
     }
   }
@@ -161,8 +205,8 @@ export async function rsyncCopyChunked(
   let allOk = true;
 
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
-    if (opts.verbose) {
-      console.log(`>>> rsync copy ${label} [${idx + 1}/${listFiles.length}]`);
+    if (debug) {
+      logger.debug(`>>> rsync copy ${label} [${idx + 1}/${listFiles.length}]`);
     }
     const { ok } = await rsyncCopy(
       fromRoot,
@@ -173,6 +217,8 @@ export async function rsyncCopyChunked(
         dryRun: opts.dryRun,
         verbose: opts.verbose,
         compress: opts.compress,
+        logger,
+        logLevel: opts.logLevel,
       },
     );
     if (!ok) allOk = false;
@@ -186,11 +232,11 @@ export function ensureTrailingSlash(root: string): string {
   return root.endsWith("/") ? root : root + "/";
 }
 
-export async function fileNonEmpty(p: string, verbose?: boolean) {
+export async function fileNonEmpty(p: string, logger?: Logger) {
   try {
     return (await fsStat(p)).size > 0;
   } catch (err) {
-    if (verbose) console.warn("fileNonEmpty ", p, err);
+    logger?.warn("fileNonEmpty failed", { path: p, error: String(err) });
     return false;
   }
 }
@@ -209,7 +255,7 @@ function numericIdsFlag(): string[] {
 }
 
 export function rsyncArgsBase(
-  opts: { dryRun?: boolean | string; verbose?: boolean | string },
+  opts: RsyncRunOptions,
   from: string,
   to: string,
 ) {
@@ -220,27 +266,21 @@ export function rsyncArgsBase(
     a.push("--whole-file");
   }
   if (verbose2) a.push("-v");
-  if (!opts.verbose) a.push("--quiet");
+  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
   return a;
   // NOTE: -I disables rsync's quick-check so listed files always copy.
 }
 
-export function rsyncArgsDirs(opts: {
-  dryRun?: boolean | string;
-  verbose?: boolean | string;
-}) {
+export function rsyncArgsDirs(opts: RsyncRunOptions) {
   // -d: transfer directories themselves (no recursion) — needed for empty dirs
   const a = ["-a", "-d", "--relative", "--from0", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (verbose2) a.push("-v");
-  if (!opts.verbose) a.push("--quiet");
+  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
   return a;
 }
 
-export function rsyncArgsDelete(opts: {
-  dryRun?: boolean | string;
-  verbose?: boolean | string;
-}) {
+export function rsyncArgsDelete(opts: RsyncRunOptions) {
   const a = [
     "-a",
     "--relative",
@@ -254,26 +294,20 @@ export function rsyncArgsDelete(opts: {
     a.unshift("-n");
   }
   if (verbose2) a.push("-v");
-  if (!opts.verbose) a.push("--quiet");
+  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
   return a;
 }
 
 // Metadata-only fixers (no content copy)
-export function rsyncArgsFixMeta(opts: {
-  dryRun?: boolean | string;
-  verbose?: boolean | string;
-}) {
+export function rsyncArgsFixMeta(opts: RsyncRunOptions) {
   // -a includes -pgo (perms, owner, group); --no-times prevents touching mtimes
   const a = ["-a", "--no-times", "--relative", "--from0", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (verbose2) a.push("-v");
-  if (!opts.verbose) a.push("--quiet");
+  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
   return a;
 }
-export function rsyncArgsFixMetaDirs(opts: {
-  dryRun?: boolean | string;
-  verbose?: boolean | string;
-}) {
+export function rsyncArgsFixMetaDirs(opts: RsyncRunOptions) {
   const a = [
     "-a",
     "-d",
@@ -284,7 +318,7 @@ export function rsyncArgsFixMetaDirs(opts: {
   ];
   if (opts.dryRun) a.unshift("-n");
   if (verbose2) a.push("-v");
-  if (!opts.verbose) a.push("--quiet");
+  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
   return a;
 }
 
@@ -292,10 +326,11 @@ export function run(
   cmd: string,
   args: string[],
   okCodes: number[] = [0],
-  verbose?: boolean | string,
+  opts: RsyncLogOptions = {},
 ): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
   const t = Date.now();
-  if (verbose) console.log(`$ ${cmd} ${argsJoin(args)}`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (debug) logger.debug("rsync exec", { cmd, args: argsJoin(args) });
   return new Promise((resolve) => {
     // ignore is critical for stdio since we don't read the output
     // and there is a lot, so it would otherwise DEADLOCK.
@@ -306,8 +341,13 @@ export function run(
       const zero = code === 0;
       const ok = code !== null && okCodes.includes(code!);
       resolve({ code, ok, zero });
-      if (verbose) {
-        console.log("time:", Date.now() - t, "ms");
+      if (debug) {
+        logger.debug("rsync exit", {
+          cmd,
+          code,
+          ok,
+          elapsedMs: Date.now() - t,
+        });
       }
     });
     p.on("error", () =>
@@ -349,14 +389,17 @@ export async function rsyncCopy(
     dryRun?: boolean | string;
     verbose?: boolean | string;
     compress?: RsyncCompressSpec;
+    logger?: Logger;
+    logLevel?: LogLevel;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
-  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
-    if (opts.verbose) console.log(`>>> rsync ${label}: nothing to do`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
+    if (debug) logger.debug(`>>> rsync ${label}: nothing to do`);
     return { ok: true, zero: false };
   }
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
   }
   const args = [
     ...rsyncArgsBase(opts, fromRoot, toRoot),
@@ -376,9 +419,12 @@ export async function rsyncCopy(
     args.push("-e", "ssh -oCompression=no");
   }
 
-  const res = await run("rsync", args, [0, 23, 24], opts.verbose); // accept partials
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label}: done (code ${res.code})`);
+  const res = await run("rsync", args, [0, 23, 24], opts); // accept partials
+  if (debug) {
+    logger.debug(`>>> rsync ${label}: done`, {
+      code: res.code,
+      ok: res.ok,
+    });
   }
   return { ok: res.ok, zero: res.zero };
 }
@@ -388,14 +434,21 @@ export async function rsyncCopyDirs(
   toRoot: string,
   listFile: string,
   label: string,
-  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+  opts: {
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
+  } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
-  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
-    if (opts.verbose) console.log(`>>> rsync ${label} (dirs): nothing to do`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
+    if (debug)
+      logger.debug(`>>> rsync ${label} (dirs): nothing to do`);
     return { ok: true, zero: false };
   }
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
   }
   const args = [
     ...rsyncArgsDirs(opts),
@@ -403,9 +456,12 @@ export async function rsyncCopyDirs(
     ensureTrailingSlash(fromRoot),
     ensureTrailingSlash(toRoot),
   ];
-  const res = await run("rsync", args, [0, 23, 24], opts.verbose);
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (dirs): done (code ${res.code})`);
+  const res = await run("rsync", args, [0, 23, 24], opts);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (dirs): done`, {
+      code: res.code,
+      ok: res.ok,
+    });
   }
   return { ok: res.ok, zero: res.zero };
 }
@@ -415,14 +471,20 @@ export async function rsyncFixMeta(
   toRoot: string,
   listFile: string,
   label: string,
-  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+  opts: {
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
+  } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
-  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
-    if (opts.verbose) console.log(`>>> rsync ${label}: nothing to do`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
+    if (debug) logger.debug(`>>> rsync ${label}: nothing to do`);
     return { ok: true, zero: false };
   }
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
   }
   const args = [
     ...rsyncArgsFixMeta(opts),
@@ -430,9 +492,12 @@ export async function rsyncFixMeta(
     ensureTrailingSlash(fromRoot),
     ensureTrailingSlash(toRoot),
   ];
-  const res = await run("rsync", args, [0, 23, 24], opts.verbose);
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (meta): done (code ${res.code})`);
+  const res = await run("rsync", args, [0, 23, 24], opts);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (meta): done`, {
+      code: res.code,
+      ok: res.ok,
+    });
   }
   return { ok: res.ok, zero: res.zero };
 }
@@ -442,15 +507,21 @@ export async function rsyncFixMetaDirs(
   toRoot: string,
   listFile: string,
   label: string,
-  opts: { dryRun?: boolean | string; verbose?: boolean | string } = {},
+  opts: {
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
+  } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
-  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
-    if (opts.verbose)
-      console.log(`>>> rsync ${label} (meta dirs): nothing to do`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
+    if (debug)
+      logger.debug(`>>> rsync ${label} (meta dirs): nothing to do`);
     return { ok: true, zero: false };
   }
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
   }
   const args = [
     ...rsyncArgsFixMetaDirs(opts),
@@ -458,9 +529,12 @@ export async function rsyncFixMetaDirs(
     ensureTrailingSlash(fromRoot),
     ensureTrailingSlash(toRoot),
   ];
-  const res = await run("rsync", args, [0, 23, 24], opts.verbose);
-  if (opts.verbose) {
-    console.log(`>>> rsync ${label} (meta dirs): done (code ${res.code})`);
+  const res = await run("rsync", args, [0, 23, 24], opts);
+  if (debug) {
+    logger.debug(`>>> rsync ${label} (meta dirs): done`, {
+      code: res.code,
+      ok: res.ok,
+    });
   }
   return { ok: res.ok, zero: res.zero };
 }
@@ -474,10 +548,13 @@ export async function rsyncDelete(
     forceEmptySource?: boolean;
     dryRun?: boolean | string;
     verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
   } = {},
 ): Promise<void> {
-  if (!(await fileNonEmpty(listFile, !!opts.verbose))) {
-    if (opts.verbose) console.log(`>>> rsync delete ${label}: nothing to do`);
+  const { logger, debug } = resolveLogContext(opts);
+  if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
+    if (debug) logger.debug(`>>> rsync delete ${label}: nothing to do`);
     return;
   }
 
@@ -490,8 +567,8 @@ export async function rsyncDelete(
       sourceRoot = ensureTrailingSlash(tmpEmptyDir);
     }
 
-    if (opts.verbose) {
-      console.log(
+    if (debug) {
+      logger.debug(
         `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
       );
     }
@@ -501,7 +578,7 @@ export async function rsyncDelete(
       sourceRoot,
       ensureTrailingSlash(toRoot),
     ];
-    await run("rsync", args, [0, 24], opts.verbose);
+    await run("rsync", args, [0, 24], opts);
   } finally {
     if (tmpEmptyDir) {
       await rm(tmpEmptyDir, { recursive: true, force: true });
@@ -520,20 +597,23 @@ export async function rsyncDeleteChunked(
     chunkSize?: number;
     dryRun?: boolean | string;
     verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
   } = {},
 ) {
   if (!rpaths.length) return;
+  const { logger, debug } = resolveLogContext(opts);
   const { chunkSize = 50_000 } = opts;
   const batches = chunk(rpaths, chunkSize);
-  if (opts.verbose) {
-    console.log(
+  if (debug) {
+    logger.debug(
       `>>> rsync delete ${label}: ${rpaths.length} in ${batches.length} batches of size at most ${chunkSize}`,
     );
   }
 
   for (let i = 0; i < batches.length; i++) {
-    if (opts.verbose) {
-      console.log(`>>> rsync delete ${label} [${i + 1}/${batches.length}]`);
+    if (debug) {
+      logger.debug(`>>> rsync delete ${label} [${i + 1}/${batches.length}]`);
     }
     const listFile = path.join(
       workDir,
@@ -549,6 +629,8 @@ export async function rsyncDeleteChunked(
         forceEmptySource: opts.forceEmptySource,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
+        logger,
+        logLevel: opts.logLevel,
       },
     );
   }

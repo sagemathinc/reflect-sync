@@ -19,6 +19,7 @@ import {
   listSupportedHashes,
   defaultHashAlg,
 } from "./hash.js";
+import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -62,7 +63,6 @@ function buildProgram(): Command {
       "--emit-since-ts <milliseconds>",
       "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
     )
-    .option("--verbose", "enable verbose logging", false)
     .addOption(
       new Option("--hash <algorithm>", "content hash algorithm")
         .choices(listSupportedHashes())
@@ -80,12 +80,13 @@ type ScanOptions = {
   db: string;
   emitDelta: boolean;
   emitRecentMs?: string;
-  verbose: boolean;
   hash: string;
   root: string;
   vacuum?: boolean;
   pruneMs?: string;
   numericIds?: boolean;
+  logger?: Logger;
+  logLevel?: LogLevel;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -94,12 +95,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     db: DB_PATH,
     emitDelta,
     emitRecentMs,
-    verbose,
     hash,
     vacuum,
     pruneMs,
     numericIds,
+    logger: providedLogger,
+    logLevel = "info",
   } = opts;
+  const logger = providedLogger ?? new ConsoleLogger(logLevel);
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -114,13 +117,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   };
 
   const HASH_ALG = normalizeHashAlg(hash);
-  if (verbose) {
-    console.log(`scan: using hash=${HASH_ALG}`);
-  }
-
-  if (verbose) {
-    console.log("running scan with database = ", DB_PATH);
-  }
+  logger.info(`scan: using hash=${HASH_ALG}`);
+  logger.debug("running scan", { db: DB_PATH, root });
 
   if (emitDelta) {
     process.stdout.write(
@@ -788,11 +786,11 @@ ON CONFLICT(path) DO UPDATE SET
       db.exec("vacuum");
     }
 
-    if (verbose) {
-      console.log(
-        `Scan done: ${dispatched} hashed / ${received} results in ${Date.now() - t0} ms`,
-      );
-    }
+    logger.info("scan complete", {
+      hashedFiles: dispatched,
+      hashedResults: received,
+      durationMs: Date.now() - t0,
+    });
   }
 
   await scan();

@@ -4,7 +4,33 @@ import { Command, Option } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
+import {
+  ConsoleLogger,
+  LOG_LEVELS,
+  parseLogLevel,
+  type LogLevel,
+} from "./logger.js";
 import pkg from "../package.json" with { type: "json" };
+
+function resolveLogLevel(command: Command): LogLevel {
+  const raw = (command.optsWithGlobals() as any)?.logLevel as
+    | string
+    | undefined;
+  return parseLogLevel(raw, "info");
+}
+
+function mergeOptsWithLogger<T extends Record<string, unknown>>(
+  command: Command,
+  opts: T,
+) {
+  const globals = command.optsWithGlobals() as Record<string, unknown> & {
+    logLevel?: string;
+  };
+  const { logLevel: _, ...restGlobals } = globals;
+  const level = resolveLogLevel(command);
+  const logger = new ConsoleLogger(level);
+  return { ...restGlobals, ...opts, logger, logLevel: level };
+}
 
 const program = new Command()
   .name(CLI_NAME)
@@ -13,7 +39,11 @@ const program = new Command()
 
 // Global flags you want available everywhere
 program
-  .option("--verbose", "verbose output", false)
+  .option(
+    "--log-level <level>",
+    `log verbosity (${LOG_LEVELS.join(", ")})`,
+    "info",
+  )
   .option("--dry-run", "do not modify files", false);
 
 registerSessionCommands(program);
@@ -57,7 +87,8 @@ program
       command,
     ) => {
       const { runScan } = await import("./scan.js");
-      await runScan({ ...command.optsWithGlobals(), ...opts });
+      const params = mergeOptsWithLogger(command, opts);
+      await runScan(params as any);
     },
   );
 
@@ -67,7 +98,8 @@ program
   .requiredOption("--db <path>", "sqlite db file")
   .action(async (opts: { db: string }, command) => {
     const { runIngestDelta } = await import("./ingest-delta.js");
-    await runIngestDelta({ ...command.optsWithGlobals(), ...opts });
+    const params = mergeOptsWithLogger(command, opts);
+    await runIngestDelta(params as any);
   });
 
 program
@@ -97,7 +129,9 @@ program
   )
   .action(async (opts, command) => {
     const { runMerge } = await import("./merge.js");
-    await runMerge({ ...command.optsWithGlobals(), ...opts });
+    const params = mergeOptsWithLogger(command, opts);
+    params.verbose = params.logLevel === "debug";
+    await runMerge(params as any);
   });
 
 program
@@ -155,9 +189,8 @@ program
     const { runScheduler, cliOptsToSchedulerOptions } = await import(
       "./scheduler.js"
     );
-    await runScheduler(
-      cliOptsToSchedulerOptions({ ...command.optsWithGlobals(), ...opts }),
-    );
+    const params = mergeOptsWithLogger(command, opts);
+    await runScheduler(cliOptsToSchedulerOptions(params));
   });
 
 program
