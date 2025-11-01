@@ -316,7 +316,7 @@ export async function runScheduler({
         stdio: extra.stdio ?? "ignore",
         ...extra,
       });
-      p.on("exit", (code) => {
+      p.once("exit", (code) => {
         lastZero = code === 0;
         const ok = code !== null && okCodes.includes(code);
         procLog.debug("exit", {
@@ -327,7 +327,7 @@ export async function runScheduler({
         });
         resolve({ code, ms: Date.now() - t0, ok, lastZero });
       });
-      p.on("error", () => {
+      p.once("error", () => {
         procLog.warn("spawn failed", { cmd });
         resolve({
           code: 1,
@@ -515,10 +515,37 @@ export async function runScheduler({
     }
 
     const tee = new PassThrough();
-    stdout.pipe(tee);
-
     const ingestStream = new PassThrough();
     const watchStream = new PassThrough();
+
+    // ensure errors on the source propagate
+    stdout.on("error", (err) => {
+      remoteLog.error("ssh stdout error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      tee.destroy(err as Error);
+    });
+
+    tee.on("error", (err) => {
+      ingestStream.destroy(err as Error);
+      watchStream.destroy(err as Error);
+    });
+
+    ingestStream.on("error", (err) => {
+      remoteLog.error("ingest stream error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      watchStream.destroy(err as Error);
+    });
+
+    watchStream.on("error", (err) => {
+      remoteLog.error("watch stream error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      ingestStream.destroy(err as Error);
+    });
+
+    stdout.pipe(tee);
     tee.pipe(ingestStream);
     tee.pipe(watchStream);
 
@@ -573,6 +600,9 @@ export async function runScheduler({
       } catch {}
       try {
         tee.destroy();
+      } catch {}
+      try {
+        stdout.destroy();
       } catch {}
     };
 

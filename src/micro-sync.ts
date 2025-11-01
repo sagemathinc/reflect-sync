@@ -201,7 +201,7 @@ export function makeMicroSync({
   ) {
     // --delete-missing-args ensures a missing source path deletes the dest
     // --force allows removing non-empty directories when targeted
-    return doRsync(direction, listFile, [
+    return await doRsync(direction, listFile, [
       "--delete-missing-args",
       "--force",
       "--dirs",
@@ -216,7 +216,7 @@ export function makeMicroSync({
     // Keep attributes like -a but suppress recursion:
     //   --no-recursive overrides -r from -a, --dirs copies directory entries,
     //   symlinks are handled via -l inside -a.
-    return doRsync(direction, listFile, ["--no-recursive", "--dirs"]);
+    return await doRsync(direction, listFile, ["--no-recursive", "--dirs"]);
   }
 
   return async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
