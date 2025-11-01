@@ -97,11 +97,11 @@ The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON de
 ```bash
 reflect create <alpha> <beta>         # start a new session
 reflect list                          # list sessions
-reflect status <id>                   # show heartbeat / merge status
-reflect logs <id> [--follow]          # stream recent structured logs
-reflect pause <id...>                 # pause one or more sessions
-reflect resume <id...>                # resume (and auto-start scheduler if needed)
-reflect terminate <id...>             # stop and remove session state
+reflect status <id-or-name>                   # show heartbeat / merge status
+reflect logs <id-or-name> [--follow]          # stream recent structured logs
+reflect pause <id-or-name...>                 # pause one or more sessions
+reflect resume <id-or-name...>                # resume (and auto-start scheduler if needed)
+reflect terminate <id-or-name...>             # stop and remove session state
 ```
 
 All commands honor `--session-db <path>` if you want to keep session metadata outside the default location.
