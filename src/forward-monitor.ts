@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { setTimeout as wait } from "node:timers/promises";
 import { argsJoin } from "./remote.js";
 import {
@@ -8,6 +8,7 @@ import {
   loadForwardById,
   updateForwardSession,
   type ForwardRow,
+  type ForwardPatch,
 } from "./session-db.js";
 
 function buildProgram(): Command {
@@ -46,55 +47,106 @@ export async function runForwardMonitor(sessionDb: string, id: number) {
 
   let backoffMs = 1000;
   const maxBackoff = 30_000;
+  let shuttingDown = false;
+  let currentChild: ChildProcess | null = null;
 
-  while (true) {
+  const stopChild = () => {
+    if (currentChild && !currentChild.killed) {
+      try {
+        currentChild.kill("SIGTERM");
+      } catch {}
+    }
+  };
+
+  const handleSignal = () => {
+    shuttingDown = true;
+    stopChild();
+  };
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGQUIT"];
+  for (const sig of signals) {
+    process.on(sig, handleSignal);
+  }
+
+  try {
+    while (!shuttingDown) {
+      const row = loadForwardById(sessionDb, id);
+      if (!row) {
+        break;
+      }
+      if (row.desired_state !== "running") {
+        updateForwardSession(sessionDb, id, {
+          actual_state: "stopped",
+          monitor_pid: null,
+        });
+        break;
+      }
+
+      updateForwardSession(sessionDb, id, {
+        monitor_pid: process.pid,
+        actual_state: "running",
+        last_error: null,
+      });
+
+      const args = buildSshArgs(row);
+      updateForwardSession(sessionDb, id, {
+        ssh_args: argsJoin(["ssh", ...args]),
+      });
+      const child = spawn("ssh", args, {
+        stdio: "inherit",
+      });
+      currentChild = child;
+
+      const exitCode: number | null = await new Promise((resolve) => {
+        child.once("exit", (code) => resolve(code));
+        child.once("error", () => resolve(1));
+      });
+
+      currentChild = null;
+
+      if (shuttingDown) {
+        break;
+      }
+
+      const latest = loadForwardById(sessionDb, id);
+      if (!latest) {
+        break;
+      }
+
+      if (latest.desired_state !== "running") {
+        updateForwardSession(sessionDb, id, {
+          actual_state: "stopped",
+          monitor_pid: null,
+        });
+        break;
+      }
+
+      updateForwardSession(sessionDb, id, {
+        actual_state: "error",
+        last_error: exitCode === 0 ? null : `ssh exited with code ${exitCode}`,
+        monitor_pid: null,
+      });
+
+      await wait(backoffMs);
+      if (shuttingDown) {
+        break;
+      }
+      backoffMs = Math.min(backoffMs * 2, maxBackoff);
+    }
+  } finally {
+    stopChild();
     const row = loadForwardById(sessionDb, id);
-    if (!row) {
-      return;
-    }
-    if (row.desired_state !== "running") {
-      updateForwardSession(sessionDb, id, {
-        actual_state: "stopped",
+    if (row) {
+      const patch: ForwardPatch = {
         monitor_pid: null,
-      });
-      return;
+      };
+      if (shuttingDown || row.desired_state !== "running") {
+        patch.actual_state = "stopped";
+      }
+      updateForwardSession(sessionDb, id, patch);
     }
-
-    updateForwardSession(sessionDb, id, {
-      monitor_pid: process.pid,
-      actual_state: "running",
-      last_error: null,
-    });
-
-    const args = buildSshArgs(row);
-    updateForwardSession(sessionDb, id, {
-      ssh_args: argsJoin(["ssh", ...args]),
-    });
-    const child = spawn("ssh", args, {
-      stdio: "inherit",
-    });
-
-    const exitCode: number | null = await new Promise((resolve) => {
-      child.once("exit", (code) => resolve(code));
-      child.once("error", () => resolve(1));
-    });
-
-    if (row.desired_state !== "running") {
-      updateForwardSession(sessionDb, id, {
-        actual_state: "stopped",
-        monitor_pid: null,
-      });
-      if (exitCode === 0) return;
+    for (const sig of signals) {
+      process.off(sig, handleSignal);
     }
-
-    updateForwardSession(sessionDb, id, {
-      actual_state: "error",
-      last_error: exitCode === 0 ? null : `ssh exited with code ${exitCode}`,
-      monitor_pid: null,
-    });
-
-    await wait(backoffMs);
-    backoffMs = Math.min(backoffMs * 2, maxBackoff);
   }
 }
 
