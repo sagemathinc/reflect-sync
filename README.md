@@ -129,9 +129,22 @@ reflect daemon stop                           # stop the supervisor (removes the
 
 All commands honor `--session-db <path>` if you want to keep session metadata outside the default location.
 
+### SSH port forwards
+
+Reflect can keep long-lived SSH tunnels alive via the forwarding monitor:
+
+```bash
+reflect forward create localhost:8443 user@host:443    # local -> remote
+reflect forward create user@host:2222:22 :2022         # remote -> local
+reflect forward list                                   # ASCII table with live PIDs & ssh args
+reflect forward terminate <id-or-name>
+```
+
+Each forward row stores its `ssh` invocation and is supervised by the background `forward-monitor` worker. The monitor reuses the CLI’s global `--session-db` option, so custom database locations \(for testing or multi\-user setups\) work automatically. The worker restarts the tunnel on failure and records the supervising PID in the database so `reflect forward list` can surface health at a glance.  If the reflect daemon is running \(`reflect daemon start`\) it will ensure that a monitor and forwarding session is running for all forwards.
+
 ---
 
-## How it works (short)
+## How Reflect works \(short\)
 
 - **Scan** writes metadata (`path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime`) to SQLite. Hashing is streamed and parallelized; we only rehash when `ctime` changed since the last hash.
 - **Merge** builds temp tables with _relative_ paths, computes the 3-way plan (changed A, changed B, deleted A/B, resolve conflicts by `--prefer`), then feeds rsync with NUL-separated `--files-from` lists.
@@ -303,3 +316,4 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+

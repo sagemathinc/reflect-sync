@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/index.js",
