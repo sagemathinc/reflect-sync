@@ -20,7 +20,6 @@ import {
 } from "./session-manage.js";
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
-import { registerSessionFlush } from "./session-flush.js";
 import { registerSessionSync } from "./session-sync.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 import {
@@ -523,7 +522,6 @@ export function registerSessionCommands(program: Command) {
 
   registerSessionMonitor(program);
   registerSessionSync(program);
-  registerSessionFlush(program);
   registerSessionStatus(program);
   registerSessionDaemon(program);
 }
