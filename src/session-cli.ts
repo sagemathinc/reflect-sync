@@ -179,7 +179,6 @@ export function registerSessionCommands(program: Command) {
           opts: any,
           command: Command,
         ) => {
-          console.log(opts);
           const sessionDb = resolveSessionDb(opts, command);
           const cliLogger = new ConsoleLogger(getLogLevel());
           try {

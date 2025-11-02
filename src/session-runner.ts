@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { argsJoin } from "./remote.js";
 import {
   deriveSessionPaths,
   getReflectSyncHome,
@@ -63,7 +62,8 @@ export function spawnSchedulerForSession(
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 
-  console.log(`${process.execPath} ${argsJoin(args)}`);
+  // Debug output suppressed to avoid polluting CLI stdout contracts.
+  // console.log(`${process.execPath} ${argsJoin(args)}`);
   const child = spawn(process.execPath, args, {
     stdio: "ignore",
     detached: true,
