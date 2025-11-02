@@ -40,7 +40,7 @@ function buildSshArgs(row: ForwardRow): string[] {
   return args;
 }
 
-async function runMonitor(sessionDb: string, id: number) {
+export async function runForwardMonitor(sessionDb: string, id: number) {
   const db = ensureSessionDb(sessionDb);
   db.close();
 
@@ -98,9 +98,9 @@ async function runMonitor(sessionDb: string, id: number) {
   }
 }
 
-async function main() {
+export async function runForwardMonitorCli(argv = process.argv) {
   const program = buildProgram();
-  const opts = program.parse(process.argv).opts<{
+  const opts = program.parse(argv).opts<{
     sessionDb: string;
     id: string;
   }>();
@@ -108,10 +108,12 @@ async function main() {
   if (!Number.isInteger(id) || id <= 0) {
     throw new Error("invalid forward id");
   }
-  await runMonitor(opts.sessionDb, id);
+  await runForwardMonitor(opts.sessionDb, id);
 }
 
-main().catch((err) => {
-  console.error("forward monitor fatal", err);
-  process.exit(1);
-});
+if (process.argv[1] && process.argv[1].includes("forward-monitor")) {
+  runForwardMonitorCli().catch((err) => {
+    console.error("forward monitor fatal", err);
+    process.exit(1);
+  });
+}

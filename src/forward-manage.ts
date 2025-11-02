@@ -27,19 +27,15 @@ export interface ParsedEndpoint {
   sshPort?: number | null;
 }
 
-const LOCAL_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "::1",
-  "0.0.0.0",
-  "",
-]);
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0", ""]);
 
 function parseLocalEndpoint(spec: string): { host: string; port: number } {
   const trimmed = spec.trim();
   const match = /^(?:(?<host>[^:]*):)?(?<port>\d+)$/.exec(trimmed);
   if (!match) {
-    throw new Error(`Invalid local endpoint '${spec}', expected host:port or :port`);
+    throw new Error(
+      `Invalid local endpoint '${spec}', expected host:port or :port`,
+    );
   }
   const host = match.groups?.host?.trim() ?? "";
   const port = Number(match.groups?.port);
@@ -66,22 +62,32 @@ function normalizeLocalHost(host: string): string {
 
 function parseEndpoint(spec: string): ParsedEndpoint {
   const trimmed = spec.trim();
-  const remoteMatch = /^(?:(?<user>[^@]+)@)?(?<host>[^:]+)(?::(?<sshPort>\d+))?:(?<port>\d+)$/.exec(trimmed);
+  const remoteMatch =
+    /^(?:(?<user>[^@]+)@)?(?<host>[^:]+)(?::(?<sshPort>\d+))?:(?<port>\d+)$/.exec(
+      trimmed,
+    );
   if (remoteMatch) {
     const user = remoteMatch.groups?.user;
     const hostPart = remoteMatch.groups!.host.trim();
-    const sshPort = remoteMatch.groups?.sshPort ? Number(remoteMatch.groups?.sshPort) : null;
+    const sshPort = remoteMatch.groups?.sshPort
+      ? Number(remoteMatch.groups?.sshPort)
+      : null;
     const port = Number(remoteMatch.groups!.port);
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error(`Invalid port in endpoint '${spec}'`);
     }
-    if (sshPort != null && (!Number.isInteger(sshPort) || sshPort <= 0 || sshPort > 65535)) {
+    if (
+      sshPort != null &&
+      (!Number.isInteger(sshPort) || sshPort <= 0 || sshPort > 65535)
+    ) {
       throw new Error(`Invalid SSH port in endpoint '${spec}'`);
     }
     const hostLower = hostPart.toLowerCase();
     const treatAsLocal =
       !user &&
-      (LOCAL_HOSTS.has(hostLower) || hostLower.startsWith("127.") || hostLower === "::1");
+      (LOCAL_HOSTS.has(hostLower) ||
+        hostLower.startsWith("127.") ||
+        hostLower === "::1");
     if (!treatAsLocal) {
       const sshHost = user ? `${user}@${hostPart}` : hostPart;
       return {
@@ -124,7 +130,8 @@ export function createForward({
   if (direction === "local_to_remote") {
     const remote = rightEp;
     const local = leftEp;
-    if (!remote.sshHost) throw new Error("Remote endpoint must include ssh host");
+    if (!remote.sshHost)
+      throw new Error("Remote endpoint must include ssh host");
     sshHost = remote.sshHost;
     sshPort = remote.sshPort ?? null;
     localHost = local.host;
@@ -134,7 +141,8 @@ export function createForward({
   } else {
     const remote = leftEp;
     const local = rightEp;
-    if (!remote.sshHost) throw new Error("Remote endpoint must include ssh host");
+    if (!remote.sshHost)
+      throw new Error("Remote endpoint must include ssh host");
     sshHost = remote.sshHost;
     sshPort = remote.sshPort ?? null;
     localHost = local.host;
@@ -154,7 +162,8 @@ export function createForward({
     remote_host: remoteHost,
     remote_port: remotePort,
     desired_state: "running",
-    actual_state: process.env.REFLECT_DISABLE_FORWARD === "1" ? "stopped" : "running",
+    actual_state:
+      process.env.REFLECT_DISABLE_FORWARD === "1" ? "stopped" : "running",
   });
 
   if (process.env.REFLECT_DISABLE_FORWARD !== "1") {
