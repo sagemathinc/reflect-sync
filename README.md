@@ -15,17 +15,19 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 
 Open source under the MIT License.
 
-## Status: NOT READY FOR PRODUCTION
+## STATUS: **NOT** SAFE
 
-**reflect is NOT READY FOR PRODUCTION USE YET!** There is still a significant todo list of subtle edge cases to handle, features to implement, tests to put in place, etc. Do not use this. Our plan is to finish this quickly, then put this into major production on https://cocalc.com, and then I'll update this README when it is much safer to trust reflect with your files.
+That said, all the planned functionality is implemented and there is a test suite.  Also, this is a relatively lightweight program built on sqlite, rsync and nodejs, and those three components rock solid.   **Do NOT trust valuable data to reflect without extensive backups.**
 
 Some differences compared to Mutagen, and todos:
 
-- the command line options are different \-\- it's just inspired by Mutagen, not a drop in replacement
+- the command line options are different:  it's inspired by Mutagen, not a drop in replacement
 - conflicts are resolved using **last write wins** \(clocks are sync'd\), with close ties resolved by one chosen side always wins. There is no manual resolution mode.
-- we use Sha\-256 by default, but also support "sha512", "blake2b512", "blake2s256", "sha3-256", and "sha3-512".
+- we use Sha\-256 by default, but also support "sha1", "sha1", "sha512", "blake2b512", "blake2s256", "sha3\\-256", and "sha3\\-512".
 - only supports macos and linux \(currently\)
 - timestamps and permissions are fully preserved, whereas Mutagen mostly ignores them
+- edit sessions after you create them
+- query for total bytes under a directory, recent files, etc.
 
 See [Design Details](./DESIGN.md).
 
@@ -55,7 +57,7 @@ pnpm build
 pnpm test
 ```
 
-The package exposes the `reflect` CLI (and aliases `rfsync` and `reflect-sync`) via its `bin` map.
+The package exposes the `reflect-sync` CLI (and aliases `reflect`) via its `bin` map.
 
 ---
 
@@ -330,3 +332,4 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+
