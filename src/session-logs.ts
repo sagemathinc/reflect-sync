@@ -6,7 +6,7 @@ import {
   StructuredLogger,
   levelsAtOrAbove,
 } from "./logger.js";
-import { ensureSessionDb } from "./session-db.js";
+import { ensureSessionDb, openSessionDb } from "./session-db.js";
 import type { Database } from "./db.js";
 
 const DEFAULT_KEEP_MS = envNumber("SESSION_LOG_KEEP_MS", 7 * 24 * 60 * 60 * 1000);
@@ -184,7 +184,7 @@ export function fetchSessionLogs(
     message,
   }: SessionLogQuery = {},
 ): SessionLogRow[] {
-  const db = ensureSessionDb(sessionDbPath);
+  const db = openSessionDb(sessionDbPath);
   try {
     const where: string[] = ["session_id = ?"];
     const params: any[] = [sessionId];

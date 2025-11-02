@@ -396,6 +396,10 @@ function open(sessionDbPath = getSessionDbPath()): Database {
   return db;
 }
 
+export function openSessionDb(sessionDbPath = getSessionDbPath()): Database {
+  return open(sessionDbPath);
+}
+
 export function createSession(
   sessionDbPath: string,
   input: SessionCreateInput,
