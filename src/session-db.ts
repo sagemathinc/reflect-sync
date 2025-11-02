@@ -490,6 +490,13 @@ export function createForwardSession(
   }
 }
 
+function mapForwardRow(row: any): ForwardRow {
+  return {
+    ...row,
+    ssh_compress: Number(row.ssh_compress ?? 0),
+  } as ForwardRow;
+}
+
 export function loadForwardById(
   sessionDbPath: string,
   id: number,
@@ -500,10 +507,23 @@ export function loadForwardById(
       .prepare(`SELECT * FROM ssh_sessions WHERE id = ?`)
       .get(id) as any;
     if (!row) return undefined;
-    return {
-      ...row,
-      ssh_compress: Number(row.ssh_compress ?? 0),
-    } as ForwardRow;
+    return mapForwardRow(row);
+  } finally {
+    db.close();
+  }
+}
+
+export function loadForwardByName(
+  sessionDbPath: string,
+  name: string,
+): ForwardRow | undefined {
+  const db = open(sessionDbPath);
+  try {
+    const row = db
+      .prepare(`SELECT * FROM ssh_sessions WHERE name = ?`)
+      .get(name) as any;
+    if (!row) return undefined;
+    return mapForwardRow(row);
   } finally {
     db.close();
   }
@@ -517,10 +537,7 @@ export function selectForwardSessions(
     const rows = db
       .prepare(`SELECT * FROM ssh_sessions ORDER BY id ASC`)
       .all() as any[];
-    return rows.map((row) => ({
-      ...row,
-      ssh_compress: Number(row.ssh_compress ?? 0),
-    })) as ForwardRow[];
+    return rows.map((row) => mapForwardRow(row)) as ForwardRow[];
   } finally {
     db.close();
   }
@@ -699,6 +716,18 @@ export function resolveSessionRow(
     return loadSessionById(sessionDbPath, Number(trimmed));
   }
   return loadSessionByName(sessionDbPath, trimmed);
+}
+
+export function resolveForwardRow(
+  sessionDbPath: string,
+  ref: string,
+): ForwardRow | undefined {
+  const trimmed = ref.trim();
+  if (!trimmed) return undefined;
+  if (isNumericString(trimmed)) {
+    return loadForwardById(sessionDbPath, Number(trimmed));
+  }
+  return loadForwardByName(sessionDbPath, trimmed);
 }
 
 /* ============================================================================

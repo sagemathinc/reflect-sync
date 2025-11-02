@@ -103,4 +103,57 @@ describe("reflect forward CLI", () => {
     const gone = loadForwardById(sessionDbPath, 1);
     expect(gone).toBeUndefined();
   });
+
+  it("terminates multiple forwards by id or name", async () => {
+    const program = buildProgram();
+    // Create first forward without name
+    await program.parseAsync(
+      [
+        "node",
+        "reflect",
+        "--session-db",
+        sessionDbPath,
+        "forward",
+        "create",
+        ":5001",
+        "user@example.com:6001",
+      ],
+      { from: "node" },
+    );
+
+    // Create second forward with name
+    await program.parseAsync(
+      [
+        "node",
+        "reflect",
+        "--session-db",
+        sessionDbPath,
+        "forward",
+        "create",
+        ":5002",
+        "user@example.com:6002",
+        "--name",
+        "named-forward",
+      ],
+      { from: "node" },
+    );
+
+    const terminateProgram = buildProgram();
+    await terminateProgram.parseAsync(
+      [
+        "node",
+        "reflect",
+        "--session-db",
+        sessionDbPath,
+        "forward",
+        "terminate",
+        "1",
+        "named-forward",
+      ],
+      { from: "node" },
+    );
+
+    expect(loadForwardById(sessionDbPath, 1)).toBeUndefined();
+    expect(loadForwardById(sessionDbPath, 2)).toBeUndefined();
+  });
 });

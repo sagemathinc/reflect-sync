@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
-import { ensureSessionDb, getSessionDbPath, loadForwardById } from "./session-db.js";
+import { ensureSessionDb, getSessionDbPath, resolveForwardRow } from "./session-db.js";
 import { createForward, listForwards, terminateForward } from "./forward-manage.js";
 import { ConsoleLogger } from "./logger.js";
 
@@ -92,21 +92,30 @@ export function registerForwardCommands(program: Command) {
   forward
     .command("terminate")
     .description("Terminate a forward")
-    .argument("<id>", "forward id")
+    .argument("<id-or-name...>", "forward id(s) or name(s)")
     .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
-    .action((idArg: string, opts: any, command: Command) => {
+    .action((refs: string[], opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
-      const id = Number(idArg);
-      if (!Number.isInteger(id) || id <= 0) {
-        console.error("forward terminate: id must be an integer");
+      const targets = refs.map((r) => r.trim()).filter(Boolean);
+      if (!targets.length) {
+        console.error("forward terminate: at least one id or name is required");
         process.exit(1);
       }
-      const row = loadForwardById(sessionDb, id);
-      if (!row) {
-        console.error(`forward '${id}' not found`);
-        process.exit(1);
+
+      let hadError = false;
+      for (const ref of targets) {
+        const row = resolveForwardRow(sessionDb, ref);
+        if (!row) {
+          console.error(`forward '${ref}' not found`);
+          hadError = true;
+          continue;
+        }
+        terminateForward(sessionDb, row.id);
+        console.log(`terminated forward ${row.name ?? row.id}`);
       }
-      terminateForward(sessionDb, id);
-      console.log(`terminated forward ${row.name ?? id}`);
+
+      if (hadError) {
+        process.exitCode = 1;
+      }
     });
 }
