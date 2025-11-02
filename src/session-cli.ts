@@ -297,7 +297,7 @@ export function registerSessionCommands(program: Command) {
       .command("edit")
       .description("Modify an existing session")
       .argument("<id-or-name>", "session id or name")
-      .option("--name <name>", "rename the session")
+      .option("-n, --name <name>", "rename the session")
       .option("--compress <algorithm>", "set rsync compression algorithm")
       .option(
         "--compress-level <level>",

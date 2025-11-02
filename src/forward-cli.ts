@@ -26,7 +26,7 @@ export function registerForwardCommands(program: Command) {
     .description("Create an SSH port forward")
     .argument("<left>", "left endpoint (host:port or :port)")
     .argument("<right>", "right endpoint (user@host[:sshPort]:port or host:port)")
-    .option("--name <name>", "friendly name")
+    .option("-n, --name <name>", "friendly name")
     .option("--compress", "enable SSH compression", false)
     .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
     .action(async (left: string, right: string, opts: any, command: Command) => {
