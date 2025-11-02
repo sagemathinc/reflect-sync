@@ -35,6 +35,7 @@ import { fmtLocalPath } from "./session-status.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
 import { registerSessionDaemon } from "./session-daemon.js";
 import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
+import { queryRecent, querySize } from "./session-query.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -291,6 +292,161 @@ export function registerSessionCommands(program: Command) {
         }
 
         console.log(table.toString());
+      }),
+  );
+
+  const sideOption = () =>
+    new Option("--side <side>", "which session side to inspect")
+      .choices(["alpha", "beta"])
+      .default("alpha");
+
+  const numberFormatter = new Intl.NumberFormat("en-US");
+
+  const humanFileSize = (bytes: number): string => {
+    if (!Number.isFinite(bytes)) return "-";
+    const sign = bytes < 0 ? -1 : 1;
+    let value = Math.abs(bytes);
+    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    const formatted = value >= 10 ? value.toFixed(1) : value.toFixed(2);
+    return `${sign < 0 ? "-" : ""}${formatted.replace(/\.0+$/, "")} ${units[unitIndex]}`;
+  };
+
+  const query = program
+    .command("query")
+    .description("Run analytic queries against session metadata");
+
+  addSessionDbOption(
+    query
+      .command("size")
+      .description("Sum file sizes tracked by the session")
+      .argument("<id-or-name>", "session id or name")
+      .addOption(sideOption())
+      .option("--path <path>", "limit to a file or directory within the session")
+      .option("--json", "emit JSON output", false)
+      .action(async (ref: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        let row: SessionRow;
+        try {
+          row = requireSessionRow(sessionDb, ref);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+        const side = (opts.side ?? "alpha") as "alpha" | "beta";
+        try {
+          const result = await querySize({
+            session: row,
+            side,
+            path: opts.path,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const table = new AsciiTable3("Session Size")
+            .setHeading("Field", "Value")
+            .setStyle("unicode-round");
+          table.setAlign(0, AlignmentEnum.LEFT);
+          table.setAlign(1, AlignmentEnum.LEFT);
+          table.addRow("Side", result.side);
+          table.addRow("Root", result.rootPath);
+          if (result.pathProvided) {
+            table.addRow("Path", result.targetPath);
+          }
+          table.addRow("Kind", result.kind);
+          table.addRow(
+            "Files",
+            numberFormatter.format(result.fileCount),
+          );
+          table.addRow(
+            "Total bytes",
+            `${numberFormatter.format(result.totalBytes)} (${humanFileSize(result.totalBytes)})`,
+          );
+          console.log(table.toString());
+        } catch (err) {
+          console.error(`query size failed: ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
+      }),
+  );
+
+  addSessionDbOption(
+    query
+      .command("recent")
+      .description("Show most recently modified files")
+      .argument("<id-or-name>", "session id or name")
+      .addOption(sideOption())
+      .option("--path <path>", "limit to a directory or file within the session")
+      .option("--json", "emit JSON output", false)
+      .option("--max <n>", "maximum number of files to return (default 50)")
+      .action(async (ref: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        let row: SessionRow;
+        try {
+          row = requireSessionRow(sessionDb, ref);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+        const limitRaw =
+          opts.max !== undefined && opts.max !== null ? Number(opts.max) : 50;
+        if (!Number.isInteger(limitRaw) || limitRaw <= 0) {
+          console.error("reflect query recent: --max must be a positive integer");
+          process.exitCode = 1;
+          return;
+        }
+        const side = (opts.side ?? "alpha") as "alpha" | "beta";
+        try {
+          const result = await queryRecent({
+            session: row,
+            side,
+            path: opts.path,
+            limit: limitRaw,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          console.log(`Side: ${result.side}`);
+          console.log(`Root: ${result.rootPath}`);
+          if (result.pathProvided) {
+            console.log(`Path: ${result.targetPath}`);
+          }
+          if (!result.files.length) {
+            console.log("No files found.");
+            return;
+          }
+          const table = new AsciiTable3("Recent Files")
+            .setHeading("Path", "Size", "Modified", "Age")
+            .setStyle("unicode-round");
+          [0, 1, 2, 3].forEach((idx) =>
+            table.setAlign(idx, AlignmentEnum.LEFT),
+          );
+          for (const file of result.files) {
+            table.addRow(
+              file.relativePath,
+              `${numberFormatter.format(file.size)} (${humanFileSize(file.size)})`,
+              new Date(file.mtime).toLocaleString(),
+              fmtAgo(file.mtime),
+            );
+          }
+          console.log(table.toString());
+          if (result.hasMore) {
+            console.log(
+              `Showing ${result.files.length} of ${result.limit} records (more available).`,
+            );
+          }
+        } catch (err) {
+          console.error(`query recent failed: ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
       }),
   );
 

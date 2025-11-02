@@ -129,6 +129,20 @@ reflect daemon stop                           # stop the supervisor (removes the
 
 All commands honor `--session-db <path>` if you want to keep session metadata outside the default location.
 
+### Session queries
+
+The sync databases already track file metadata, so you can pull summaries without re-scanning the filesystem:
+
+```bash
+reflect query size 3                      # total logical bytes on alpha side
+reflect query size --side=beta 3          # beta side
+reflect query size --path=work 3          # only files under “work/”
+reflect query recent --max=20 3           # 20 most recently touched files
+reflect query recent --path=logs --json 3 # JSON output for scripting
+```
+
+Paths must live inside the session root (after ignore rules); for remote sessions the command resolves `~/` via SSH just like the scheduler.
+
 ### SSH port forwards
 
 Reflect can keep long-lived SSH tunnels alive via the forwarding monitor:
@@ -316,4 +330,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-
