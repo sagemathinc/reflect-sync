@@ -276,4 +276,7 @@ if (process.argv.length <= 2) {
 }
 
 // Parse user args
-program.parse();
+const normalizedArgv = process.argv.map((arg) =>
+  arg === "--no-ignore" ? "--clear-ignore" : arg,
+);
+program.parse(normalizedArgv);

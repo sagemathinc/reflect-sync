@@ -136,6 +136,8 @@ export interface SessionPatch {
   alpha_digest?: string | null;
   beta_digest?: string | null;
   compress?: string | null;
+  hash_alg?: string | null;
+  ignore_rules?: string | null;
 }
 
 export interface SessionRow {

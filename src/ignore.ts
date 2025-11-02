@@ -1,5 +1,6 @@
 import ignore from "ignore";
 import path from "node:path";
+import os from "node:os";
 
 export type Ignorer = {
   ignoresFile: (r: string) => boolean; // file/symlink path
@@ -49,7 +50,15 @@ export function deserializeIgnoreRules(raw?: string | null): string[] {
   return normalizeIgnorePatterns(lines);
 }
 
-export function collectIgnoreOption(value: string, acc: string[]): string[] {
+export function collectIgnoreOption(
+  value: string,
+  previous?: string[] | string,
+): string[] {
+  const acc = Array.isArray(previous)
+    ? [...previous]
+    : typeof previous === "string" && previous
+      ? [previous]
+      : [];
   if (typeof value !== "string") return acc;
   const parts = value
     .split(",")
@@ -76,7 +85,13 @@ export function autoIgnoreForRoot(
   syncHome: string,
 ): string[] {
   if (!root || !syncHome) return [];
-  const rootAbs = path.resolve(root);
+  const resolveTilde = (p: string) => {
+    if (!p) return p;
+    if (p === "~") return os.homedir();
+    if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+    return p;
+  };
+  const rootAbs = path.resolve(resolveTilde(root));
   const homeAbs = path.resolve(syncHome);
   const rel = path.relative(rootAbs, homeAbs);
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {

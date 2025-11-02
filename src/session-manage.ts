@@ -10,12 +10,23 @@ import {
   materializeSessionPaths,
   updateSession,
   clearSessionRuntime,
+  upsertLabels,
+  setActualState,
+  setDesiredState,
+  recordHeartbeat,
+  type SessionPatch,
 } from "./session-db.js";
 import { ensureRemoteParentDir, sshDeleteDirectory } from "./remote.js";
 import { dirname } from "node:path";
 import { CLI_NAME } from "./constants.js";
 import { rm } from "node:fs/promises";
 import type { Logger } from "./logger.js";
+import {
+  deserializeIgnoreRules,
+  normalizeIgnorePatterns,
+  serializeIgnoreRules,
+} from "./ignore.js";
+import { spawnSchedulerForSession } from "./session-runner.js";
 
 // Attempt to stop a scheduler by PID
 export function stopPid(pid: number): boolean {
@@ -286,6 +297,52 @@ function parseLabelPairs(pairs: string[]): Record<string, string> {
   return out;
 }
 
+function combineCompress(
+  current: string | null,
+  next?: string,
+  level?: string,
+): string {
+  let base = next ?? current ?? "auto";
+  base = base.trim() || "auto";
+  let explicitLevel: string | undefined;
+
+  const applyLevel = (lvl?: string) => {
+    if (lvl === undefined) return;
+    const trimmed = lvl.trim();
+    if (!trimmed) {
+      explicitLevel = undefined;
+    } else {
+      explicitLevel = trimmed;
+    }
+  };
+
+  const split = (value: string) => {
+    const idx = value.indexOf(":");
+    if (idx >= 0) {
+      const b = value.slice(0, idx);
+      const lvl = value.slice(idx + 1);
+      return { base: b, level: lvl };
+    }
+    return { base: value, level: undefined };
+  };
+
+  if (next && next.includes(":")) {
+    const parts = split(next);
+    base = parts.base;
+    explicitLevel = parts.level;
+  } else if (current && !next && current.includes(":")) {
+    const parts = split(current);
+    base = parts.base;
+    explicitLevel = parts.level;
+  }
+
+  if (level !== undefined) {
+    applyLevel(level);
+  }
+
+  return explicitLevel ? `${base}:${explicitLevel}` : base;
+}
+
 export async function newSession({
   alphaSpec,
   betaSpec,
@@ -394,4 +451,227 @@ export async function newSession({
     }
     throw err;
   }
+}
+
+export interface SessionEditOptions {
+  sessionDb: string;
+  id: number;
+  name?: string | null;
+  compress?: string;
+  compressLevel?: string;
+  ignoreAdd?: string[];
+  resetIgnore?: boolean;
+  labels?: string[];
+  hash?: string;
+  alphaSpec?: string;
+  betaSpec?: string;
+  reset?: boolean;
+  logger?: Logger;
+}
+
+export async function editSession(options: SessionEditOptions) {
+  const {
+    sessionDb,
+    id,
+    name,
+    compress,
+    compressLevel,
+    ignoreAdd,
+    resetIgnore,
+    labels,
+    hash,
+    alphaSpec,
+    betaSpec,
+    reset,
+    logger,
+  } = options;
+
+  ensureSessionDb(sessionDb);
+  const row = loadSessionById(sessionDb, id);
+  if (!row) {
+    throw new Error(`session ${id} not found`);
+  }
+
+  const changes: string[] = [];
+  const updates: SessionPatch = {};
+  let needRestart = false;
+  let resetRequested = !!reset;
+  const wasRunning = !!row.scheduler_pid && row.actual_state === "running";
+
+  // Name update
+  if (name !== undefined) {
+    const trimmed = name === null ? "" : String(name).trim();
+    const nextName = trimmed || null;
+    if (nextName !== row.name) {
+      if (nextName && /^\d+$/.test(nextName)) {
+        throw new Error("Session name must include non-numeric characters.");
+      }
+      if (nextName) {
+        const existing = loadSessionByName(sessionDb, nextName);
+        if (existing && existing.id !== id) {
+          throw new Error(`Session name '${nextName}' is already in use (id=${existing.id}).`);
+        }
+      }
+      updates.name = nextName;
+      changes.push(`name=${nextName ?? "-"}`);
+    }
+  }
+
+  // Compress update
+  if (compress !== undefined || compressLevel !== undefined) {
+    const currentCompress = row.compress ?? "auto";
+    const nextCompress = combineCompress(row.compress ?? null, compress, compressLevel);
+    if (nextCompress !== currentCompress) {
+      updates.compress = nextCompress;
+      changes.push(`compress=${nextCompress}`);
+      needRestart = true;
+    }
+  }
+
+  // Ignore rules
+  const ignoreAdds = Array.isArray(ignoreAdd) ? ignoreAdd : [];
+  if (resetIgnore || ignoreAdds.length) {
+    let patterns = deserializeIgnoreRules(row.ignore_rules);
+    if (resetIgnore) patterns = [];
+    if (ignoreAdds.length) patterns.push(...ignoreAdds);
+    const merged = normalizeIgnorePatterns(patterns);
+    const nextBlob = serializeIgnoreRules(merged);
+    if (nextBlob !== row.ignore_rules) {
+      updates.ignore_rules = nextBlob;
+      changes.push("ignore");
+      needRestart = true;
+    }
+  }
+
+  // Labels
+  if (labels && labels.length) {
+    upsertLabels(sessionDb, id, parseLabelPairs(labels));
+    changes.push("labels");
+  }
+
+  // Hash updates require reset
+  if (hash !== undefined) {
+    if (!resetRequested) {
+      throw new Error("--reset is required when changing the hash algorithm");
+    }
+    if (hash !== row.hash_alg) {
+      updates.hash_alg = hash;
+      changes.push(`hash=${hash}`);
+    }
+  }
+
+  let alphaEndpoint: Endpoint = {
+    host: row.alpha_host ?? undefined,
+    port: row.alpha_port ?? undefined,
+    root: row.alpha_root,
+  };
+  let betaEndpoint: Endpoint = {
+    host: row.beta_host ?? undefined,
+    port: row.beta_port ?? undefined,
+    root: row.beta_root,
+  };
+
+  if (alphaSpec !== undefined) {
+    if (!resetRequested) {
+      throw new Error("--reset is required when changing the alpha endpoint");
+    }
+    alphaEndpoint = parseEndpoint(alphaSpec);
+    changes.push("alpha");
+  }
+  if (betaSpec !== undefined) {
+    if (!resetRequested) {
+      throw new Error("--reset is required when changing the beta endpoint");
+    }
+    betaEndpoint = parseEndpoint(betaSpec);
+    changes.push("beta");
+  }
+
+  if (alphaEndpoint.host && betaEndpoint.host) {
+    throw new Error("Both sides remote is not supported yet (rsync two-remote).");
+  }
+
+  if (alphaSpec !== undefined) {
+    updates.alpha_root = alphaEndpoint.root;
+    updates.alpha_host = alphaEndpoint.host ?? null;
+    updates.alpha_port = alphaEndpoint.port ?? null;
+    needRestart = true;
+  }
+  if (betaSpec !== undefined) {
+    updates.beta_root = betaEndpoint.root;
+    updates.beta_host = betaEndpoint.host ?? null;
+    updates.beta_port = betaEndpoint.port ?? null;
+    needRestart = true;
+  }
+
+  let alphaRemoteDb = row.alpha_remote_db;
+  let betaRemoteDb = row.beta_remote_db;
+  const remoteEnsures: Array<Promise<void>> = [];
+
+  if (resetRequested && (alphaSpec !== undefined || betaSpec !== undefined)) {
+    const engineId = getOrCreateEngineId(getReflectSyncHome());
+    const nsBase = `~/.local/share/${CLI_NAME}/by-origin/${engineId}/sessions/${id}`;
+    if (alphaEndpoint.host) {
+      alphaRemoteDb = `${nsBase}/alpha.db`;
+      remoteEnsures.push(
+        ensureRemoteParentDir({
+          host: alphaEndpoint.host,
+          port: alphaEndpoint.port ?? undefined,
+          path: alphaRemoteDb,
+          logger,
+        }),
+      );
+    } else {
+      alphaRemoteDb = null;
+    }
+    if (betaEndpoint.host) {
+      betaRemoteDb = `${nsBase}/beta.db`;
+      remoteEnsures.push(
+        ensureRemoteParentDir({
+          host: betaEndpoint.host,
+          port: betaEndpoint.port ?? undefined,
+          path: betaRemoteDb,
+          logger,
+        }),
+      );
+    } else {
+      betaRemoteDb = null;
+    }
+    updates.alpha_remote_db = alphaRemoteDb;
+    updates.beta_remote_db = betaRemoteDb;
+  }
+
+  if (Object.keys(updates).length) {
+    updateSession(sessionDb, id, updates);
+  }
+
+  await Promise.all(remoteEnsures);
+
+  if (resetRequested) {
+    await resetSession({ sessionDb, id, logger });
+    changes.push("reset");
+  } else if (wasRunning && needRestart) {
+    if (row.scheduler_pid) {
+      stopPid(row.scheduler_pid);
+    }
+    setActualState(sessionDb, id, "paused");
+  }
+
+  const shouldRestart = wasRunning && (resetRequested || needRestart);
+  const updatedRow = loadSessionById(sessionDb, id);
+  if (shouldRestart && updatedRow) {
+    const pid = spawnSchedulerForSession(sessionDb, updatedRow);
+    setDesiredState(sessionDb, id, "running");
+    setActualState(sessionDb, id, pid ? "running" : "error");
+    if (pid) {
+      recordHeartbeat(sessionDb, id, "running", pid);
+    } else {
+      logger?.error("failed to restart session", { sessionId: id });
+    }
+  }
+
+  return {
+    changes,
+    restarted: shouldRestart,
+    reset: resetRequested,
+  };
 }

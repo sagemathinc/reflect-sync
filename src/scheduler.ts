@@ -258,11 +258,10 @@ export async function runScheduler({
 
   const syncHome = getReflectSyncHome();
   const baseIgnore = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
-  const ignoreRules = normalizeIgnorePatterns([
-    ...baseIgnore,
-    ...autoIgnoreForRoot(alphaRoot, syncHome),
-    ...autoIgnoreForRoot(betaRoot, syncHome),
-  ]);
+  const autoIgnores: string[] = [];
+  if (!alphaHost) autoIgnores.push(...autoIgnoreForRoot(alphaRoot, syncHome));
+  if (!betaHost) autoIgnores.push(...autoIgnoreForRoot(betaRoot, syncHome));
+  const ignoreRules = normalizeIgnorePatterns([...baseIgnore, ...autoIgnores]);
 
   // ---------- scheduler state ----------
   let running = false,

@@ -17,6 +17,7 @@ import {
   terminateSession,
   newSession,
   resetSession,
+  editSession,
 } from "./session-manage.js";
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionMonitor } from "./session-monitor.js";
@@ -289,6 +290,83 @@ export function registerSessionCommands(program: Command) {
         }
 
         console.log(table.toString());
+      }),
+  );
+
+  addSessionDbOption(
+    program
+      .command("edit")
+      .description("Modify an existing session")
+      .argument("<id-or-name>", "session id or name")
+      .option("--name <name>", "rename the session")
+      .option("--compress <algorithm>", "set rsync compression algorithm")
+      .option(
+        "--compress-level <level>",
+        "set compression level (e.g. zstd: -131072..22)",
+      )
+      .option(
+        "-i, --ignore <pattern>",
+        "gitignore-style ignore rule (repeat or comma-separated)",
+        collectIgnoreOption,
+        [] as string[],
+      )
+      .addOption(
+        new Option(
+          "--clear-ignore",
+          "reset ignore rules before applying updates",
+        )
+          .preset(true)
+          .default(false),
+      )
+      .option("-l, --label <k=v>", "upsert a session label", collectLabels, [] as string[])
+      .option("--hash <algorithm>", "change hash algorithm (requires --reset)")
+      .option("--alpha <endpoint>", "update alpha endpoint (requires --reset)")
+      .option("--beta <endpoint>", "update beta endpoint (requires --reset)")
+      .option("--reset", "reset session state after applying changes", false)
+      .action(async (ref: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        let row: SessionRow;
+        try {
+          row = requireSessionRow(sessionDb, ref);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+
+        const cliLogger = new ConsoleLogger(getLogLevel());
+        try {
+          const result = await editSession({
+            sessionDb,
+            id: row.id,
+            name: opts.name,
+            compress: opts.compress,
+            compressLevel: opts.compressLevel,
+            ignoreAdd: Array.isArray(opts.ignore) ? opts.ignore : [],
+            resetIgnore: !!opts.clearIgnore,
+            labels: opts.label || [],
+            hash: opts.hash,
+            alphaSpec: opts.alpha,
+            betaSpec: opts.beta,
+            reset: !!opts.reset,
+            logger: cliLogger,
+          });
+
+          const updatedRow = loadSessionById(sessionDb, row.id) ?? row;
+          const label = updatedRow.name ?? String(updatedRow.id);
+          if (!result.changes.length) {
+            console.log(`no changes applied to session ${label}`);
+          } else {
+            console.log(`updated session ${label}: ${result.changes.join(", ")}`);
+          }
+          if (result.restarted) {
+            console.log("session restarted");
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`failed to edit session ${row.name ?? row.id}: ${message}`);
+          process.exitCode = 1;
+        }
       }),
   );
 
