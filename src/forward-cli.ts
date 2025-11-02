@@ -54,11 +54,20 @@ export function registerForwardCommands(program: Command) {
     .command("list")
     .description("List SSH port forwards")
     .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
+    .option("--json", "emit JSON instead of a table", false)
     .action((opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
       const rows = listForwards(sessionDb);
       if (!rows.length) {
-        console.log("no forwards");
+        if (opts.json) {
+          console.log("[]");
+        } else {
+          console.log("no forwards");
+        }
+        return;
+      }
+      if (opts.json) {
+        console.log(JSON.stringify(rows, null, 2));
         return;
       }
       const table = new AsciiTable3("Forwards")
