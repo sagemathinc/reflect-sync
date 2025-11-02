@@ -237,7 +237,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at       INTEGER NOT NULL,
         updated_at       INTEGER NOT NULL,
-        name             TEXT,
+        name             TEXT UNIQUE,
 
         alpha_root       TEXT NOT NULL,
         beta_root        TEXT NOT NULL,
@@ -353,7 +353,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at     INTEGER NOT NULL,
         updated_at     INTEGER NOT NULL,
-        name           TEXT,
+        name           TEXT UNIQUE,
         direction      TEXT NOT NULL CHECK(direction IN ('local_to_remote','remote_to_local')),
         ssh_host       TEXT NOT NULL,
         ssh_port       INTEGER,
