@@ -36,6 +36,7 @@ import { spawnSchedulerForSession } from "./session-runner.js";
 import { registerSessionDaemon } from "./session-daemon.js";
 import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
 import { queryRecent, querySize } from "./session-query.js";
+import { diffSession } from "./session-diff.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -202,8 +203,7 @@ export function registerSessionCommands(program: Command) {
               console.log(`started session ${id} (pid ${pid})`);
             }
           } catch (err) {
-            const message =
-              err instanceof Error ? err.message : String(err);
+            const message = err instanceof Error ? err.message : String(err);
             console.error(`failed to create session: ${message}`);
             process.exitCode = 1;
           }
@@ -326,7 +326,10 @@ export function registerSessionCommands(program: Command) {
       .description("Sum file sizes tracked by the session")
       .argument("<id-or-name>", "session id or name")
       .addOption(sideOption())
-      .option("--path <path>", "limit to a file or directory within the session")
+      .option(
+        "--path <path>",
+        "limit to a file or directory within the session",
+      )
       .option("--json", "emit JSON output", false)
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
@@ -360,10 +363,7 @@ export function registerSessionCommands(program: Command) {
             table.addRow("Path", result.targetPath);
           }
           table.addRow("Kind", result.kind);
-          table.addRow(
-            "Files",
-            numberFormatter.format(result.fileCount),
-          );
+          table.addRow("Files", numberFormatter.format(result.fileCount));
           table.addRow(
             "Total bytes",
             `${numberFormatter.format(result.totalBytes)} (${humanFileSize(result.totalBytes)})`,
@@ -382,7 +382,10 @@ export function registerSessionCommands(program: Command) {
       .description("Show most recently modified files")
       .argument("<id-or-name>", "session id or name")
       .addOption(sideOption())
-      .option("--path <path>", "limit to a directory or file within the session")
+      .option(
+        "--path <path>",
+        "limit to a directory or file within the session",
+      )
       .option("--json", "emit JSON output", false)
       .option("--max <n>", "maximum number of files to return (default 50)")
       .action(async (ref: string, opts: any, command: Command) => {
@@ -398,7 +401,9 @@ export function registerSessionCommands(program: Command) {
         const limitRaw =
           opts.max !== undefined && opts.max !== null ? Number(opts.max) : 50;
         if (!Number.isInteger(limitRaw) || limitRaw <= 0) {
-          console.error("reflect query recent: --max must be a positive integer");
+          console.error(
+            "reflect query recent: --max must be a positive integer",
+          );
           process.exitCode = 1;
           return;
         }
@@ -475,7 +480,12 @@ export function registerSessionCommands(program: Command) {
           .preset(true)
           .default(false),
       )
-      .option("-l, --label <k=v>", "upsert a session label", collectLabels, [] as string[])
+      .option(
+        "-l, --label <k=v>",
+        "upsert a session label",
+        collectLabels,
+        [] as string[],
+      )
       .option("--hash <algorithm>", "change hash algorithm (requires --reset)")
       .option("--alpha <endpoint>", "update alpha endpoint (requires --reset)")
       .option("--beta <endpoint>", "update beta endpoint (requires --reset)")
@@ -514,14 +524,18 @@ export function registerSessionCommands(program: Command) {
           if (!result.changes.length) {
             console.log(`no changes applied to session ${label}`);
           } else {
-            console.log(`updated session ${label}: ${result.changes.join(", ")}`);
+            console.log(
+              `updated session ${label}: ${result.changes.join(", ")}`,
+            );
           }
           if (result.restarted) {
             console.log("session restarted");
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          console.error(`failed to edit session ${row.name ?? row.id}: ${message}`);
+          console.error(
+            `failed to edit session ${row.name ?? row.id}: ${message}`,
+          );
           process.exitCode = 1;
         }
       }),
@@ -616,6 +630,61 @@ export function registerSessionCommands(program: Command) {
           process.once("SIGINT", stop);
           process.once("SIGTERM", stop);
         });
+      }),
+  );
+
+  addSessionDbOption(
+    program
+      .command("diff")
+      .description("Show paths that differ between alpha and beta")
+      .argument("<id-or-name>", "session id or name")
+      .option("--max-paths <n>", "maximum number of paths to display")
+      .option("--json", "emit JSON output", false)
+      .action(async (ref: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        let row: SessionRow;
+        try {
+          row = requireSessionRow(sessionDb, ref);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+        try {
+          const differences = diffSession(row, {
+            limit: opts.maxPaths ? Number(opts.maxPaths) : undefined,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(differences, null, 2));
+            return;
+          }
+          if (!differences.length) {
+            console.log("alpha and beta are synchronized (no differences)");
+            return;
+          }
+          const table = new AsciiTable3("Session Differences")
+            .setHeading("Path", "Type", "Modified", "Age")
+            .setStyle("unicode-round");
+          [0, 1, 2, 3].forEach((idx) =>
+            table.setAlign(idx, AlignmentEnum.LEFT),
+          );
+          for (const entry of differences) {
+            const mtime = entry.mtime
+              ? new Date(entry.mtime).toLocaleString()
+              : "-";
+            const age = entry.mtime ? fmtAgo(entry.mtime) : "-";
+            table.addRow(entry.path, entry.type, mtime, age);
+          }
+          console.log(table.toString());
+          if (opts.maxPaths && differences.length === opts.maxPaths) {
+            console.log(
+              `Showing first ${opts.maxPaths} paths. Use --max-paths to adjust the limit.`,
+            );
+          }
+        } catch (err) {
+          console.error(`diff failed: ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
       }),
   );
 
