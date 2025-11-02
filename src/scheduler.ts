@@ -10,6 +10,7 @@
 import { spawn, ChildProcess } from "node:child_process";
 import chokidar from "chokidar";
 import path from "node:path";
+import { stat } from "node:fs/promises";
 import { Command, Option } from "commander";
 import readline from "node:readline";
 import { cliEntrypoint } from "./cli-util.js";
@@ -25,7 +26,13 @@ import { ensureSessionDb, SessionWriter } from "./session-db.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
-import { expandHome, isRoot, remoteWhich } from "./remote.js";
+import {
+  expandHome,
+  isRoot,
+  remoteDirExists,
+  remoteWhich,
+  RemoteConnectionError,
+} from "./remote.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
@@ -337,6 +344,105 @@ export async function runScheduler({
 
   const clamp = (x: number, lo: number, hi: number) =>
     Math.max(lo, Math.min(hi, x));
+
+  class MissingRootError extends Error {
+    constructor(
+      readonly side: "alpha" | "beta",
+      message: string,
+    ) {
+      super(message);
+      this.name = "MissingRootError";
+    }
+  }
+
+  class RemoteRootUnavailableError extends Error {
+    constructor(
+      readonly side: "alpha" | "beta",
+      message: string,
+      readonly cause?: unknown,
+    ) {
+      super(message);
+      this.name = "RemoteRootUnavailableError";
+    }
+  }
+
+  let missingRootError: MissingRootError | null = null;
+
+  function formatRootLocation(side: "alpha" | "beta"): string {
+    const root = side === "alpha" ? alphaRoot : betaRoot;
+    const host = side === "alpha" ? alphaHost : betaHost;
+    const port = side === "alpha" ? alphaPort : betaPort;
+    if (!host) return root;
+    const hostPart = port != null ? `${host}:${port}` : host;
+    return `${hostPart}:${root}`;
+  }
+
+  async function dirExistsLocal(pathToCheck: string): Promise<boolean> {
+    try {
+      const st = await stat(pathToCheck);
+      return st.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  function failMissingRoot(side: "alpha" | "beta"): never {
+    if (missingRootError) throw missingRootError;
+    const location = formatRootLocation(side);
+    const message = `sync root missing: ${side} root '${location}' does not exist`;
+    log("error", "scheduler", message);
+    sessionWriter?.error(message);
+    missingRootError = new MissingRootError(side, message);
+    throw missingRootError;
+  }
+
+  async function ensureRootsExist({
+    localOnly = false,
+  }: { localOnly?: boolean } = {}): Promise<void> {
+    if (missingRootError) throw missingRootError;
+
+    if (!alphaIsRemote) {
+      if (!(await dirExistsLocal(alphaRoot))) failMissingRoot("alpha");
+    } else if (!localOnly) {
+      try {
+        const ok = await remoteDirExists({
+          host: alphaHost!,
+          path: alphaRoot,
+          port: alphaPort,
+          logger,
+        });
+        if (!ok) failMissingRoot("alpha");
+      } catch (err) {
+        if (err instanceof RemoteConnectionError) {
+          const message = `remote alpha root unreachable (${formatRootLocation("alpha")}): ${err.message}`;
+          throw new RemoteRootUnavailableError("alpha", message, err);
+        }
+        throw err;
+      }
+    }
+
+    if (!betaIsRemote) {
+      if (!(await dirExistsLocal(betaRoot))) failMissingRoot("beta");
+    } else if (!localOnly) {
+      try {
+        const ok = await remoteDirExists({
+          host: betaHost!,
+          path: betaRoot,
+          port: betaPort,
+          logger,
+        });
+        if (!ok) failMissingRoot("beta");
+      } catch (err) {
+        if (err instanceof RemoteConnectionError) {
+          const message = `remote beta root unreachable (${formatRootLocation("beta")}): ${err.message}`;
+          throw new RemoteRootUnavailableError("beta", message, err);
+        }
+        throw err;
+      }
+    }
+  }
+
+  await ensureRootsExist();
 
   function rel(root: string, full: string): string {
     let r = path.relative(root, full);
@@ -822,6 +928,20 @@ export async function runScheduler({
 
   // ---------- full cycle ----------
   async function oneCycle(): Promise<void> {
+    try {
+      await ensureRootsExist();
+    } catch (err) {
+      if (err instanceof RemoteRootUnavailableError) {
+        log("warn", "scheduler", err.message);
+        sessionWriter?.error(err.message);
+        backoffMs = Math.min(
+          backoffMs ? backoffMs * 2 : 10_000,
+          MAX_BACKOFF_MS,
+        );
+      }
+      throw err;
+    }
+
     running = true;
     const t0 = Date.now();
 
@@ -1198,6 +1318,7 @@ export async function runScheduler({
   async function idleWaitWithCommandPolling(totalMs: number) {
     let remaining = totalMs;
     while (remaining > 0) {
+      await ensureRootsExist({ localOnly: true });
       const executed = await processSessionCommands();
       if (executed) return;
       const slice = Math.min(CMD_POLL_MS, remaining);
@@ -1231,7 +1352,21 @@ export async function runScheduler({
     while (true) {
       if (!running) {
         pending = false;
-        await oneCycle();
+        try {
+          await oneCycle();
+        } catch (err) {
+          if (err instanceof RemoteRootUnavailableError) {
+            const delay = clamp(
+              backoffMs || MIN_INTERVAL_MS,
+              MIN_INTERVAL_MS,
+              MAX_INTERVAL_MS,
+            );
+            log("info", "scheduler", `remote root unavailable; retrying in ${delay} ms`);
+            await idleWaitWithCommandPolling(delay);
+            continue;
+          }
+          throw err;
+        }
         ensureRemoteStreams(); // recreate if they died during the cycle
         const baseNext = clamp(
           lastCycleMs * 2,
@@ -1308,8 +1443,11 @@ export async function runScheduler({
   process.once("SIGINT", onSig);
   process.once("SIGTERM", onSig);
 
-  await loop();
-  await cleanup();
+  try {
+    await loop();
+  } finally {
+    await cleanup();
+  }
 }
 
 cliEntrypoint<SchedulerOptions>(

@@ -197,6 +197,61 @@ export async function ensureRemoteParentDir({
   await ssh(host, args, logCfg, cmd);
 }
 
+export class RemoteConnectionError extends Error {
+  override readonly cause?: unknown;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "RemoteConnectionError";
+    this.cause = options?.cause;
+  }
+}
+
+export async function remoteDirExists({
+  host,
+  path,
+  logger,
+  verbose,
+  port,
+}: {
+  host: string;
+  path: string;
+  logger?: Logger;
+  verbose?: boolean;
+  port?: number;
+}): Promise<boolean> {
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+  ];
+  if (port != null) {
+    args.push("-p", String(port));
+  }
+  const escapedPath = shellEscape(path);
+  const command = `if test -d ${escapedPath}; then printf yes; else printf no; fi`;
+  args.push(host, `sh -lc ${shellEscape(command)}`);
+  const logCfg: RemoteLogOptions | undefined =
+    logger || verbose ? { logger, verbose } : undefined;
+  try {
+    const { stdout } = await ssh(
+      host,
+      args,
+      logCfg,
+      `test -d ${path}`,
+    );
+    const out = stdout.trim();
+    return out === "yes";
+  } catch (err) {
+    throw new RemoteConnectionError(
+      `failed to check directory '${path}' on ${host}`,
+      { cause: err },
+    );
+  }
+}
+
 export async function sshDeleteDirectory({
   host,
   path,
