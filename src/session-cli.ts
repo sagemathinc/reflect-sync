@@ -201,7 +201,10 @@ export function registerSessionCommands(program: Command) {
               console.log(`started session ${id} (pid ${pid})`);
             }
           } catch (err) {
-            console.error("failed to create session", err);
+            const message =
+              err instanceof Error ? err.message : String(err);
+            console.error(`failed to create session: ${message}`);
+            process.exitCode = 1;
           }
         },
       ),
