@@ -1,4 +1,5 @@
 import ignore from "ignore";
+import path from "node:path";
 
 export type Ignorer = {
   ignoresFile: (r: string) => boolean; // file/symlink path
@@ -68,6 +69,22 @@ export function createIgnorer(patterns: string[] = []): Ignorer {
     ignoresFile: (r) => ig.ignores(normalizeR(r)),
     ignoresDir: (r) => ig.ignores(toDirPattern(normalizeR(r))),
   };
+}
+
+export function autoIgnoreForRoot(
+  root: string,
+  syncHome: string,
+): string[] {
+  if (!root || !syncHome) return [];
+  const rootAbs = path.resolve(root);
+  const homeAbs = path.resolve(syncHome);
+  const rel = path.relative(rootAbs, homeAbs);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return [];
+  }
+  const posix = rel.split(path.sep).join("/");
+  const dirPattern = posix.endsWith("/") ? posix : `${posix}/`;
+  return normalizeIgnorePatterns([dirPattern]);
 }
 
 function ignoredByEitherFile(r: string, aIg: Ignorer, bIg: Ignorer): boolean {

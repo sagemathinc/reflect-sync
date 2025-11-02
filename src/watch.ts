@@ -18,7 +18,9 @@ import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import {
   collectIgnoreOption,
   normalizeIgnorePatterns,
+  autoIgnoreForRoot,
 } from "./ignore.js";
+import { getReflectSyncHome } from "./session-db.js";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -105,7 +107,10 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     maxHotWatchers,
     ignoreRules: rawIgnoreRules,
   } = opts;
-  const ignoreRules = normalizeIgnorePatterns(rawIgnoreRules ?? []);
+  const rootAbs = path.resolve(root);
+  const ignoreRaw = Array.isArray(rawIgnoreRules) ? [...rawIgnoreRules] : [];
+  ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
+  const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
   // Ensure process terminate when stdin closes (so this also closes when
   // used via ssh)
@@ -122,8 +127,6 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       process.stdin.resume();
     }
   })();
-
-  const rootAbs = path.resolve(root);
 
   const hotMgr = new HotWatchManager(
     rootAbs,

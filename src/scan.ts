@@ -12,6 +12,7 @@ import {
   collectIgnoreOption,
   createIgnorer,
   normalizeIgnorePatterns,
+  autoIgnoreForRoot,
 } from "./ignore.js";
 import { toRel } from "./path-rel.js";
 import { isRecent } from "./hotwatch.js";
@@ -24,6 +25,7 @@ import {
   defaultHashAlg,
 } from "./hash.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
+import { getReflectSyncHome } from "./session-db.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -120,6 +122,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const ignoreRaw: string[] = [];
   if (Array.isArray(ignoreRulesOpt)) ignoreRaw.push(...ignoreRulesOpt);
   if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
+  const absRoot = path.resolve(root);
+  const syncHome = getReflectSyncHome();
+  ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
   // Rows written to DB always use rpaths now.
@@ -474,8 +479,6 @@ ON CONFLICT(path) DO UPDATE SET
     string, // ABS
     { size: number; ctime: number; mtime: number }
   >();
-
-  const absRoot = path.resolve(root);
 
   // Handle worker replies (batched)
   for (const w of workers) {
