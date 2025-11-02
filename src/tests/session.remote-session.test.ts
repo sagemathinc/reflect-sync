@@ -47,6 +47,7 @@ describe("newSession remote ports", () => {
       label: [],
       name: undefined,
       logger: undefined,
+      ignore: undefined,
     } as any);
 
     const row = loadSessionById(sessionDb, id)!;

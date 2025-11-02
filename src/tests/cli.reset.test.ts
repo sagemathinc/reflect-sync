@@ -60,6 +60,7 @@ describe("reflect reset CLI", () => {
       label: [],
       name: sessionName,
       logger,
+      ignore: undefined,
     });
 
     const now = Date.now();
