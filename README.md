@@ -69,10 +69,12 @@ reflect create /path/to/alpha /path/to/beta
 reflect list
 reflect status 1
 reflect logs 1
+reflect create /path/to/alpha /path/to/beta --ignore=node_modules --ignore="*.log"
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
 - File changes are pushed in realtime via a micro-sync path while the main loop verifies and updates the base snapshot for last write wins 3-way merge semantics.
+- Ignore rules can be provided at creation time with repeated `--ignore` flags (comma-separated or repeated). They’re stored in the session database and applied symmetrically to both sides (scans, merge planning, local/remote watchers, and rsync stages).
 
 ### 2) One side over SSH
 

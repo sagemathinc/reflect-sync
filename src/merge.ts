@@ -7,8 +7,14 @@ import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { getBaseDb, getDb } from "./db.js";
-import { loadIgnoreFile, filterIgnored, filterIgnoredDirs } from "./ignore.js";
-import { CLI_NAME, IGNORE_FILE } from "./constants.js";
+import {
+  collectIgnoreOption,
+  createIgnorer,
+  filterIgnored,
+  filterIgnoredDirs,
+  normalizeIgnorePatterns,
+} from "./ignore.js";
+import { CLI_NAME } from "./constants.js";
 import {
   rsyncCopyChunked,
   rsyncCopyDirs,
@@ -71,6 +77,12 @@ function buildProgram(): Command {
       "--log-level <level>",
       `log verbosity (${LOG_LEVELS.join(", ")})`,
       "info",
+    )
+    .option(
+      "-i, --ignore <pattern>",
+      "gitignore-style ignore rule (repeat or comma-separated)",
+      collectIgnoreOption,
+      [] as string[],
     );
 }
 
@@ -93,6 +105,7 @@ type MergeRsyncOptions = {
   sessionDb?: string;
   logger?: Logger;
   logLevel?: LogLevel | string;
+  ignoreRules?: string[];
 };
 
 // ---------- helpers ----------
@@ -122,6 +135,7 @@ export async function runMerge({
   logger: providedLogger,
   logLevel = "info",
   verbose,
+  ignoreRules: rawIgnoreRules = [],
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -146,8 +160,9 @@ export async function runMerge({
     sshPort,
   };
 
-  const alphaIg = await loadIgnoreFile(alphaRoot);
-  const betaIg = await loadIgnoreFile(betaRoot);
+  const ignoreRules = normalizeIgnorePatterns(rawIgnoreRules);
+  const alphaIg = createIgnorer(ignoreRules);
+  const betaIg = createIgnorer(ignoreRules);
 
   const t = (label: string) => {
     if (!debug) return () => {};
@@ -1058,12 +1073,6 @@ export async function runMerge({
       logger.debug("ignores filtered plan counts", { dropped: delta });
     }
 
-    const dropInternal = (xs: string[]) =>
-      xs.filter((r) => r.split("/").pop() !== IGNORE_FILE);
-    toBeta = dropInternal(toBeta);
-    toAlpha = dropInternal(toAlpha);
-    delInBeta = dropInternal(delInBeta);
-    delInAlpha = dropInternal(delInAlpha);
     done();
 
     // ---------- overlaps + dir delete safety ----------

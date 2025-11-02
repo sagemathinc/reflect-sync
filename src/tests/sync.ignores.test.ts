@@ -3,15 +3,14 @@
 // pnpm test sync.ignores.test.ts
 //
 // Ignore-focused scenarios: copy suppression, delete suppression,
-// negation (!pattern), directory-level ignores, and symlink-path ignores.
+// directory-level ignores, and symlink-path ignores.
 
 import { sync, dirExists, fileExists, linkExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
-import { IGNORE_FILE } from "../constants";
 
-describe("rfsync: ignore rules (IGNORE_FILE)", () => {
+describe("rfsync: ignore rules", () => {
   let tmp: string;
 
   beforeAll(async () => {
@@ -19,122 +18,80 @@ describe("rfsync: ignore rules (IGNORE_FILE)", () => {
   });
 
   afterAll(async () => {
-    // comment out to inspect failures
     await fsp.rm(tmp, { recursive: true, force: true });
   });
 
-  test("*.log ignored on alpha prevents alpha→beta copy", async () => {
-    const r = await mkCase(tmp, "t-ig-alpha-nocopy");
-    const aIg = join(r.aRoot, IGNORE_FILE);
-    const aLogs = join(r.aRoot, "logs");
-    const aLog = join(aLogs, "app.log");
-    const bLog = join(r.bRoot, "logs", "app.log");
+  test("*.log ignored prevents alpha→beta copy", async () => {
+    const r = await mkCase(tmp, "t-ig-alpha-copy");
+    const alphaLog = join(r.aRoot, "logs", "app.log");
+    const betaLog = join(r.bRoot, "logs", "app.log");
+    await fsp.mkdir(join(r.aRoot, "logs"), { recursive: true });
+    await fsp.writeFile(alphaLog, "alpha logs");
 
-    await fsp.writeFile(aIg, "*.log\n");
-    await fsp.mkdir(aLogs, { recursive: true });
-    await fsp.writeFile(aLog, "secret logs");
-
-    await sync(r, "alpha"); // would copy without ignore
-
-    await expect(fileExists(bLog)).resolves.toBe(false);
+    await sync(r, "alpha", undefined, ["--ignore", "*.log"]);
+    await expect(fileExists(betaLog)).resolves.toBe(false);
   });
 
-  test("ignore prevents delete (alpha ignores path, deletes locally; beta keeps its copy)", async () => {
+  test("*.log ignored prevents beta→alpha copy", async () => {
+    const r = await mkCase(tmp, "t-ig-beta-copy");
+    const alphaLog = join(r.aRoot, "logs", "app.log");
+    const betaLog = join(r.bRoot, "logs", "app.log");
+    await fsp.mkdir(join(r.bRoot, "logs"), { recursive: true });
+    await fsp.writeFile(betaLog, "beta logs");
+
+    await sync(r, "beta", undefined, ["--ignore", "*.log"]);
+    await expect(fileExists(alphaLog)).resolves.toBe(false);
+  });
+
+  test("ignore prevents delete from propagating", async () => {
     const r = await mkCase(tmp, "t-ig-no-delete");
-    const aIg = join(r.aRoot, IGNORE_FILE);
-    const aFile = join(r.aRoot, "keep.txt");
-    const bFile = join(r.bRoot, "keep.txt");
+    const shared = join(r.aRoot, "keep.txt");
+    const betaFile = join(r.bRoot, "keep.txt");
 
-    // seed file on both sides
-    await fsp.writeFile(aFile, "keep");
+    await fsp.writeFile(shared, "keep");
     await sync(r, "alpha");
-    await expect(fileExists(bFile)).resolves.toBe(true);
+    await expect(fileExists(betaFile)).resolves.toBe(true);
 
-    // now ignore + delete on alpha
-    await fsp.writeFile(aIg, "keep.txt\n");
-    await fsp.rm(aFile, { force: true });
-    await sync(r, "alpha");
+    await fsp.rm(shared, { force: true });
+    await sync(r, "alpha", undefined, ["--ignore", "keep.txt"]);
 
-    // beta keeps its file; alpha's deletion is local-only
-    await expect(fileExists(bFile)).resolves.toBe(true);
-    await expect(fileExists(aFile)).resolves.toBe(false);
+    await expect(fileExists(betaFile)).resolves.toBe(true);
+    await expect(fileExists(shared)).resolves.toBe(false);
   });
 
-  test("dir-level ignore 'dist/' excludes its entire subtree", async () => {
+  test("dir-level ignore excludes entire subtree", async () => {
     const r = await mkCase(tmp, "t-ig-dist-dir");
-    const aIg = join(r.aRoot, IGNORE_FILE);
-    const aDist = join(r.aRoot, "dist");
-    const aA = join(aDist, "a.txt");
-    const aB = join(aDist, "sub", "b.txt");
-    const bDist = join(r.bRoot, "dist");
-    const bA = join(bDist, "a.txt");
-    const bB = join(bDist, "sub", "b.txt");
+    const dist = join(r.aRoot, "dist");
+    await fsp.mkdir(join(dist, "sub"), { recursive: true });
+    await fsp.writeFile(join(dist, "a.txt"), "A");
+    await fsp.writeFile(join(dist, "sub", "b.txt"), "B");
 
-    await fsp.writeFile(aIg, "dist/\n");
-    await fsp.mkdir(join(aDist, "sub"), { recursive: true });
-    await fsp.writeFile(aA, "A");
-    await fsp.writeFile(aB, "B");
+    await sync(r, "alpha", undefined, ["--ignore", "dist/"]);
 
-    await sync(r, "alpha");
-
-    await expect(dirExists(bDist)).resolves.toBe(false);
-    await expect(fileExists(bA)).resolves.toBe(false);
-    await expect(fileExists(bB)).resolves.toBe(false);
+    await expect(dirExists(join(r.bRoot, "dist"))).resolves.toBe(false);
+    await expect(fileExists(join(r.bRoot, "dist", "a.txt"))).resolves.toBe(
+      false,
+    );
+    await expect(fileExists(join(r.bRoot, "dist", "sub", "b.txt"))).resolves.toBe(
+      false,
+    );
   });
 
   test("symlink path ignored under links/**", async () => {
     const r = await mkCase(tmp, "t-ig-links-symlink");
-    const aIg = join(r.aRoot, IGNORE_FILE);
-    const aLinks = join(r.aRoot, "links");
-    const aT = join(aLinks, "target.txt");
-    const aL = join(aLinks, "a.lnk");
-    const bLinks = join(r.bRoot, "links");
-    const bT = join(bLinks, "target.txt");
-    const bL = join(bLinks, "a.lnk");
+    const linksDir = join(r.aRoot, "links");
+    await fsp.mkdir(linksDir, { recursive: true });
+    await fsp.writeFile(join(linksDir, "target.txt"), "T");
+    await fsp.symlink("target.txt", join(linksDir, "a.lnk"));
 
-    await fsp.writeFile(aIg, "links/**\n");
-    await fsp.writeFile(aIg, "links/\n");
-    await fsp.mkdir(aLinks, { recursive: true });
-    await fsp.writeFile(aT, "T");
-    await fsp.symlink("target.txt", aL);
+    await sync(r, "alpha", undefined, ["--ignore", "links/"]);
 
-    await sync(r, "alpha");
-
-    await expect(dirExists(bLinks)).resolves.toBe(false); // entire subtree ignored
-    await expect(fileExists(bT)).resolves.toBe(false);
-    await expect(linkExists(bL)).resolves.toBe(false);
-  });
-
-  test("beta-only ignore blocks incoming copy", async () => {
-    const r = await mkCase(tmp, "t-ig-beta-copy");
-    const bIg = join(r.bRoot, IGNORE_FILE);
-    const aTmp = join(r.aRoot, "cache.tmp");
-    const bTmp = join(r.bRoot, "cache.tmp");
-
-    await fsp.writeFile(bIg, "*.tmp\n*.cache\n"); // enable ignore first
-    await fsp.writeFile(aTmp, "TMP");
-    await sync(r, "alpha");
-
-    await expect(fileExists(bTmp)).resolves.toBe(false);
-  });
-
-  test("beta-only ignore blocks delete after seeding", async () => {
-    const r = await mkCase(tmp, "t-ig-beta-delete");
-    const bIg = join(r.bRoot, IGNORE_FILE);
-    const aCache = join(r.aRoot, "persist.cache");
-    const bCache = join(r.bRoot, "persist.cache");
-
-    // seed both sides
-    await fsp.writeFile(aCache, "C");
-    await sync(r, "alpha");
-    await expect(fileExists(bCache)).resolves.toBe(true);
-
-    // now enable ignore and delete on alpha
-    await fsp.writeFile(bIg, "*.tmp\n*.cache\n");
-    await fsp.rm(aCache, { force: true });
-    await sync(r, "alpha");
-
-    await expect(fileExists(bCache)).resolves.toBe(true);
-    await expect(fileExists(aCache)).resolves.toBe(false);
+    await expect(dirExists(join(r.bRoot, "links"))).resolves.toBe(false);
+    await expect(fileExists(join(r.bRoot, "links", "target.txt"))).resolves.toBe(
+      false,
+    );
+    await expect(linkExists(join(r.bRoot, "links", "a.lnk"))).resolves.toBe(
+      false,
+    );
   });
 });

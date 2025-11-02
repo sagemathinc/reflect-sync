@@ -7,6 +7,8 @@ walkers (`scan.ts`, `hotwatch.ts`), and utility layers (hashing, ignore rules, d
 shared fixtures. Runtime bundles are emitted to `dist/`, while the published CLI wrapper is under `bin/reflect-sync.mjs`. Generated SQLite files such as
 `alpha.db` and SEA artifacts stay out of version control; regenerate them locally when needed.
 
+- Ignore any file ending in "tasks".  This is where devs keep their todo list.  Do not delete or change it.
+
 ## Build, Test, and Development Commands
 
 `pnpm build` compiles the TypeScript sources via `tsc`. Run `pnpm test` to build and execute the Jest suite with `ts-jest`. During active development `pnpm

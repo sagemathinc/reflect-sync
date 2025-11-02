@@ -33,6 +33,7 @@ import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { fmtLocalPath } from "./session-status.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
 import { registerSessionDaemon } from "./session-daemon.js";
+import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -160,6 +161,12 @@ export function registerSessionCommands(program: Command) {
           .default("auto"),
       )
       .option(
+        "-i, --ignore <pattern>",
+        "gitignore-style ignore rule (repeat or comma-separated)",
+        collectIgnoreOption,
+        [] as string[],
+      )
+      .option(
         "--compress-level <level>",
         "options -- zstd: -131072..22 (3 default), zlib/zlibx: 1..9 (6 default), lz4: 0",
         "",
@@ -171,6 +178,7 @@ export function registerSessionCommands(program: Command) {
           opts: any,
           command: Command,
         ) => {
+          console.log(opts);
           const sessionDb = resolveSessionDb(opts, command);
           const cliLogger = new ConsoleLogger(getLogLevel());
           try {
@@ -237,10 +245,12 @@ export function registerSessionCommands(program: Command) {
             "Alpha",
             "Beta",
             "PID",
+            "Ignores",
           )
           .setStyle("unicode-round");
 
         const alignments = [
+          AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
@@ -258,6 +268,12 @@ export function registerSessionCommands(program: Command) {
           const betaPath = r.beta_host
             ? fmtRemoteEndpoint(r.beta_host, r.beta_port, r.beta_root)
             : fmtLocalPath(r.beta_root);
+          const ignoreRules = deserializeIgnoreRules(
+            (r as any).ignore_rules ?? null,
+          );
+          const ignoreSummary = ignoreRules.length
+            ? ignoreRules.join(", ")
+            : "-";
 
           table.addRow(
             String(r.id),
@@ -267,6 +283,7 @@ export function registerSessionCommands(program: Command) {
             alphaPath,
             betaPath,
             r.scheduler_pid ? String(r.scheduler_pid) : "-",
+            ignoreSummary,
           );
         }
 

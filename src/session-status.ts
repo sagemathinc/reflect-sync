@@ -7,6 +7,7 @@ import {
 } from "./session-db.js";
 import { type Database } from "./db.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
+import { deserializeIgnoreRules } from "./ignore.js";
 
 type AnyRow = Record<string, any>;
 
@@ -181,6 +182,10 @@ function tableOutput(
     if (sess.prefer) add("prefer", sess.prefer);
     if (sess.hash_alg) add("hash", sess.hash_alg);
     if (sess.compress) add("compress", sess.compress);
+    const ignoreRules = deserializeIgnoreRules(sess.ignore_rules);
+    if (ignoreRules.length) {
+      add("ignore rules", ignoreRules.join(", "));
+    }
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
     if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));
@@ -272,6 +277,7 @@ export function registerSessionStatus(sessionCmd: Command) {
         const labels = tryGetLabels(db, id);
         const state = getState(db, id);
         const lastHb = getLastHeartbeat(db, id);
+        const ignoreRules = deserializeIgnoreRules(sess.ignore_rules);
 
         if (opts.json) {
           const { health, reason } = computeHealth(state, lastHb);
@@ -298,6 +304,7 @@ export function registerSessionStatus(sessionCmd: Command) {
                 baseDb: sess.base_db ?? null,
                 prefer: sess.prefer ?? null,
                 createdAt: sess.created_at ?? null,
+                ignoreRules,
               },
             },
             state: state ?? null,

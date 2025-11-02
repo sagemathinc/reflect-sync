@@ -1,9 +1,13 @@
 // src/hotwatch.ts
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
-import ignore from "ignore";
-import { access, readFile, stat } from "node:fs/promises";
-import { IGNORE_FILE, MAX_WATCHERS } from "./constants.js";
+import { stat } from "node:fs/promises";
+import { MAX_WATCHERS } from "./constants.js";
+import {
+  createIgnorer,
+  normalizeIgnorePatterns,
+  type Ignorer,
+} from "./ignore.js";
 import type { Logger } from "./logger.js";
 
 export type HotWatchEvent =
@@ -26,6 +30,7 @@ export interface HotWatchOptions {
   ttlMs?: number; // default 30 min
   hotDepth?: number; // default 2
   awaitWriteFinish?: { stabilityThreshold: number; pollInterval: number }; // default {200, 50}
+  ignoreRules?: string[];
 
   /**
    * Optional external ignore predicate (e.g. to enforce "either-side" ignores).
@@ -56,7 +61,7 @@ export function minimalCover(dirs: string[]): string[] {
   const out: string[] = [];
   for (const d of sorted) {
     if (
-      !out.some((p) => d === p || d.startsWith(p.endsWith("/") ? p : p + "/"))
+      !out.some((p) => d === p || d.startsWith(p.endsWith("/") ? p : `${p}/`))
     ) {
       out.push(d);
     }
@@ -69,10 +74,8 @@ export class HotWatchManager {
   private lru: string[] = []; // oldest first
   private opts: Required<Omit<HotWatchOptions, "logger">>;
   private logger?: Logger;
-
-  // local ignore matcher (hot-reloaded)
-  private ig: ReturnType<typeof ignore> | null = null;
-  private igWatcher: FSWatcher | null = null;
+  private ignoreRules: string[] = [];
+  private localIg: Ignorer = createIgnorer();
 
   constructor(
     private root: string,
@@ -88,60 +91,33 @@ export class HotWatchManager {
         pollInterval: 50,
       },
       isIgnored: opts.isIgnored ?? (() => false),
+      ignoreRules: opts.ignoreRules ?? [],
     };
     this.logger = opts.logger?.child("hotwatch");
-
-    // kick off initial load of ignore and watch it for changes
-    this.reloadIg();
-    this.watchIgnoreFile();
+    this.setIgnoreRules(this.opts.ignoreRules);
   }
 
   size() {
     return this.map.size;
   }
 
-  private async reloadIg() {
-    const ig = ignore();
-    const igPath = path.join(this.root, IGNORE_FILE);
-    try {
-      await access(igPath);
-      const raw = await readFile(igPath, "utf8");
-      ig.add(raw.replace(/\r\n/g, "\n"));
-      this.ig = ig;
-    } catch {
-      // no ignore file present
-      this.ig = ig; // empty matcher
-    }
-  }
-
-  private watchIgnoreFile() {
-    const igPath = path.join(this.root, IGNORE_FILE);
-    this.igWatcher = chokidar
-      .watch(igPath, { ignoreInitial: true, depth: 0, persistent: true })
-      .on("add", () => this.reloadIg())
-      .on("change", () => this.reloadIg())
-      .on("unlink", () => this.reloadIg());
-    handleWatchErrors(this.igWatcher);
+  setIgnoreRules(rules: string[]) {
+    this.ignoreRules = normalizeIgnorePatterns(rules ?? []);
+    this.localIg = createIgnorer(this.ignoreRules);
   }
 
   private localIgnoresFile(rpath: string): boolean {
-    if (!this.ig) return false;
-    return this.ig.ignores(rpath);
+    return this.localIg.ignoresFile(rpath);
   }
 
   private localIgnoresDir(rpath: string): boolean {
-    if (!this.ig) return false;
-    const withSlash = rpath.endsWith("/") ? rpath : rpath + "/";
-    return this.ig.ignores(withSlash);
+    return this.localIg.ignoresDir(rpath);
   }
 
   /**
    * Combined ignore: local ignore OR external predicate (e.g., other side).
    */
   isIgnored(rpath: string, isDir: boolean): boolean {
-    if (rpath.split("/").pop() == IGNORE_FILE) {
-      return true;
-    }
     const local = isDir
       ? this.localIgnoresDir(rpath)
       : this.localIgnoresFile(rpath);
@@ -185,9 +161,6 @@ export class HotWatchManager {
       // Compute rpath relative to this.root
       const rel = norm(path.relative(this.root, absN));
       const r = !rel || rel === "." ? "" : rel;
-      const base = r.split("/").pop();
-      // Drop any event on  itself (don’t propagate, don’t escalate)
-      if (base === IGNORE_FILE) return;
 
       // Determine if this is a directory event
       const isDir = ev?.endsWith("Dir");
@@ -274,18 +247,14 @@ export class HotWatchManager {
         s.watcher.close().catch(() => {}),
       ),
     );
-    if (this.igWatcher) {
-      await this.igWatcher.close().catch(() => {});
-      this.igWatcher = null;
-    }
     this.map.clear();
     this.lru = [];
   }
 }
 
-export function handleWatchErrors(watch) {
-  watch.on("error", (err) => {
-    if (err.code == "ELOOP") {
+export function handleWatchErrors(watch: FSWatcher) {
+  watch.on("error", (err: any) => {
+    if (err.code === "ELOOP") {
       // stating a symlink loop happens, but it's fine -- just use it
       watch.emit("change", err.path);
     } else {

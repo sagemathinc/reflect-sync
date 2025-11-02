@@ -77,6 +77,7 @@ export async function sync(
     r.bDb,
     ...(args ?? []),
   ]);
+  const mergeArgs = args2 ?? args ?? [];
   await runDist("merge.js", [
     "--alpha-root",
     r.aRoot,
@@ -90,7 +91,7 @@ export async function sync(
     r.baseDb,
     "--prefer",
     prefer,
-    ...(args2 ?? []),
+    ...(mergeArgs ?? []),
   ]);
 }
 

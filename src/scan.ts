@@ -8,7 +8,11 @@ import { getDb } from "./db.js";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import path from "node:path";
-import { loadIgnoreFile } from "./ignore.js";
+import {
+  collectIgnoreOption,
+  createIgnorer,
+  normalizeIgnorePatterns,
+} from "./ignore.js";
 import { toRel } from "./path-rel.js";
 import { isRecent } from "./hotwatch.js";
 import { CLI_NAME } from "./constants.js";
@@ -73,7 +77,13 @@ function buildProgram(): Command {
       "--prune-ms <milliseconds>",
       "prune deleted entries at least this old *before* doing the scan",
     )
-    .option("--numeric-ids", "include uid and gid in file hashes", false);
+    .option("--numeric-ids", "include uid and gid in file hashes", false)
+    .option(
+      "-i, --ignore <pattern>",
+      "gitignore-style ignore rule (repeat or comma-separated)",
+      collectIgnoreOption,
+      [] as string[],
+    );
 }
 
 type ScanOptions = {
@@ -87,6 +97,8 @@ type ScanOptions = {
   numericIds?: boolean;
   logger?: Logger;
   logLevel?: LogLevel;
+  ignoreRules?: string[];
+  ignore?: string[];
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -101,8 +113,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     numericIds,
     logger: providedLogger,
     logLevel = "info",
+    ignoreRules: ignoreRulesOpt = [],
+    ignore: ignoreCliOpt = [],
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
+  const ignoreRaw: string[] = [];
+  if (Array.isArray(ignoreRulesOpt)) ignoreRaw.push(...ignoreRulesOpt);
+  if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
+  const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -526,7 +544,7 @@ ON CONFLICT(path) DO UPDATE SET
     }
 
     // Load per-root ignore matcher (gitignore semantics)
-    const ig = await loadIgnoreFile(absRoot);
+    const ig = createIgnorer(ignoreRules);
 
     // stream entries with stats so we avoid a second stat in main thread
     const stream = walk.walkStream(absRoot, {

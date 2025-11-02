@@ -1,7 +1,4 @@
 import ignore from "ignore";
-import path from "node:path";
-import { readFile, access } from "node:fs/promises";
-import { IGNORE_FILE } from "./constants.js";
 
 export type Ignorer = {
   ignoresFile: (r: string) => boolean; // file/symlink path
@@ -9,24 +6,68 @@ export type Ignorer = {
   debug?: string[];
 };
 
-export async function loadIgnoreFile(root: string): Promise<Ignorer> {
-  const ig = ignore();
-  const file = path.join(root, IGNORE_FILE);
-  try {
-    await access(file);
-    const raw = await readFile(file, "utf8");
-    ig.add(raw.replace(/\r\n/g, "\n"));
-  } catch {}
-  // File check = r as-is; Dir check = r + "/" (gitignore semantics)
-  return {
-    ignoresFile: (r) => ig.ignores(normalizeR(r)),
-    ignoresDir: (r) => ig.ignores(normalizeR(r).replace(/\/?$/, "/")),
-  };
-}
-
 export function normalizeR(r: string): string {
   // rpath normalization; keep empty "" for root-safe callers
   return r.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function toDirPattern(pattern: string): string {
+  return pattern.endsWith("/") ? pattern : `${pattern}/`;
+}
+
+function cleanPattern(pattern: string): string | null {
+  const trimmed = pattern.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\\/g, "/");
+}
+
+export function normalizeIgnorePatterns(patterns: string[]): string[] {
+  const out = new Set<string>();
+  for (const raw of patterns ?? []) {
+    if (typeof raw !== "string") continue;
+    const cleaned = cleanPattern(raw);
+    if (cleaned) out.add(cleaned);
+  }
+  return Array.from(out);
+}
+
+export function serializeIgnoreRules(patterns: string[]): string | null {
+  const cleaned = normalizeIgnorePatterns(patterns);
+  return cleaned.length ? JSON.stringify(cleaned) : null;
+}
+
+export function deserializeIgnoreRules(raw?: string | null): string[] {
+  if (!raw) return [];
+  let lines;
+  try {
+    lines = JSON.parse(raw);
+  } catch {
+    console.warn("invalid ignore rules", { raw });
+    return [];
+  }
+  return normalizeIgnorePatterns(lines);
+}
+
+export function collectIgnoreOption(value: string, acc: string[]): string[] {
+  if (typeof value !== "string") return acc;
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  acc.push(...parts);
+  return acc;
+}
+
+export function createIgnorer(patterns: string[] = []): Ignorer {
+  const ig = ignore();
+  const cleaned = normalizeIgnorePatterns(patterns);
+  if (cleaned.length) {
+    ig.add(cleaned);
+  }
+  return {
+    ignoresFile: (r) => ig.ignores(normalizeR(r)),
+    ignoresDir: (r) => ig.ignores(toDirPattern(normalizeR(r))),
+  };
 }
 
 function ignoredByEitherFile(r: string, aIg: Ignorer, bIg: Ignorer): boolean {

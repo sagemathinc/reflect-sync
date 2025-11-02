@@ -6,6 +6,7 @@ import {
   getReflectSyncHome,
   type SessionRow,
 } from "./session-db.js";
+import { deserializeIgnoreRules } from "./ignore.js";
 
 export function spawnSchedulerForSession(
   sessionDb: string,
@@ -40,6 +41,11 @@ export function spawnSchedulerForSession(
     "--compress",
     row.compress ?? "auto",
   );
+
+  const ignorePatterns = deserializeIgnoreRules((row as any).ignore_rules ?? null);
+  for (const pattern of ignorePatterns) {
+    args.push("--ignore", pattern);
+  }
 
   if (row.alpha_host) {
     args.push("--alpha-host", row.alpha_host);

@@ -50,7 +50,9 @@ export async function terminateSession({
   }
   const host = row.alpha_host ?? row.beta_host;
   const port =
-    row.alpha_host != null ? row.alpha_port ?? undefined : row.beta_port ?? undefined;
+    row.alpha_host != null
+      ? (row.alpha_port ?? undefined)
+      : (row.beta_port ?? undefined);
   if (host) {
     const path = row.alpha_remote_db || row.beta_remote_db;
     if (path) {
@@ -221,10 +223,7 @@ export function parseEndpoint(spec: string): Endpoint {
   const looksLikeWindows = /^[A-Za-z]:/.test(trimmed);
   if (looksLikeWindows && trimmed.length >= 3) {
     const sep = trimmed[2];
-    if (
-      sep === "\\" ||
-      (sep === "/" && process.platform === "win32")
-    ) {
+    if (sep === "\\" || (sep === "/" && process.platform === "win32")) {
       return { root: trimmed };
     }
   }
@@ -297,6 +296,7 @@ export async function newSession({
   hash,
   label,
   name,
+  ignore,
   logger,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
@@ -337,6 +337,7 @@ export async function newSession({
         beta_host: b.host ?? null,
         beta_port: b.port ?? null,
         hash_alg: hash,
+        ignore,
         compress,
       },
       parseLabelPairs(label || []),

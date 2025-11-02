@@ -15,6 +15,10 @@ import {
 } from "./hotwatch.js";
 import { isDirectRun } from "./cli-util.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
+import {
+  collectIgnoreOption,
+  normalizeIgnorePatterns,
+} from "./ignore.js";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -23,6 +27,7 @@ type WatchOpts = {
   hotDepth: number;
   hotTtlMs: number;
   maxHotWatchers: number;
+  ignoreRules: string[];
 };
 
 // ---------- helpers ----------
@@ -92,7 +97,15 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
 
 // ---------- core ----------
 export async function runWatch(opts: WatchOpts): Promise<void> {
-  const { root, shallowDepth, hotDepth, hotTtlMs, maxHotWatchers } = opts;
+  const {
+    root,
+    shallowDepth,
+    hotDepth,
+    hotTtlMs,
+    maxHotWatchers,
+    ignoreRules: rawIgnoreRules,
+  } = opts;
+  const ignoreRules = normalizeIgnorePatterns(rawIgnoreRules ?? []);
 
   // Ensure process terminate when stdin closes (so this also closes when
   // used via ssh)
@@ -121,6 +134,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       hotDepth,
       ttlMs: hotTtlMs,
       maxWatchers: maxHotWatchers,
+      ignoreRules,
     },
   );
 
@@ -209,6 +223,12 @@ function buildProgram() {
       "--max-hot-watchers <n>",
       "max concurrent hot watchers",
       String(MAX_WATCHERS),
+    )
+    .option(
+      "-i, --ignore <pattern>",
+      "gitignore-style ignore rule (repeat or comma-separated)",
+      collectIgnoreOption,
+      [] as string[],
     );
 
   return program;
@@ -222,6 +242,7 @@ async function mainFromCli() {
     hotDepth: string;
     hotTtlMs: string;
     maxHotWatchers: string;
+    ignore?: string[];
   };
 
   await runWatch({
@@ -230,6 +251,7 @@ async function mainFromCli() {
     hotDepth: Number(opts.hotDepth),
     hotTtlMs: Number(opts.hotTtlMs),
     maxHotWatchers: Number(opts.maxHotWatchers),
+    ignoreRules: opts.ignore ?? [],
   });
 }
 

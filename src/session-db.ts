@@ -6,6 +6,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { CLI_NAME } from "./constants.js";
 import { defaultHashAlg } from "./hash.js";
+import { serializeIgnoreRules } from "./ignore.js";
 
 // Paths & Home
 
@@ -107,6 +108,7 @@ export interface SessionCreateInput {
   remote_watch_cmd?: string | null;
   hash_alg: string;
   compress?: string | null;
+  ignore?: string[];
 }
 
 export interface SessionPatch {
@@ -165,6 +167,7 @@ export interface SessionRow {
   alpha_digest?: string | null;
   beta_digest?: string | null;
   compress?: string | null;
+  ignore_rules?: string | null;
 }
 
 // DB init
@@ -202,6 +205,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
 
         hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
         compress         TEXT,
+        ignore_rules     TEXT,  -- JSON.stringify(string[])
 
         desired_state    TEXT NOT NULL DEFAULT 'paused',
         actual_state     TEXT NOT NULL DEFAULT 'paused',
@@ -293,9 +297,9 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
     `);
 
   const ensureColumn = (table: string, column: string, defSql: string) => {
-    const existing = db
-      .prepare(`PRAGMA table_info(${table})`)
-      .all() as { name: string }[];
+    const existing = db.prepare(`PRAGMA table_info(${table})`).all() as {
+      name: string;
+    }[];
     if (!existing.some((row) => row.name === column)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${defSql}`);
     }
@@ -303,6 +307,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
 
   ensureColumn("sessions", "alpha_port", "INTEGER");
   ensureColumn("sessions", "beta_port", "INTEGER");
+  ensureColumn("sessions", "ignore_rules", "TEXT");
 
   return db;
 }
@@ -331,9 +336,9 @@ export function createSession(
         beta_host, beta_port,
         alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
-        hash_alg, compress
+        hash_alg, compress, ignore_rules
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const info = stmt.run(
       now,
@@ -352,6 +357,7 @@ export function createSession(
       input.remote_watch_cmd ?? `${CLI_NAME} watch`,
       input.hash_alg ?? defaultHashAlg(),
       input.compress ?? null,
+      input.ignore ? serializeIgnoreRules(input.ignore) : null,
     );
     const id = Number(info.lastInsertRowid);
 

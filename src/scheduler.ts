@@ -38,6 +38,10 @@ import {
 import { runMerge } from "./merge.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
+import {
+  collectIgnoreOption,
+  normalizeIgnorePatterns,
+} from "./ignore.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -60,6 +64,7 @@ export type SchedulerOptions = {
   disableHotWatch: boolean;
 
   compress?: string;
+  ignoreRules: string[];
 
   sessionDb?: string;
   sessionId?: number;
@@ -116,6 +121,12 @@ function buildProgram(): Command {
       "only sync during the full sync cycle",
       false,
     )
+    .option(
+      "-i, --ignore <pattern>",
+      "gitignore-style ignore rule (repeat or comma-separated)",
+      collectIgnoreOption,
+      [] as string[],
+    )
     .option("--compress", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
     .option(
       "--session-id <id>",
@@ -151,6 +162,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     remoteCommand: opts.remoteCommand,
     disableHotWatch: !!opts.disableHotWatch,
     compress: opts.compress,
+    ignoreRules: normalizeIgnorePatterns(opts.ignore ?? []),
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
   };
@@ -207,6 +219,7 @@ export async function runScheduler({
   remoteCommand,
   disableHotWatch,
   compress,
+  ignoreRules: schedulerIgnoreRules,
   sessionDb,
   sessionId,
   logger: providedLogger,
@@ -240,6 +253,8 @@ export async function runScheduler({
     scopeCache.set(scope, next);
     return next;
   };
+
+  const ignoreRules = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
 
   // ---------- scheduler state ----------
   let running = false,
@@ -333,6 +348,7 @@ export async function runScheduler({
     remoteDb: string; // remote DB path (on remote host)
     localDb: string; // local mirror DB for ingest
     numericIds?: boolean;
+    ignoreRules: string[];
   }): Promise<{
     code: number | null;
     ms: number;
@@ -361,6 +377,9 @@ export async function runScheduler({
       hash,
       "--vacuum",
     );
+    for (const pattern of params.ignoreRules) {
+      sshArgs.push("--ignore", pattern);
+    }
     if (numericIds) {
       sshArgs.push("--numeric-ids");
     }
@@ -474,6 +493,9 @@ export async function runScheduler({
       sshArgs.push("-p", String(port));
     }
     sshArgs.push(host, `${remoteCommand} watch`, "--root", root);
+    for (const pattern of ignoreRules) {
+      sshArgs.push("--ignore", pattern);
+    }
     const remoteLog = scoped(`remote.${side}`);
     remoteLog.debug("ssh watch", { args: argsJoin(sshArgs) });
 
@@ -680,6 +702,7 @@ export async function runScheduler({
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
           logger: scoped("hot.alpha"),
+          ignoreRules,
         });
 
   const hotBetaMgr =
@@ -691,6 +714,7 @@ export async function runScheduler({
           hotDepth: HOT_DEPTH,
           awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
           logger: scoped("hot.beta"),
+          ignoreRules,
         });
 
   const shallowAlpha =
@@ -811,6 +835,7 @@ export async function runScheduler({
             localDb: alphaDb,
             remoteDb: alphaRemoteDb!,
             numericIds,
+            ignoreRules,
           })
         : await (async () => {
             try {
@@ -822,6 +847,7 @@ export async function runScheduler({
                 vacuum: false,
                 numericIds,
                 logger: scanLogger,
+                ignoreRules,
               });
               return {
                 code: 0,
@@ -867,6 +893,7 @@ export async function runScheduler({
             localDb: betaDb,
             remoteDb: betaRemoteDb!,
             numericIds,
+            ignoreRules,
           })
         : await (async () => {
             try {
@@ -878,6 +905,7 @@ export async function runScheduler({
                 vacuum: false,
                 numericIds,
                 logger: scanLogger,
+                ignoreRules,
               });
               return {
                 code: 0,
@@ -932,6 +960,7 @@ export async function runScheduler({
         sessionDb,
         sessionId,
         logger: mergeLogger,
+        ignoreRules,
         // if the session logger (to database) is enabled, then
         // ensure merge logs everything to our logger.
         verbose: !!sessionLogHandle,
