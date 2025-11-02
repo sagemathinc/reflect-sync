@@ -12,6 +12,7 @@ import {
   type LogLevel,
 } from "./logger.js";
 import pkg from "../package.json" with { type: "json" };
+import { collectIgnoreOption } from "./ignore.js";
 
 function resolveLogLevel(command: Command): LogLevel {
   const raw = (command.optsWithGlobals() as any)?.logLevel as
@@ -46,8 +47,16 @@ program
     `log verbosity (${LOG_LEVELS.join(", ")})`,
     "info",
   )
-  .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
-  .option("-A, --advanced", "show advanced plumbing commands in help output", false)
+  .option(
+    "--session-db <file>",
+    "override path to sessions.db",
+    getSessionDbPath(),
+  )
+  .option(
+    "-A, --advanced",
+    "show advanced plumbing commands in help output",
+    false,
+  )
   .option("--dry-run", "do not modify files", false);
 
 registerSessionCommands(program);
@@ -144,7 +153,9 @@ program
   .option("--beta-db <path>", "beta sqlite", "beta.db")
   .option("--base-db <path>", "base sqlite", "base.db")
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-  .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
+  .option("--alpha-port <n>", "SSH port for alpha", (v) =>
+    Number.parseInt(v, 10),
+  )
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
   .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
   .option(
@@ -189,7 +200,9 @@ program
   )
   // optional SSH endpoints (only one side may be remote)
   .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-  .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
+  .option("--alpha-port <n>", "SSH port for alpha", (v) =>
+    Number.parseInt(v, 10),
+  )
   .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
   .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
   .option(
@@ -214,6 +227,12 @@ program
   .option("--session-id <id>", "optional session id to enable heartbeats")
   .option("--session-db <path>", "path to session database")
   .option("--disable-hot-watch", "only sync during the full sync cycle", false)
+  .option(
+    "-i, --ignore <pattern>",
+    "gitignore-style ignore rule (repeat or comma-separated)",
+    collectIgnoreOption,
+    [] as string[],
+  )
   .action(async (opts, command) => {
     // Safety: disallow both sides remote (two-remote rsync not yet supported)
     if (opts.alphaHost && opts.betaHost) {

@@ -42,7 +42,7 @@ export function spawnSchedulerForSession(
     row.compress ?? "auto",
   );
 
-  const ignorePatterns = deserializeIgnoreRules((row as any).ignore_rules ?? null);
+  const ignorePatterns = deserializeIgnoreRules(row.ignore_rules ?? null);
   for (const pattern of ignorePatterns) {
     args.push("--ignore", pattern);
   }
