@@ -1136,6 +1136,34 @@ export async function runScheduler({
               err: String(e?.message || e),
             });
           }
+        } else if (row.cmd === "sync") {
+          executed = true;
+          let attempt: number | undefined;
+          if (row.payload) {
+            try {
+              const parsed = JSON.parse(row.payload) as {
+                attempt?: number;
+              };
+              if (typeof parsed.attempt === "number") {
+                attempt = parsed.attempt;
+              }
+            } catch {
+              // ignore malformed payloads
+            }
+          }
+          const msg =
+            attempt && Number.isFinite(attempt)
+              ? `sync command received (attempt ${attempt})`
+              : "sync command received";
+          log("info", "scheduler", msg);
+          try {
+            await oneCycle();
+            log("info", "scheduler", "sync cycle complete");
+          } catch (e: any) {
+            log("error", "scheduler", "sync cycle error", {
+              err: String(e?.message || e),
+            });
+          }
         }
         db.prepare(
           `
