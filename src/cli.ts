@@ -2,6 +2,7 @@
 // src/cli.ts (ESM, TypeScript)
 import { Command, Option } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
+import { registerForwardCommands } from "./forward-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { getSessionDbPath } from "./session-db.js";
@@ -60,6 +61,7 @@ program
   .option("--dry-run", "do not modify files", false);
 
 registerSessionCommands(program);
+registerForwardCommands(program);
 
 const ADVANCED_COMMANDS = new Set([
   "scan",

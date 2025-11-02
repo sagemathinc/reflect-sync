@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+import { Command } from "commander";
+import { spawn } from "node:child_process";
+import { setTimeout as wait } from "node:timers/promises";
+import { argsJoin } from "./remote.js";
+import {
+  ensureSessionDb,
+  loadForwardById,
+  updateForwardSession,
+  type ForwardRow,
+} from "./session-db.js";
+
+function buildProgram(): Command {
+  return new Command()
+    .name("forward-monitor")
+    .requiredOption("--session-db <file>", "path to sessions database")
+    .requiredOption("--id <id>", "forward session id");
+}
+
+function buildSshArgs(row: ForwardRow): string[] {
+  const args: string[] = ["-N"]; // no shell, just forward
+  if (row.ssh_port) {
+    args.push("-p", String(row.ssh_port));
+  }
+  if (row.ssh_compress) {
+    args.push("-C");
+  }
+  if (row.direction === "local_to_remote") {
+    const bindHost = row.local_host || "127.0.0.1";
+    const binding = `${bindHost}:${row.local_port}:${row.remote_host}:${row.remote_port}`;
+    args.push("-L", binding);
+  } else {
+    const bindHost = row.remote_host || "";
+    const binding = bindHost
+      ? `${bindHost}:${row.remote_port}:${row.local_host}:${row.local_port}`
+      : `${row.remote_port}:${row.local_host}:${row.local_port}`;
+    args.push("-R", binding);
+  }
+  args.push(row.ssh_host);
+  return args;
+}
+
+async function runMonitor(sessionDb: string, id: number) {
+  const db = ensureSessionDb(sessionDb);
+  db.close();
+
+  let backoffMs = 1000;
+  const maxBackoff = 30_000;
+
+  while (true) {
+    const row = loadForwardById(sessionDb, id);
+    if (!row) {
+      return;
+    }
+    if (row.desired_state !== "running") {
+      updateForwardSession(sessionDb, id, {
+        actual_state: "stopped",
+        monitor_pid: null,
+      });
+      return;
+    }
+
+    updateForwardSession(sessionDb, id, {
+      monitor_pid: process.pid,
+      actual_state: "running",
+      last_error: null,
+    });
+
+    const args = buildSshArgs(row);
+    updateForwardSession(sessionDb, id, {
+      ssh_args: argsJoin(["ssh", ...args]),
+    });
+    const child = spawn("ssh", args, {
+      stdio: "inherit",
+    });
+
+    const exitCode: number | null = await new Promise((resolve) => {
+      child.once("exit", (code) => resolve(code));
+      child.once("error", () => resolve(1));
+    });
+
+    if (row.desired_state !== "running") {
+      updateForwardSession(sessionDb, id, {
+        actual_state: "stopped",
+        monitor_pid: null,
+      });
+      if (exitCode === 0) return;
+    }
+
+    updateForwardSession(sessionDb, id, {
+      actual_state: "error",
+      last_error: exitCode === 0 ? null : `ssh exited with code ${exitCode}`,
+      monitor_pid: null,
+    });
+
+    await wait(backoffMs);
+    backoffMs = Math.min(backoffMs * 2, maxBackoff);
+  }
+}
+
+async function main() {
+  const program = buildProgram();
+  const opts = program.parse(process.argv).opts<{
+    sessionDb: string;
+    id: string;
+  }>();
+  const id = Number(opts.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error("invalid forward id");
+  }
+  await runMonitor(opts.sessionDb, id);
+}
+
+main().catch((err) => {
+  console.error("forward monitor fatal", err);
+  process.exit(1);
+});

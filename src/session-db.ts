@@ -92,6 +92,8 @@ function expandHome(p: string): string {
 export type Side = "alpha" | "beta";
 export type DesiredState = "running" | "paused";
 export type ActualState = "running" | "starting" | "paused" | "error";
+export type ForwardDesiredState = "running" | "stopped";
+export type ForwardActualState = "running" | "error" | "stopped";
 
 export interface SessionCreateInput {
   name?: string;
@@ -170,6 +172,56 @@ export interface SessionRow {
   beta_digest?: string | null;
   compress?: string | null;
   ignore_rules?: string | null;
+}
+
+export interface ForwardCreateInput {
+  name?: string | null;
+  direction: "local_to_remote" | "remote_to_local";
+  ssh_host: string;
+  ssh_port?: number | null;
+  ssh_compress?: boolean;
+  ssh_args?: string | null;
+  local_host: string;
+  local_port: number;
+  remote_host: string;
+  remote_port: number;
+  desired_state?: ForwardDesiredState;
+  actual_state?: ForwardActualState;
+}
+
+export interface ForwardPatch {
+  name?: string | null;
+  ssh_port?: number | null;
+  ssh_compress?: boolean;
+  ssh_args?: string | null;
+  local_host?: string;
+  local_port?: number;
+  remote_host?: string;
+  remote_port?: number;
+  desired_state?: ForwardDesiredState;
+  actual_state?: ForwardActualState;
+  monitor_pid?: number | null;
+  last_error?: string | null;
+}
+
+export interface ForwardRow {
+  id: number;
+  created_at: number;
+  updated_at: number;
+  name: string | null;
+  direction: "local_to_remote" | "remote_to_local";
+  ssh_host: string;
+  ssh_port: number | null;
+  ssh_compress: number;
+  ssh_args: string | null;
+  local_host: string;
+  local_port: number;
+  remote_host: string;
+  remote_port: number;
+  desired_state: ForwardDesiredState;
+  actual_state: ForwardActualState;
+  monitor_pid: number | null;
+  last_error: string | null;
 }
 
 // DB init
@@ -296,6 +348,27 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         ON session_logs(session_id, ts);
       CREATE INDEX IF NOT EXISTS idx_session_logs_sid_id
         ON session_logs(session_id, id);
+
+      CREATE TABLE IF NOT EXISTS ssh_sessions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL,
+        name           TEXT,
+        direction      TEXT NOT NULL CHECK(direction IN ('local_to_remote','remote_to_local')),
+        ssh_host       TEXT NOT NULL,
+        ssh_port       INTEGER,
+        ssh_compress   INTEGER NOT NULL DEFAULT 0,
+        ssh_args       TEXT,
+        local_host     TEXT NOT NULL,
+        local_port     INTEGER NOT NULL,
+        remote_host    TEXT NOT NULL,
+        remote_port    INTEGER NOT NULL,
+        desired_state  TEXT NOT NULL DEFAULT 'running',
+        actual_state   TEXT NOT NULL DEFAULT 'running',
+        monitor_pid    INTEGER,
+        last_error     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ssh_sessions_state ON ssh_sessions(desired_state, actual_state);
     `);
 
   const ensureColumn = (table: string, column: string, defSql: string) => {
@@ -310,6 +383,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "alpha_port", "INTEGER");
   ensureColumn("sessions", "beta_port", "INTEGER");
   ensureColumn("sessions", "ignore_rules", "TEXT");
+  ensureColumn("ssh_sessions", "ssh_args", "TEXT");
 
   return db;
 }
@@ -373,6 +447,121 @@ export function createSession(
       tx();
     }
     return id;
+  } finally {
+    db.close();
+  }
+}
+
+export function createForwardSession(
+  sessionDbPath: string,
+  input: ForwardCreateInput,
+): number {
+  const db = ensureSessionDb(sessionDbPath);
+  try {
+    const now = Date.now();
+    const stmt = db.prepare(`
+      INSERT INTO ssh_sessions(
+        created_at, updated_at, name,
+        direction, ssh_host, ssh_port, ssh_compress, ssh_args,
+        local_host, local_port, remote_host, remote_port,
+        desired_state, actual_state
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    const info = stmt.run(
+      now,
+      now,
+      input.name ?? null,
+      input.direction,
+      input.ssh_host,
+      input.ssh_port ?? null,
+      input.ssh_compress ? 1 : 0,
+      input.ssh_args ?? null,
+      input.local_host,
+      input.local_port,
+      input.remote_host,
+      input.remote_port,
+      input.desired_state ?? "running",
+      input.actual_state ?? "running",
+    );
+    return Number(info.lastInsertRowid);
+  } finally {
+    db.close();
+  }
+}
+
+export function loadForwardById(
+  sessionDbPath: string,
+  id: number,
+): ForwardRow | undefined {
+  const db = open(sessionDbPath);
+  try {
+    const row = db
+      .prepare(`SELECT * FROM ssh_sessions WHERE id = ?`)
+      .get(id) as any;
+    if (!row) return undefined;
+    return {
+      ...row,
+      ssh_compress: Number(row.ssh_compress ?? 0),
+    } as ForwardRow;
+  } finally {
+    db.close();
+  }
+}
+
+export function selectForwardSessions(
+  sessionDbPath: string,
+): ForwardRow[] {
+  const db = open(sessionDbPath);
+  try {
+    const rows = db
+      .prepare(`SELECT * FROM ssh_sessions ORDER BY id ASC`)
+      .all() as any[];
+    return rows.map((row) => ({
+      ...row,
+      ssh_compress: Number(row.ssh_compress ?? 0),
+    })) as ForwardRow[];
+  } finally {
+    db.close();
+  }
+}
+
+export function updateForwardSession(
+  sessionDbPath: string,
+  id: number,
+  patch: ForwardPatch,
+): void {
+  if (!patch || !Object.keys(patch).length) return;
+  const db = open(sessionDbPath);
+  try {
+    const sets: string[] = [];
+    const vals: any[] = [];
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "ssh_compress") {
+        sets.push(`${key} = ?`);
+        vals.push(value ? 1 : 0);
+      } else {
+        sets.push(`${key} = ?`);
+        vals.push(value);
+      }
+    }
+    sets.push(`updated_at = ?`);
+    vals.push(Date.now());
+    vals.push(id);
+    const sql = `UPDATE ssh_sessions SET ${sets.join(", ")} WHERE id = ?`;
+    db.prepare(sql).run(...vals);
+  } finally {
+    db.close();
+  }
+}
+
+export function deleteForwardSession(
+  sessionDbPath: string,
+  id: number,
+): void {
+  const db = open(sessionDbPath);
+  try {
+    db.prepare(`DELETE FROM ssh_sessions WHERE id = ?`).run(id);
   } finally {
     db.close();
   }

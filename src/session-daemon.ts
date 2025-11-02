@@ -13,8 +13,13 @@ import {
   recordHeartbeat,
   type SessionRow,
   type ActualState,
+  selectForwardSessions,
+  updateForwardSession,
+  type ForwardRow,
+  loadForwardById,
 } from "./session-db.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
+import { spawnForwardMonitor } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
 import { ConsoleLogger, type Logger } from "./logger.js";
 
@@ -117,6 +122,52 @@ async function superviseSessions(sessionDb: string, logger: Logger) {
   }
 }
 
+function isForwardAlive(row: ForwardRow): boolean {
+  return isPidAlive(row.monitor_pid);
+}
+
+async function superviseForwards(sessionDb: string, logger: Logger) {
+  const forwards = selectForwardSessions(sessionDb);
+  for (const row of forwards as ForwardRow[]) {
+    const shouldRun = row.desired_state === "running";
+    const alive = isForwardAlive(row);
+
+    if (shouldRun) {
+      if (!alive) {
+        if (row.monitor_pid) {
+          updateForwardSession(sessionDb, row.id, { monitor_pid: null });
+        }
+        const forwardRow = loadForwardById(sessionDb, row.id);
+        if (!forwardRow) continue;
+        const pid = spawnForwardMonitor(sessionDb, forwardRow);
+        if (pid) {
+          updateForwardSession(sessionDb, row.id, {
+            monitor_pid: pid,
+            actual_state: "running",
+            last_error: null,
+          });
+          logger.debug?.("launched forward monitor", { id: row.id, pid });
+        } else {
+          updateForwardSession(sessionDb, row.id, { actual_state: "error" });
+          logger.warn("failed to launch forward monitor", { id: row.id });
+        }
+      } else if (row.actual_state !== "running") {
+        updateForwardSession(sessionDb, row.id, { actual_state: "running" });
+      }
+    } else {
+      if (alive && row.monitor_pid) {
+        stopPid(row.monitor_pid);
+      }
+      if (row.monitor_pid) {
+        updateForwardSession(sessionDb, row.id, { monitor_pid: null });
+      }
+      if (row.actual_state !== "stopped") {
+        updateForwardSession(sessionDb, row.id, { actual_state: "stopped" });
+      }
+    }
+  }
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -130,6 +181,7 @@ async function runSupervisorLoop(
   while (!abortSignal.stopped) {
     try {
       await superviseSessions(sessionDb, logger);
+      await superviseForwards(sessionDb, logger);
     } catch (err) {
       logger.error("daemon supervise error", {
         error: err instanceof Error ? err.message : String(err),
