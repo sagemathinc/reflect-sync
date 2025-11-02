@@ -39,9 +39,11 @@ import { runMerge } from "./merge.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 import {
-  collectIgnoreOption,
+  autoIgnoreForRoot,
   normalizeIgnorePatterns,
+  collectIgnoreOption,
 } from "./ignore.js";
+import { getReflectSyncHome } from "./session-db.js";
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -254,7 +256,13 @@ export async function runScheduler({
     return next;
   };
 
-  const ignoreRules = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
+  const syncHome = getReflectSyncHome();
+  const baseIgnore = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
+  const ignoreRules = normalizeIgnorePatterns([
+    ...baseIgnore,
+    ...autoIgnoreForRoot(alphaRoot, syncHome),
+    ...autoIgnoreForRoot(betaRoot, syncHome),
+  ]);
 
   // ---------- scheduler state ----------
   let running = false,
