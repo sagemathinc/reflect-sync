@@ -355,6 +355,8 @@ export async function newSession({
   name,
   ignore,
   logger,
+  disableMicroSync = false,
+  disableFullCycle = false,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
 
@@ -396,6 +398,8 @@ export async function newSession({
         hash_alg: hash,
         ignore,
         compress,
+        disable_micro_sync: !!disableMicroSync,
+        disable_full_cycle: !!disableFullCycle,
       },
       parseLabelPairs(label || []),
     );
@@ -467,6 +471,8 @@ export interface SessionEditOptions {
   betaSpec?: string;
   reset?: boolean;
   logger?: Logger;
+  disableMicroSync?: boolean;
+  disableFullCycle?: boolean;
 }
 
 export async function editSession(options: SessionEditOptions) {
@@ -484,6 +490,8 @@ export async function editSession(options: SessionEditOptions) {
     betaSpec,
     reset,
     logger,
+    disableMicroSync,
+    disableFullCycle,
   } = options;
 
   ensureSessionDb(sessionDb);
@@ -533,12 +541,30 @@ export async function editSession(options: SessionEditOptions) {
   if (resetIgnore || ignoreAdds.length) {
     let patterns = deserializeIgnoreRules(row.ignore_rules);
     if (resetIgnore) patterns = [];
-    if (ignoreAdds.length) patterns.push(...ignoreAdds);
-    const merged = normalizeIgnorePatterns(patterns);
-    const nextBlob = serializeIgnoreRules(merged);
-    if (nextBlob !== row.ignore_rules) {
-      updates.ignore_rules = nextBlob;
-      changes.push("ignore");
+  if (ignoreAdds.length) patterns.push(...ignoreAdds);
+  const merged = normalizeIgnorePatterns(patterns);
+  const nextBlob = serializeIgnoreRules(merged);
+  if (nextBlob !== row.ignore_rules) {
+    updates.ignore_rules = nextBlob;
+    changes.push("ignore");
+    needRestart = true;
+  }
+}
+
+  if (disableMicroSync !== undefined) {
+    const desired = !!disableMicroSync;
+    if (!!row.disable_micro_sync !== desired) {
+      updates.disable_micro_sync = desired;
+      changes.push(`micro-sync=${desired ? "disabled" : "enabled"}`);
+      needRestart = true;
+    }
+  }
+
+  if (disableFullCycle !== undefined) {
+    const desired = !!disableFullCycle;
+    if (!!row.disable_full_cycle !== desired) {
+      updates.disable_full_cycle = desired;
+      changes.push(`full-cycle=${desired ? "disabled" : "enabled"}`);
       needRestart = true;
     }
   }

@@ -167,15 +167,23 @@ export function registerSessionCommands(program: Command) {
           .default("auto"),
       )
       .option(
+        "--compress-level <level>",
+        "options -- zstd: -131072..22 (3 default), zlib/zlibx: 1..9 (6 default), lz4: 0",
+        "",
+      )
+      .option(
         "-i, --ignore <pattern>",
         "gitignore-style ignore rule (repeat or comma-separated)",
         collectIgnoreOption,
         [] as string[],
       )
       .option(
-        "--compress-level <level>",
-        "options -- zstd: -131072..22 (3 default), zlib/zlibx: 1..9 (6 default), lz4: 0",
-        "",
+        "--disable-micro-sync",
+        "disable realtime micro-sync watchers for this session",
+      )
+      .option(
+        "--disable-full-cycle",
+        "disable automatic periodic full sync cycles",
       )
       .action(
         async (
@@ -275,7 +283,12 @@ export function registerSessionCommands(program: Command) {
         }
 
         if (opts.json) {
-          console.log(JSON.stringify(rows, null, 2));
+          const payload = rows.map((r) => ({
+            ...r,
+            disable_micro_sync: !!r.disable_micro_sync,
+            disable_full_cycle: !!r.disable_full_cycle,
+          }));
+          console.log(JSON.stringify(payload, null, 2));
           return;
         }
 
@@ -289,10 +302,12 @@ export function registerSessionCommands(program: Command) {
             "Beta",
             "PID",
             "Ignores",
+            "Flags",
           )
           .setStyle("unicode-round");
 
         const alignments = [
+          AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
@@ -317,6 +332,10 @@ export function registerSessionCommands(program: Command) {
           const ignoreSummary = ignoreRules.length
             ? ignoreRules.join(", ")
             : "-";
+          const flags: string[] = [];
+          if (r.disable_micro_sync) flags.push("micro-sync off");
+          if (r.disable_full_cycle) flags.push("full-cycle off");
+          const flagsSummary = flags.length ? flags.join(", ") : "-";
 
           table.addRow(
             String(r.id),
@@ -327,6 +346,7 @@ export function registerSessionCommands(program: Command) {
             betaPath,
             r.scheduler_pid ? String(r.scheduler_pid) : "-",
             ignoreSummary,
+            flagsSummary,
           );
         }
 
@@ -529,6 +549,30 @@ export function registerSessionCommands(program: Command) {
       .option("--alpha <endpoint>", "update alpha endpoint (requires --reset)")
       .option("--beta <endpoint>", "update beta endpoint (requires --reset)")
       .option("--reset", "reset session state after applying changes", false)
+      .addOption(
+        new Option(
+          "--disable-micro-sync",
+          "disable realtime micro-sync watchers",
+        ).conflicts("enableMicroSync"),
+      )
+      .addOption(
+        new Option(
+          "--enable-micro-sync",
+          "enable realtime micro-sync watchers",
+        ).conflicts("disableMicroSync"),
+      )
+      .addOption(
+        new Option(
+          "--disable-full-cycle",
+          "disable automatic periodic full sync cycles",
+        ).conflicts("enableFullCycle"),
+      )
+      .addOption(
+        new Option(
+          "--enable-full-cycle",
+          "enable automatic periodic full sync cycles",
+        ).conflicts("disableFullCycle"),
+      )
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -541,6 +585,18 @@ export function registerSessionCommands(program: Command) {
         }
 
         const cliLogger = new ConsoleLogger(getLogLevel());
+        const disableMicroSyncUpdate =
+          opts.disableMicroSync === true
+            ? true
+            : opts.enableMicroSync === true
+              ? false
+              : undefined;
+        const disableFullCycleUpdate =
+          opts.disableFullCycle === true
+            ? true
+            : opts.enableFullCycle === true
+              ? false
+              : undefined;
         try {
           const result = await editSession({
             sessionDb,
@@ -556,6 +612,8 @@ export function registerSessionCommands(program: Command) {
             betaSpec: opts.beta,
             reset: !!opts.reset,
             logger: cliLogger,
+            disableMicroSync: disableMicroSyncUpdate,
+            disableFullCycle: disableFullCycleUpdate,
           });
 
           const updatedRow = loadSessionById(sessionDb, row.id) ?? row;

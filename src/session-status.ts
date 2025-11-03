@@ -186,6 +186,8 @@ function tableOutput(
     if (ignoreRules.length) {
       add("ignore rules", ignoreRules.join(", "));
     }
+    add("micro-sync", sess.disable_micro_sync ? "disabled" : "enabled");
+    add("full cycle", sess.disable_full_cycle ? "disabled" : "enabled");
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
     if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));

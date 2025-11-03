@@ -24,6 +24,7 @@ function startScheduler(opts: {
   baseDb: string;
   prefer?: "alpha" | "beta";
   env?: NodeJS.ProcessEnv;
+  extraArgs?: string[];
 }): ChildProcess {
   const args = [
     SCHED,
@@ -40,6 +41,9 @@ function startScheduler(opts: {
     "--prefer",
     opts.prefer ?? "alpha",
   ];
+  if (opts.extraArgs?.length) {
+    args.push(...opts.extraArgs);
+  }
   // Use node to run the ESM CLI directly
   const child = spawn(process.execPath, args, {
     stdio: ["ignore", "inherit", "inherit"],
@@ -73,7 +77,15 @@ async function stopScheduler(p: ChildProcess) {
   ]);
   await race;
   // hard kill if still around
-  if (!p.killed) {
+  const stillAlive = (() => {
+    try {
+      process.kill(p.pid!, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  if (stillAlive) {
     try {
       process.kill(p.pid!, "SIGKILL");
     } catch {}
@@ -106,6 +118,16 @@ describe("scheduler (local watchers + microSync)", () => {
     baseDb = path.join(tmp, "base.db");
     await fsp.mkdir(alphaRoot, { recursive: true });
     await fsp.mkdir(betaRoot, { recursive: true });
+  });
+
+  beforeEach(async () => {
+    await fsp.rm(alphaRoot, { recursive: true, force: true });
+    await fsp.rm(betaRoot, { recursive: true, force: true });
+    await fsp.mkdir(alphaRoot, { recursive: true });
+    await fsp.mkdir(betaRoot, { recursive: true });
+    await fsp.rm(alphaDb, { force: true });
+    await fsp.rm(betaDb, { force: true });
+    await fsp.rm(baseDb, { force: true });
   });
 
   afterAll(async () => {
@@ -194,4 +216,76 @@ describe("scheduler (local watchers + microSync)", () => {
       await stopScheduler(child);
     }
   }, 20_000);
+
+  test("disable full cycle prevents additional automatic cycles", async () => {
+    const child = startScheduler({
+      alphaRoot,
+      betaRoot,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+      extraArgs: ["--disable-full-cycle"],
+    });
+
+    try {
+      const baseline = countSchedulerCycles(baseDb);
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= baseline + 1,
+        10_000,
+        100,
+      );
+      const cyclesAfterFirst = countSchedulerCycles(baseDb);
+      expect(cyclesAfterFirst).toBe(baseline + 1);
+
+      await new Promise((resolve) => setTimeout(resolve, 7000));
+      const cyclesAfterWait = countSchedulerCycles(baseDb);
+      expect(cyclesAfterWait).toBe(cyclesAfterFirst);
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 20_000);
+
+  test("disable micro sync defers propagation until the next full cycle", async () => {
+    const child = startScheduler({
+      alphaRoot,
+      betaRoot,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+      extraArgs: ["--disable-micro-sync"],
+    });
+
+    try {
+      const baseline = countSchedulerCycles(baseDb);
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= baseline + 1,
+        10_000,
+        100,
+      );
+
+      const aFile = path.join(alphaRoot, "micro-disabled.txt");
+      const bFile = path.join(betaRoot, "micro-disabled.txt");
+      await fsp.mkdir(path.dirname(aFile), { recursive: true });
+      await fsp.rm(aFile, { force: true });
+      await fsp.rm(bFile, { force: true });
+
+      await fsp.writeFile(aFile, "test\n", "utf8");
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      expect(await fileExists(bFile)).toBe(false);
+
+      await waitFor(
+        async () => await fileExists(bFile),
+        (ok) => ok === true,
+        8000,
+        100,
+      );
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 25_000);
 });

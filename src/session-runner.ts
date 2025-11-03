@@ -59,6 +59,13 @@ export function spawnSchedulerForSession(
     }
   }
 
+  if (row.disable_micro_sync) {
+    args.push("--disable-micro-sync");
+  }
+  if (row.disable_full_cycle) {
+    args.push("--disable-full-cycle");
+  }
+
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 

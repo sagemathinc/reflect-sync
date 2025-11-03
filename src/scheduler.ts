@@ -84,6 +84,8 @@ export type SchedulerOptions = {
   remoteCommand?: string;
 
   disableHotWatch: boolean;
+  disableMicroSync?: boolean;
+  disableFullCycle?: boolean;
 
   compress?: string;
   ignoreRules: string[];
@@ -144,6 +146,14 @@ function buildProgram(): Command {
       false,
     )
     .option(
+      "--disable-micro-sync",
+      "disable realtime micro-sync watchers",
+    )
+    .option(
+      "--disable-full-cycle",
+      "disable automatic periodic full sync cycles",
+    )
+    .option(
       "-i, --ignore <pattern>",
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
@@ -182,7 +192,9 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     alphaRemoteDb: String(opts.alphaRemoteDb),
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteCommand: opts.remoteCommand,
-    disableHotWatch: !!opts.disableHotWatch,
+    disableHotWatch: !!opts.disableHotWatch || !!opts.disableMicroSync,
+    disableMicroSync: !!opts.disableMicroSync,
+    disableFullCycle: !!opts.disableFullCycle,
     compress: opts.compress,
     ignoreRules: normalizeIgnorePatterns(opts.ignore ?? []),
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
@@ -239,7 +251,9 @@ export async function runScheduler({
   alphaRemoteDb,
   betaRemoteDb,
   remoteCommand,
-  disableHotWatch,
+  disableHotWatch: disableHotWatchOption,
+  disableMicroSync = false,
+  disableFullCycle = false,
   compress,
   ignoreRules: schedulerIgnoreRules,
   sessionDb,
@@ -277,6 +291,7 @@ export async function runScheduler({
   };
 
   const syncHome = getReflectSyncHome();
+  const disableHotWatch = disableHotWatchOption || disableMicroSync;
   const baseIgnore = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
   const autoIgnores: string[] = [];
   if (!alphaHost) autoIgnores.push(...autoIgnoreForRoot(alphaRoot, syncHome));
@@ -291,6 +306,7 @@ export async function runScheduler({
     backoffMs = 0;
 
   let fatalTriggered = false;
+  let initialCycleDone = false;
 
   const DISK_FULL_PATTERNS = [
     "enospc",
@@ -847,6 +863,7 @@ export async function runScheduler({
   }
 
   function requestSoon(reason: string) {
+    if (disableFullCycle) return;
     pending = true;
     nextDelayMs = clamp(
       Math.min(nextDelayMs, 3000),
@@ -1525,41 +1542,66 @@ export async function runScheduler({
       }
       if (!running) {
         pending = false;
-        try {
-          await oneCycle();
-        } catch (err) {
-          if (err instanceof RemoteRootUnavailableError) {
-            const delay = clamp(
-              backoffMs || MIN_INTERVAL_MS,
-              MIN_INTERVAL_MS,
-              MAX_INTERVAL_MS,
-            );
-            log("info", "scheduler", `remote root unavailable; retrying in ${delay} ms`);
-            await idleWaitWithCommandPolling(delay);
-            continue;
-          }
-          if (err instanceof FatalSchedulerError) {
+        const shouldRunCycle = !disableFullCycle || !initialCycleDone;
+        if (shouldRunCycle) {
+          try {
+            await oneCycle();
+            initialCycleDone = true;
+          } catch (err) {
+            if (err instanceof RemoteRootUnavailableError) {
+              const delay = clamp(
+                backoffMs || MIN_INTERVAL_MS,
+                MIN_INTERVAL_MS,
+                MAX_INTERVAL_MS,
+              );
+              log(
+                "info",
+                "scheduler",
+                `remote root unavailable; retrying in ${delay} ms`,
+              );
+              await idleWaitWithCommandPolling(delay);
+              continue;
+            }
+            if (err instanceof FatalSchedulerError) {
+              throw err;
+            }
             throw err;
           }
-          throw err;
+          ensureRemoteStreams(); // recreate if they died during the cycle
+          const baseNext = clamp(
+            lastCycleMs * 2,
+            MIN_INTERVAL_MS,
+            MAX_INTERVAL_MS,
+          );
+          nextDelayMs =
+            baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));
+        } else if (disableFullCycle) {
+          await ensureRemoteStreams();
         }
-        ensureRemoteStreams(); // recreate if they died during the cycle
-        const baseNext = clamp(
-          lastCycleMs * 2,
-          MIN_INTERVAL_MS,
-          MAX_INTERVAL_MS,
-        );
-        nextDelayMs =
-          baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));
       }
 
       if (pending) {
-        nextDelayMs = clamp(1500, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
+        if (!disableFullCycle) {
+          nextDelayMs = clamp(1500, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
+          pending = false;
+          continue;
+        }
         pending = false;
-        continue;
       }
 
-      log("info", "scheduler", `watching: next full scan in ${nextDelayMs} ms`);
+      if (disableFullCycle) {
+        log(
+          "info",
+          "scheduler",
+          "watching: automatic full cycles disabled; awaiting commands",
+        );
+      } else {
+        log(
+          "info",
+          "scheduler",
+          `watching: next full scan in ${nextDelayMs} ms`,
+        );
+      }
       await idleWaitWithCommandPolling(nextDelayMs);
     }
   }
