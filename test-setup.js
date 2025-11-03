@@ -1,1 +1,2 @@
 process.env.REFLECT_DISABLE_LOG_ECHO = process.env.REFLECT_DISABLE_LOG_ECHO ?? '1';
+process.env.REFLECT_DISABLE_DAEMON = process.env.REFLECT_DISABLE_DAEMON ?? '1';

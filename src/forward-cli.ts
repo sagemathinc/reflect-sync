@@ -9,6 +9,7 @@ import {
 } from "./session-db.js";
 import { createForward, listForwards, terminateForward } from "./forward-manage.js";
 import { ConsoleLogger } from "./logger.js";
+import { ensureDaemonRunning } from "./session-daemon.js";
 
 function resolveSessionDb(command: Command, opts: { sessionDb?: string }): string {
   const ensure = (path: string) => {
@@ -49,6 +50,7 @@ export function registerForwardCommands(program: Command) {
           compress: !!opts.compress,
           logger,
         });
+        ensureDaemonRunning(sessionDb, logger.child("daemon"));
         console.log(`created forward ${id}${opts.name ? ` (${opts.name})` : ""}`);
       } catch (err) {
         console.error(`failed to create forward: ${(err as Error).message}`);

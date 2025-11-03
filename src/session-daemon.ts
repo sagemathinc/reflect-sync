@@ -200,6 +200,29 @@ function spawnDetachedDaemon(sessionDb: string) {
   return child.pid ?? 0;
 }
 
+export function ensureDaemonRunning(
+  sessionDb: string,
+  logger?: Logger,
+): number | null {
+  if (process.env.REFLECT_DISABLE_DAEMON === "1") {
+    return null;
+  }
+  const existing = readPidSync();
+  if (isPidAlive(existing)) {
+    return existing ?? null;
+  }
+  if (existing) {
+    removePidSync();
+  }
+  const pid = spawnDetachedDaemon(sessionDb);
+  if (pid) {
+    logger?.debug?.("daemon auto-started", { pid });
+    return pid;
+  }
+  logger?.warn?.("failed to start daemon automatically");
+  return null;
+}
+
 async function stopDaemonProcess(pid: number, logger: Logger) {
   try {
     process.kill(pid, "SIGTERM");

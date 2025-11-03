@@ -33,7 +33,10 @@ import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { fmtLocalPath } from "./session-status.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
-import { registerSessionDaemon } from "./session-daemon.js";
+import {
+  registerSessionDaemon,
+  ensureDaemonRunning,
+} from "./session-daemon.js";
 import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
 import { queryRecent, querySize } from "./session-query.js";
 import { diffSession } from "./session-diff.js";
@@ -191,6 +194,7 @@ export function registerSessionCommands(program: Command) {
               sessionDb,
               logger: cliLogger,
             });
+            ensureDaemonRunning(sessionDb, cliLogger.child("daemon"));
             console.log(
               `created session ${id}${opts.name ? ` (${opts.name})` : ""}`,
             );
