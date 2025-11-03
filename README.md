@@ -1,3 +1,7 @@
+# WARNING:
+
+November 3, 2025 Status:  **THIS IS NOT READY FOR PRODUCTION USE. IT MAY DELETE YOUR FILES!   WE WOULD LIKE FEEDBACK.**
+
 # ReflectSync
 
 Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Designed for very large trees, low RAM, and observability.
