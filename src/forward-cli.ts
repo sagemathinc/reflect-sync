@@ -1,7 +1,12 @@
 import { Command } from "commander";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { spawnSync } from "node:child_process";
-import { ensureSessionDb, getSessionDbPath, resolveForwardRow } from "./session-db.js";
+import {
+  ensureSessionDb,
+  getSessionDbPath,
+  resolveForwardRow,
+  type ForwardRow,
+} from "./session-db.js";
 import { createForward, listForwards, terminateForward } from "./forward-manage.js";
 import { ConsoleLogger } from "./logger.js";
 
@@ -54,11 +59,37 @@ export function registerForwardCommands(program: Command) {
   forward
     .command("list")
     .description("List SSH port forwards")
+    .argument("[id-or-name...]", "forward id(s) or name(s) to list")
     .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
     .option("--json", "emit JSON instead of a table", false)
-    .action((opts: any, command: Command) => {
+    .action((refs: string[], opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
-      const rows = listForwards(sessionDb).map((row) => {
+      const explicitRefs = Array.isArray(refs) ? refs.filter(Boolean) : [];
+
+      let rows: ForwardRow[];
+      if (explicitRefs.length) {
+        const seen = new Set<string>();
+        const selected: ForwardRow[] = [];
+        let hadError = false;
+        for (const ref of explicitRefs) {
+          if (!ref || seen.has(ref)) continue;
+          seen.add(ref);
+          const row = resolveForwardRow(sessionDb, ref);
+          if (!row) {
+            console.error(`forward '${ref}' not found`);
+            process.exitCode = 1;
+            hadError = true;
+            continue;
+          }
+          selected.push(row);
+        }
+        if (hadError && !selected.length) return;
+        rows = selected;
+      } else {
+        rows = listForwards(sessionDb);
+      }
+
+      rows = rows.map((row) => {
         if (row.actual_state === "running" && row.monitor_pid) {
           const check = spawnSync("ps", ["-p", String(row.monitor_pid)]);
           if (check.status !== 0) {
@@ -70,6 +101,7 @@ export function registerForwardCommands(program: Command) {
         }
         return row;
       });
+
       if (!rows.length) {
         if (opts.json) {
           console.log("[]");

@@ -215,6 +215,7 @@ export function registerSessionCommands(program: Command) {
     program
       .command("list")
       .description("List sessions (filterable by label selectors)")
+      .argument("[id-or-name...]", "session id(s) or name(s) to list")
       .option(
         "-s, --selector <expr>",
         "label selector (k=v | k!=v | k | !k); repeatable",
@@ -225,13 +226,47 @@ export function registerSessionCommands(program: Command) {
         [] as string[],
       )
       .option("--json", "output JSON instead of a table", false)
-      .action((opts: any, command: Command) => {
+      .action((refs: string[], opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
-        const sels = parseSelectorTokens(opts.selector || []);
-        const rows = selectSessions(sessionDb, sels);
+        const selectors = opts.selector || [];
+        const explicitRefs = Array.isArray(refs) ? refs.filter(Boolean) : [];
+
+        if (explicitRefs.length && selectors.length) {
+          console.error("cannot combine id-or-name arguments with selectors");
+          process.exitCode = 1;
+          return;
+        }
+
+        let rows: SessionRow[];
+        if (explicitRefs.length) {
+          const seen = new Set<string>();
+          const selected: SessionRow[] = [];
+          let hadError = false;
+          for (const ref of explicitRefs) {
+            if (!ref || seen.has(ref)) continue;
+            seen.add(ref);
+            try {
+              const row = requireSessionRow(sessionDb, ref);
+              selected.push(row);
+            } catch (err) {
+              console.error((err as Error).message);
+              process.exitCode = 1;
+              hadError = true;
+            }
+          }
+          if (hadError && !selected.length) return;
+          rows = selected;
+        } else {
+          const sels = parseSelectorTokens(selectors);
+          rows = selectSessions(sessionDb, sels);
+        }
 
         if (!rows.length) {
-          console.log("no sessions");
+          if (opts.json) {
+            console.log("[]");
+          } else {
+            console.log("no sessions");
+          }
           return;
         }
 
