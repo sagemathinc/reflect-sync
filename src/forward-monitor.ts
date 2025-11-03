@@ -31,7 +31,7 @@ function buildSshArgs(row: ForwardRow): string[] {
     const binding = `${bindHost}:${row.local_port}:${row.remote_host}:${row.remote_port}`;
     args.push("-L", binding);
   } else {
-    const bindHost = row.remote_host || "";
+    const bindHost = row.remote_host || "0.0.0.0";
     const binding = bindHost
       ? `${bindHost}:${row.remote_port}:${row.local_host}:${row.local_port}`
       : `${row.remote_port}:${row.local_host}:${row.local_port}`;
