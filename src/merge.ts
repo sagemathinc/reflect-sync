@@ -106,6 +106,8 @@ type MergeRsyncOptions = {
   logger?: Logger;
   logLevel?: LogLevel | string;
   ignoreRules?: string[];
+  markAlphaToBeta?: (paths: string[]) => void;
+  markBetaToAlpha?: (paths: string[]) => void;
 };
 
 // ---------- helpers ----------
@@ -136,6 +138,8 @@ export async function runMerge({
   logLevel = "info",
   verbose,
   ignoreRules: rawIgnoreRules = [],
+  markAlphaToBeta,
+  markBetaToAlpha,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -636,7 +640,7 @@ export async function runMerge({
     let delInBeta = uniq([...delInBeta_noConflict, ...delInBeta_conflict]);
     toAlpha = uniq([...toAlpha, ...toAlpha_conflict]);
 
-    const delInAlpha_noConflict = db
+    const deletedOnlyInBeta = db
       .prepare(
         `
         SELECT dB.rpath
@@ -680,7 +684,17 @@ export async function runMerge({
       .all(EPS, EPS, prefer)
       .map((r) => r.rpath as string);
 
-    let delInAlpha = uniq([...delInAlpha_noConflict, ...delInAlpha_conflict]);
+    let delInAlpha: string[];
+    const betaAddedContent = toAlpha.length > 0;
+    if (prefer === "beta") {
+      delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
+    } else if (!betaAddedContent) {
+      delInAlpha = uniq([...delInAlpha_conflict]);
+      toBeta = uniq([...toBeta, ...deletedOnlyInBeta]);
+    } else {
+      delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
+    }
+    toBeta = uniq([...toBeta, ...toBeta_conflict]);
     toBeta = uniq([...toBeta, ...toBeta_conflict]);
     done();
 
@@ -772,7 +786,7 @@ export async function runMerge({
       .all()
       .map((r) => r.rpath as string);
 
-    const delDirsInAlpha_noConflict = db
+    const deletedDirsOnlyInBeta = db
       .prepare(
         `
         SELECT dB.rpath
@@ -852,10 +866,24 @@ export async function runMerge({
       ...delDirsInBeta_noConflict,
       ...delDirsInBeta_conflict,
     ]);
-    let delDirsInAlpha = uniq([
-      ...delDirsInAlpha_noConflict,
-      ...delDirsInAlpha_conflict,
-    ]);
+    let delDirsInAlpha: string[];
+    const betaAddedDirs = toAlphaDirs.length > 0;
+    if (prefer === "beta") {
+      delDirsInAlpha = uniq([
+        ...deletedDirsOnlyInBeta,
+        ...delDirsInAlpha_conflict,
+      ]);
+    } else if (!betaAddedDirs) {
+      delDirsInAlpha = uniq([...delDirsInAlpha_conflict]);
+      toBetaDirs = uniq([...toBetaDirs, ...deletedDirsOnlyInBeta]);
+    } else {
+      delDirsInAlpha = uniq([
+        ...deletedDirsOnlyInBeta,
+        ...delDirsInAlpha_conflict,
+      ]);
+    }
+    toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
+    toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
     toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
     toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
     done();
@@ -1316,6 +1344,12 @@ export async function runMerge({
           rsyncOpts,
         )
       ).ok;
+      if (copyDirsAlphaBetaOk && toBetaDirs.length) {
+        markAlphaToBeta?.(toBetaDirs);
+      }
+      if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
+        markBetaToAlpha?.(toAlphaDirs);
+      }
       done();
 
       const canReflink =
@@ -1327,6 +1361,12 @@ export async function runMerge({
           await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
           copyAlphaBetaOk = toBeta.length === 0 || true;
           copyBetaAlphaOk = toAlpha.length === 0 || true;
+          if (toBetaRelative.length) {
+            markAlphaToBeta?.(toBetaRelative);
+          }
+          if (toAlphaRelative.length) {
+            markBetaToAlpha?.(toAlphaRelative);
+          }
           done();
         } catch (e) {
           // Fallback: if any cp --reflink failed (e.g., subtrees on different filesystems),
@@ -1372,6 +1412,12 @@ export async function runMerge({
               },
             )
           ).ok;
+          if (copyAlphaBetaOk && toBetaRelative.length) {
+            markAlphaToBeta?.(toBetaRelative);
+          }
+          if (copyBetaAlphaOk && toAlphaRelative.length) {
+            markBetaToAlpha?.(toAlphaRelative);
+          }
         }
       } else {
         // 3) copy files
@@ -1410,6 +1456,12 @@ export async function runMerge({
             },
           )
         ).ok;
+        if (copyAlphaBetaOk && toBetaRelative.length) {
+          markAlphaToBeta?.(toBetaRelative);
+        }
+        if (copyBetaAlphaOk && toAlphaRelative.length) {
+          markBetaToAlpha?.(toAlphaRelative);
+        }
         done();
       }
 

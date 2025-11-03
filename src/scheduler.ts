@@ -861,6 +861,8 @@ export async function runScheduler({
   const hotBeta = new Set<string>();
   let hotTimer: NodeJS.Timeout | null = null;
 
+  let mergeActive = false;
+
   // create the microSync closure
   const microSync = makeMicroSync({
     alphaRoot,
@@ -874,6 +876,7 @@ export async function runScheduler({
     compress,
     log,
     logger,
+    isMergeActive: () => mergeActive,
   });
 
   function scheduleHotFlush() {
@@ -1180,12 +1183,8 @@ export async function runScheduler({
     await Promise.all([scanAlpha(), scanBeta()]);
 
     const scanFailures: Array<{ side: "alpha" | "beta"; error: unknown }> = [];
-    if (!a?.ok) {
-      scanFailures.push({ side: "alpha", error: a?.error });
-    }
-    if (!b?.ok) {
-      scanFailures.push({ side: "beta", error: b?.error });
-    }
+    if (!a?.ok) scanFailures.push({ side: "alpha", error: a?.error });
+    if (!b?.ok) scanFailures.push({ side: "beta", error: b?.error });
     if (scanFailures.length) {
       const diskFail = scanFailures.find((failure) =>
         isDiskFullCause(failure.error),
@@ -1197,14 +1196,23 @@ export async function runScheduler({
         );
         throw new FatalSchedulerError(fatalMessage);
       }
-      const message = scanFailures
-        .map((failure) =>
-          failure.error
-            ? `${failure.side} scan failed: ${describeError(failure.error)}`
-            : `${failure.side} scan failed`,
-        )
-        .join("; ");
-      throw new Error(message || "scan failed");
+      const message =
+        scanFailures
+          .map((failure) =>
+            failure.error
+              ? `${failure.side} scan failed: ${describeError(failure.error)}`
+              : `${failure.side} scan failed`,
+          )
+          .join("; ") || "scan failed";
+      log("warn", "scan", message);
+      sessionWriter?.error(message);
+      backoffMs = Math.min(
+        backoffMs ? backoffMs * 2 : 10_000,
+        MAX_BACKOFF_MS,
+      );
+      lastCycleMs = MIN_INTERVAL_MS;
+      running = false;
+      return;
     }
 
     // Merge/rsync (full)
@@ -1213,6 +1221,7 @@ export async function runScheduler({
     const mergeStart = Date.now();
     let mergeOk = false;
     let mergeError: unknown = null;
+    mergeActive = true;
     try {
       await runMerge({
         alphaRoot,
@@ -1234,6 +1243,8 @@ export async function runScheduler({
         // if the session logger (to database) is enabled, then
         // ensure merge logs everything to our logger.
         verbose: !!sessionLogHandle,
+        markAlphaToBeta: microSync.markAlphaToBeta,
+        markBetaToAlpha: microSync.markBetaToAlpha,
       });
       mergeOk = true;
     } catch (err) {
@@ -1243,6 +1254,7 @@ export async function runScheduler({
       });
     }
     const mergeMs = Date.now() - mergeStart;
+    mergeActive = false;
 
     const ms = Date.now() - t0;
     lastCycleMs = ms;
