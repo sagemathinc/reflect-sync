@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
+import { spawnSync } from "node:child_process";
 import { ensureSessionDb, getSessionDbPath, resolveForwardRow } from "./session-db.js";
 import { createForward, listForwards, terminateForward } from "./forward-manage.js";
 import { ConsoleLogger } from "./logger.js";
@@ -57,7 +58,18 @@ export function registerForwardCommands(program: Command) {
     .option("--json", "emit JSON instead of a table", false)
     .action((opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
-      const rows = listForwards(sessionDb);
+      const rows = listForwards(sessionDb).map((row) => {
+        if (row.actual_state === "running" && row.monitor_pid) {
+          const check = spawnSync("ps", ["-p", String(row.monitor_pid)]);
+          if (check.status !== 0) {
+            return {
+              ...row,
+              actual_state: "error",
+            };
+          }
+        }
+        return row;
+      });
       if (!rows.length) {
         if (opts.json) {
           console.log("[]");
