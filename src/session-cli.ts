@@ -202,17 +202,22 @@ export function registerSessionCommands(program: Command) {
               sessionDb,
               logger: cliLogger,
             });
-            ensureDaemonRunning(sessionDb, cliLogger.child("daemon"));
+            const daemonPid = ensureDaemonRunning(
+              sessionDb,
+              cliLogger.child("daemon"),
+            );
             console.log(
               `created session ${id}${opts.name ? ` (${opts.name})` : ""}`,
             );
             if (!opts.paused) {
-              const row = loadSessionById(sessionDb, id)!;
-              const pid = spawnSchedulerForSession(sessionDb, row);
               setDesiredState(sessionDb, id, "running");
-              setActualState(sessionDb, id, pid ? "running" : "error");
-              row.scheduler_pid = pid;
-              console.log(`started session ${id} (pid ${pid})`);
+              console.log(
+                daemonPid
+                  ? `queued session ${id} for daemon start (daemon pid ${daemonPid})`
+                  : `queued session ${id} for daemon start`,
+              );
+            } else {
+              console.log(`session ${id} left paused`);
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

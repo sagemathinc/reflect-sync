@@ -41,7 +41,10 @@ export type MicroSyncDeps = {
   logger: Logger;
 };
 
-type MicroSyncFn = ((rpathsAlpha: string[], rpathsBeta: string[]) => Promise<void>) & {
+type MicroSyncFn = ((
+  rpathsAlpha: string[],
+  rpathsBeta: string[],
+) => Promise<void>) & {
   markAlphaToBeta: (paths: string[]) => void;
   markBetaToAlpha: (paths: string[]) => void;
 };
@@ -65,8 +68,12 @@ export function makeMicroSync({
 
   const microLogger = logger.child("micro");
 
-    const ECHO_SUPPRESS_MS = Number(process.env.REFLECT_MICRO_ECHO_SUPPRESS_MS ?? 2500);
-  const ECHO_WINDOW_MS = Number(process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 15_000);
+  const ECHO_SUPPRESS_MS = Number(
+    process.env.REFLECT_MICRO_ECHO_SUPPRESS_MS ?? 2500,
+  );
+  const ECHO_WINDOW_MS = Number(
+    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 3_000,
+  );
 
   const quarantineAlphaToBeta = new Map<string, number>();
   const quarantineBetaToAlpha = new Map<string, number>();
@@ -75,22 +82,30 @@ export function makeMicroSync({
   const lastB2A = new Map<string, number>();
 
   const nowFn = () => Date.now();
-  const extendAlphaToBetaQuarantine = (paths: Iterable<string>, until?: number) => {
+  const extendAlphaToBetaQuarantine = (
+    paths: Iterable<string>,
+    until?: number,
+  ) => {
     const expiry = (until ?? nowFn()) + ECHO_WINDOW_MS;
     for (const p of paths) {
       quarantineAlphaToBeta.set(p, expiry);
       lastA2B.set(p, nowFn());
     }
   };
-  const extendBetaToAlphaQuarantine = (paths: Iterable<string>, until?: number) => {
+  const extendBetaToAlphaQuarantine = (
+    paths: Iterable<string>,
+    until?: number,
+  ) => {
     const expiry = (until ?? nowFn()) + ECHO_WINDOW_MS;
     for (const p of paths) {
       quarantineBetaToAlpha.set(p, expiry);
       lastB2A.set(p, nowFn());
     }
   };
-  const isQuarantinedAlphaToBeta = (p: string) => (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
-  const isQuarantinedBetaToAlpha = (p: string) => (quarantineBetaToAlpha.get(p) ?? 0) > nowFn();
+  const isQuarantinedAlphaToBeta = (p: string) =>
+    (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
+  const isQuarantinedBetaToAlpha = (p: string) =>
+    (quarantineBetaToAlpha.get(p) ?? 0) > nowFn();
 
   function rsyncRoots(
     fromRoot: string,
@@ -187,34 +202,39 @@ export function makeMicroSync({
         betaPort,
         compress,
       );
-      const res = await runRsync("rsync", [
-        ...(dryRun ? ["-n"] : []),
-        ...transport,
-        "-a",
-        "-I",
-        "--relative",
-        "--from0",
-        ...compArgs,
-        ...extra,
-        `--files-from=${listFile}`,
-        from,
-        to,
-      ], [0, 23, 24], {
-        logger,
-        logLevel: "info",
-        onProgress: (event: RsyncProgressEvent) => {
-          logger.info("progress", {
-            scope: progressScope,
-            stage: "micro",
-            direction,
-            transferredBytes: event.transferredBytes,
-            totalBytes: event.totalBytes ?? null,
-            percent: event.percent,
-            speed: event.speed ?? null,
-            etaMilliseconds: event.etaMilliseconds ?? null,
-          });
+      const res = await runRsync(
+        "rsync",
+        [
+          ...(dryRun ? ["-n"] : []),
+          ...transport,
+          "-a",
+          "-I",
+          "--relative",
+          "--from0",
+          ...compArgs,
+          ...extra,
+          `--files-from=${listFile}`,
+          from,
+          to,
+        ],
+        [0, 23, 24],
+        {
+          logger,
+          logLevel: "info",
+          onProgress: (event: RsyncProgressEvent) => {
+            logger.info("progress", {
+              scope: progressScope,
+              stage: "micro",
+              direction,
+              transferredBytes: event.transferredBytes,
+              totalBytes: event.totalBytes ?? null,
+              percent: event.percent,
+              speed: event.speed ?? null,
+              etaMilliseconds: event.etaMilliseconds ?? null,
+            });
+          },
         },
-      });
+      );
       assertRsyncOk(`micro ${direction}`, res, { direction });
       return res.zero;
     } else {
@@ -227,34 +247,39 @@ export function makeMicroSync({
         alphaPort,
         compress,
       );
-      const res = await runRsync("rsync", [
-        ...(dryRun ? ["-n"] : []),
-        ...transport,
-        "-a",
-        "-I",
-        "--relative",
-        "--from0",
-        ...compArgs,
-        ...extra,
-        `--files-from=${listFile}`,
-        from,
-        to,
-      ], [0, 23, 24], {
-        logger,
-        logLevel: "info",
-        onProgress: (event: RsyncProgressEvent) => {
-          logger.info("progress", {
-            scope: progressScope,
-            stage: "micro",
-            direction,
-            transferredBytes: event.transferredBytes,
-            totalBytes: event.totalBytes ?? null,
-            percent: event.percent,
-            speed: event.speed ?? null,
-            etaMilliseconds: event.etaMilliseconds ?? null,
-          });
+      const res = await runRsync(
+        "rsync",
+        [
+          ...(dryRun ? ["-n"] : []),
+          ...transport,
+          "-a",
+          "-I",
+          "--relative",
+          "--from0",
+          ...compArgs,
+          ...extra,
+          `--files-from=${listFile}`,
+          from,
+          to,
+        ],
+        [0, 23, 24],
+        {
+          logger,
+          logLevel: "info",
+          onProgress: (event: RsyncProgressEvent) => {
+            logger.info("progress", {
+              scope: progressScope,
+              stage: "micro",
+              direction,
+              transferredBytes: event.transferredBytes,
+              totalBytes: event.totalBytes ?? null,
+              percent: event.percent,
+              speed: event.speed ?? null,
+              etaMilliseconds: event.etaMilliseconds ?? null,
+            });
+          },
         },
-      });
+      );
       assertRsyncOk(`micro ${direction}`, res, { direction });
       return res.zero;
     }
@@ -287,7 +312,10 @@ export function makeMicroSync({
     return await doRsync(direction, listFile, ["--no-recursive", "--dirs"]);
   }
 
-  const microSync: MicroSyncFn = async function microSync(rpathsAlpha: string[], rpathsBeta: string[]) {
+  const microSync: MicroSyncFn = async function microSync(
+    rpathsAlpha: string[],
+    rpathsBeta: string[],
+  ) {
     if (process.env.REFLECT_DISABLE_AUTOMATIC_COPY === "1") {
       return;
     }
