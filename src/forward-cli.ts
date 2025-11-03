@@ -41,7 +41,7 @@ export function registerForwardCommands(program: Command) {
       const level = (root.optsWithGlobals?.() as any)?.logLevel ?? "info";
       const logger = new ConsoleLogger(level);
       try {
-        const id = createForward({
+        const id = await createForward({
           sessionDb,
           name: opts.name,
           left,

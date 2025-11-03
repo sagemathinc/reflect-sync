@@ -147,7 +147,7 @@ Paths must live inside the session root (after ignore rules); for remote session
 
 ### SSH port forwards
 
-Reflect can keep long-lived SSH tunnels alive via the forwarding monitor:
+Reflect can keep long-lived SSH tunnels alive via the daemon supervisor:
 
 ```bash
 reflect forward create localhost:8443 user@host:443    # local -> remote
@@ -156,7 +156,7 @@ reflect forward list                                   # ASCII table with live P
 reflect forward terminate <id-or-name>
 ```
 
-Each forward row stores its `ssh` invocation and is supervised by the background `forward-monitor` worker. The monitor reuses the CLI’s global `--session-db` option, so custom database locations \(for testing or multi\-user setups\) work automatically. The worker restarts the tunnel on failure and records the supervising PID in the database so `reflect forward list` can surface health at a glance.  If the reflect daemon is running \(`reflect daemon start`\) it will ensure that a monitor and forwarding session is running for all forwards.
+Each forward row stores its `ssh` invocation. The daemon \(`reflect daemon start`\) keeps the background `ssh` process alive and restarts it if necessary. `reflect forward list` surfaces the recorded PID and command, and marks forwards as `error` when the underlying process has disappeared.
 
 ---
 
@@ -332,4 +332,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-

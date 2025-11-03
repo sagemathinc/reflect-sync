@@ -63,29 +63,12 @@ program
 registerSessionCommands(program);
 registerForwardCommands(program);
 
-program
-  .command("forward-monitor")
-  .description("Internal: monitor SSH forward")
-  .requiredOption("--id <id>", "forward session id")
-  .action(async (opts: { id: string }, command) => {
-    const { runForwardMonitor } = await import("./forward-monitor.js");
-    const id = Number(opts.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      console.error("forward-monitor: id must be an integer");
-      process.exit(1);
-    }
-    const globals = command.optsWithGlobals() as { sessionDb?: string };
-    const sessionDb = globals.sessionDb ?? getSessionDbPath();
-    await runForwardMonitor(sessionDb, id);
-  });
-
 const ADVANCED_COMMANDS = new Set([
   "scan",
   "ingest",
   "merge",
   "scheduler",
   "watch",
-  "forward-monitor",
 ]);
 
 const shouldShowAdvanced = () => {

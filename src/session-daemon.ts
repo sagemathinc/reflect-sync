@@ -19,7 +19,7 @@ import {
   loadForwardById,
 } from "./session-db.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
-import { spawnForwardMonitor } from "./forward-runner.js";
+import { launchForwardProcess } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
 import { ConsoleLogger, type Logger } from "./logger.js";
 
@@ -139,17 +139,11 @@ async function superviseForwards(sessionDb: string, logger: Logger) {
         }
         const forwardRow = loadForwardById(sessionDb, row.id);
         if (!forwardRow) continue;
-        const pid = spawnForwardMonitor(sessionDb, forwardRow);
+        const pid = await launchForwardProcess(sessionDb, forwardRow);
         if (pid) {
-          updateForwardSession(sessionDb, row.id, {
-            monitor_pid: pid,
-            actual_state: "running",
-            last_error: null,
-          });
-          logger.debug?.("launched forward monitor", { id: row.id, pid });
+          logger.debug?.("launched forward ssh", { id: row.id, pid });
         } else {
-          updateForwardSession(sessionDb, row.id, { actual_state: "error" });
-          logger.warn("failed to launch forward monitor", { id: row.id });
+          logger.warn("failed to launch forward ssh", { id: row.id });
         }
       } else if (row.actual_state !== "running") {
         updateForwardSession(sessionDb, row.id, { actual_state: "running" });

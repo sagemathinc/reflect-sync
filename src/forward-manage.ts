@@ -3,10 +3,9 @@ import {
   deleteForwardSession,
   loadForwardById,
   selectForwardSessions,
-  updateForwardSession,
   type ForwardRow,
 } from "./session-db.js";
-import { spawnForwardMonitor } from "./forward-runner.js";
+import { launchForwardProcess } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
 import type { Logger } from "./logger.js";
 
@@ -108,14 +107,14 @@ function parseEndpoint(spec: string): ParsedEndpoint {
   };
 }
 
-export function createForward({
+export async function createForward({
   sessionDb,
   name,
   left,
   right,
   compress,
   logger,
-}: ForwardCreateOptions): number {
+}: ForwardCreateOptions): Promise<number> {
   const leftEp = parseEndpoint(left);
   const rightEp = parseEndpoint(right);
   const direction = detectDirection(leftEp, rightEp);
@@ -169,10 +168,11 @@ export function createForward({
   if (process.env.REFLECT_DISABLE_FORWARD !== "1") {
     const row = loadForwardById(sessionDb, id);
     if (row) {
-      const pid = spawnForwardMonitor(sessionDb, row);
+      const pid = await launchForwardProcess(sessionDb, row);
       if (pid) {
-        updateForwardSession(sessionDb, id, { monitor_pid: pid });
-        logger?.debug?.("spawned forward monitor", { id, pid });
+        logger?.debug?.("launched forward ssh", { id, pid });
+      } else {
+        logger?.error?.("failed to launch forward ssh", { id });
       }
     }
   }
