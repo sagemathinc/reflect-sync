@@ -347,22 +347,51 @@ export function makeMicroSync({
 
     // Echo suppression (only when it’s a one-sided echo)
     const now = Date.now();
-    toAlpha = toAlpha.filter((r) => {
-      if (isQuarantinedBetaToAlpha(r)) return false;
-      if (!setA.has(r) && setB.has(r)) {
-        const tA2B = lastA2B.get(r) || 0;
-        if (now - tA2B < ECHO_SUPPRESS_MS) return false;
+    const filteredToBeta: string[] = [];
+    for (const r of toBeta) {
+      let missingOnAlpha = false;
+      if (isQuarantinedAlphaToBeta(r)) {
+        if (!alphaIsRemote) {
+          missingOnAlpha = (await statKind(alphaRoot, r)) === "missing";
+          if (missingOnAlpha) {
+            quarantineAlphaToBeta.delete(r);
+          } else {
+            continue;
+          }
+        } else {
+          continue;
+        }
       }
-      return true;
-    });
-    toBeta = toBeta.filter((r) => {
-      if (isQuarantinedAlphaToBeta(r)) return false;
-      if (setA.has(r) && !setB.has(r)) {
+      if (!missingOnAlpha && setA.has(r) && !setB.has(r)) {
         const tB2A = lastB2A.get(r) || 0;
-        if (now - tB2A < ECHO_SUPPRESS_MS) return false;
+        if (now - tB2A < ECHO_SUPPRESS_MS) continue;
       }
-      return true;
-    });
+      filteredToBeta.push(r);
+    }
+    toBeta = filteredToBeta;
+
+    const filteredToAlpha: string[] = [];
+    for (const r of toAlpha) {
+      let missingOnBeta = false;
+      if (isQuarantinedBetaToAlpha(r)) {
+        if (!betaIsRemote) {
+          missingOnBeta = (await statKind(betaRoot, r)) === "missing";
+          if (missingOnBeta) {
+            quarantineBetaToAlpha.delete(r);
+          } else {
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
+      if (!missingOnBeta && !setA.has(r) && setB.has(r)) {
+        const tA2B = lastA2B.get(r) || 0;
+        if (now - tA2B < ECHO_SUPPRESS_MS) continue;
+      }
+      filteredToAlpha.push(r);
+    }
+    toAlpha = filteredToAlpha;
 
     // NOTE: we may also act on directories/symlinks and deletions below,
     // so don't early-return if file lists are empty.
