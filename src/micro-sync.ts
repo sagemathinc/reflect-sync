@@ -9,7 +9,11 @@ import {
   stat as fsStat,
 } from "node:fs/promises";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
-import { run as runRsync, type RsyncProgressEvent } from "./rsync.js";
+import {
+  run as runRsync,
+  type RsyncProgressEvent,
+  assertRsyncOk,
+} from "./rsync.js";
 import {
   isCompressing,
   rsyncCompressionArgs,
@@ -185,6 +189,7 @@ export function makeMicroSync({
           });
         },
       });
+      assertRsyncOk(`micro ${direction}`, res, { direction });
       return res.zero;
     } else {
       const { from, to, transport } = rsyncRoots(
@@ -224,6 +229,7 @@ export function makeMicroSync({
           });
         },
       });
+      assertRsyncOk(`micro ${direction}`, res, { direction });
       return res.zero;
     }
   }

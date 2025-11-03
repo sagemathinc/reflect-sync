@@ -22,7 +22,13 @@ import {
   handleWatchErrors,
   isRecent,
 } from "./hotwatch.js";
-import { ensureSessionDb, SessionWriter } from "./session-db.js";
+import {
+  ensureSessionDb,
+  SessionWriter,
+  setDesiredState,
+  setActualState,
+  getReflectSyncHome,
+} from "./session-db.js";
 import { makeMicroSync } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
@@ -50,7 +56,14 @@ import {
   normalizeIgnorePatterns,
   collectIgnoreOption,
 } from "./ignore.js";
-import { getReflectSyncHome } from "./session-db.js";
+import { DiskFullError } from "./rsync.js";
+
+class FatalSchedulerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FatalSchedulerError";
+  }
+}
 
 export type SchedulerOptions = {
   alphaRoot: string;
@@ -276,6 +289,91 @@ export async function runScheduler({
     lastCycleMs = 0,
     nextDelayMs = 10_000,
     backoffMs = 0;
+
+  let fatalTriggered = false;
+
+  const DISK_FULL_PATTERNS = [
+    "enospc",
+    "no space",
+    "disk is full",
+    "disk full",
+    "filesystem full",
+    "file system full",
+    "out of space",
+  ];
+
+  function describeError(err: unknown): string {
+    if (!err) return "";
+    if (err instanceof Error) {
+      return err.message || err.toString();
+    }
+    if (typeof err === "object" && err) {
+      const maybeMessage = (err as any).message;
+      if (typeof maybeMessage === "string" && maybeMessage) return maybeMessage;
+    }
+    return String(err);
+  }
+
+  function messageHasDiskFull(message?: string | null): boolean {
+    if (!message) return false;
+    const lower = message.toLowerCase();
+    return DISK_FULL_PATTERNS.some((pattern) => lower.includes(pattern));
+  }
+
+  function isDiskFullCause(err: unknown): boolean {
+    if (!err) return false;
+    if (err instanceof DiskFullError) return true;
+    if (err instanceof Error) {
+      const anyErr = err as any;
+      if (typeof anyErr.code === "number" && anyErr.code === 28) return true;
+      if (typeof anyErr.errno === "number" && anyErr.errno === 28) return true;
+      if (typeof anyErr.code === "string" && messageHasDiskFull(anyErr.code)) {
+        return true;
+      }
+      if (messageHasDiskFull(err.message)) return true;
+      if (anyErr.cause && isDiskFullCause(anyErr.cause)) return true;
+      return false;
+    }
+    if (typeof err === "object") {
+      const anyErr = err as any;
+      if (typeof anyErr?.code === "number" && anyErr.code === 28) return true;
+      if (typeof anyErr?.errno === "number" && anyErr.errno === 28) return true;
+      if (typeof anyErr?.code === "string" && messageHasDiskFull(anyErr.code)) {
+        return true;
+      }
+      if (
+        typeof anyErr?.message === "string" &&
+        messageHasDiskFull(anyErr.message)
+      ) {
+        return true;
+      }
+    }
+    if (typeof err === "string") return messageHasDiskFull(err);
+    return false;
+  }
+
+  function pauseForDiskFull(reason: string, err?: unknown): string {
+    const detail = describeError(err);
+    const message = detail ? `${reason}: ${detail}` : reason;
+    if (!fatalTriggered) {
+      fatalTriggered = true;
+      log("error", "scheduler", message, {
+        code: (err as any)?.code ?? null,
+      });
+      sessionWriter?.error(message);
+      if (sessionDb && sessionId) {
+        try {
+          setDesiredState(sessionDb, sessionId, "paused");
+        } catch {}
+        try {
+          setActualState(sessionDb, sessionId, "error");
+        } catch {}
+      }
+    }
+    running = false;
+    pending = false;
+    return message;
+  }
 
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
@@ -574,6 +672,13 @@ export async function runScheduler({
       remoteLog.error("ingest error", {
         error: ingestError instanceof Error ? ingestError.message : String(ingestError),
       });
+      if (isDiskFullCause(ingestError)) {
+        const fatalMessage = pauseForDiskFull(
+          `disk full during remote scan (${params.host})`,
+          ingestError,
+        );
+        throw new FatalSchedulerError(fatalMessage);
+      }
     }
 
     return {
@@ -670,6 +775,10 @@ export async function runScheduler({
       input: ingestStream,
       abortSignal: ingestAbort.signal,
     }).catch((err) => {
+      if (isDiskFullCause(err)) {
+        pauseForDiskFull(`disk full during remote ${side} watch ingest`, err);
+        return;
+      }
       remoteLog.error("ingest watch error", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -771,6 +880,7 @@ export async function runScheduler({
     if (hotTimer) return;
     hotTimer = setTimeout(async () => {
       hotTimer = null;
+      if (fatalTriggered) return;
       if (hotAlpha.size === 0 && hotBeta.size === 0) return;
       const rpathsAlpha = Array.from(hotAlpha);
       const rpathsBeta = Array.from(hotBeta);
@@ -779,10 +889,15 @@ export async function runScheduler({
       try {
         await microSync(rpathsAlpha, rpathsBeta);
       } catch (e: any) {
+        if (isDiskFullCause(e)) {
+          pauseForDiskFull("disk full during realtime sync", e);
+          return;
+        }
         log("warn", "realtime", "microSync failed", {
           err: String(e?.message || e),
         });
       } finally {
+        if (fatalTriggered) return;
         // run another micro pass if more landed
         if (hotAlpha.size || hotBeta.size) scheduleHotFlush();
         requestSoon("micro-sync complete");
@@ -1064,6 +1179,34 @@ export async function runScheduler({
     };
     await Promise.all([scanAlpha(), scanBeta()]);
 
+    const scanFailures: Array<{ side: "alpha" | "beta"; error: unknown }> = [];
+    if (!a?.ok) {
+      scanFailures.push({ side: "alpha", error: a?.error });
+    }
+    if (!b?.ok) {
+      scanFailures.push({ side: "beta", error: b?.error });
+    }
+    if (scanFailures.length) {
+      const diskFail = scanFailures.find((failure) =>
+        isDiskFullCause(failure.error),
+      );
+      if (diskFail) {
+        const fatalMessage = pauseForDiskFull(
+          `disk full during ${diskFail.side} scan`,
+          diskFail.error,
+        );
+        throw new FatalSchedulerError(fatalMessage);
+      }
+      const message = scanFailures
+        .map((failure) =>
+          failure.error
+            ? `${failure.side} scan failed: ${describeError(failure.error)}`
+            : `${failure.side} scan failed`,
+        )
+        .join("; ");
+      throw new Error(message || "scan failed");
+    }
+
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
     const mergeLogger = scoped("merge");
@@ -1119,18 +1262,18 @@ export async function runScheduler({
             ? String(mergeError)
             : "merge failed";
       sessionWriter?.error(`merge failed: ${message}`);
+      if (isDiskFullCause(mergeError) || messageHasDiskFull(message)) {
+        const fatalMessage = pauseForDiskFull(
+          "disk full during merge",
+          mergeError,
+        );
+        throw new FatalSchedulerError(fatalMessage);
+      }
       const lower = message.toLowerCase();
-      const enospc = lower.includes("enospc") || lower.includes("no space");
       const warn =
         lower.includes("partial") ||
         lower.includes("some files could not be transferred");
-      if (enospc) {
-        log("error", "merge", "ENOSPC; backoff", { message });
-        backoffMs = Math.min(
-          backoffMs ? backoffMs * 2 : 10_000,
-          MAX_BACKOFF_MS,
-        );
-      } else if (warn) {
+      if (warn) {
         log("warn", "merge", "partial transfer; backoff", { message });
         backoffMs = Math.min(backoffMs ? backoffMs + 5_000 : 5_000, 60_000);
       } else {
@@ -1163,6 +1306,13 @@ export async function runScheduler({
     try {
       await microSync(a, b);
     } catch (err) {
+      if (isDiskFullCause(err)) {
+        const fatalMessage = pauseForDiskFull(
+          "disk full during micro flush",
+          err,
+        );
+        throw new FatalSchedulerError(fatalMessage);
+      }
       log("warn", "flush", "microSync during flush failed", { err: `${err}` });
     }
     return true;
@@ -1287,6 +1437,14 @@ export async function runScheduler({
             await oneCycle();
             log("info", "scheduler", "sync cycle complete");
           } catch (e: any) {
+            if (e instanceof FatalSchedulerError) throw e;
+            if (isDiskFullCause(e)) {
+              const fatalMessage = pauseForDiskFull(
+                "disk full during manual sync",
+                e,
+              );
+              throw new FatalSchedulerError(fatalMessage);
+            }
             log("error", "scheduler", "sync cycle error", {
               err: String(e?.message || e),
             });
@@ -1317,6 +1475,7 @@ export async function runScheduler({
   async function idleWaitWithCommandPolling(totalMs: number) {
     let remaining = totalMs;
     while (remaining > 0) {
+      if (fatalTriggered) return;
       await ensureRootsExist({ localOnly: true });
       const executed = await processSessionCommands();
       if (executed) return;
@@ -1349,6 +1508,9 @@ export async function runScheduler({
     remoteStreams = [alphaStream, betaStream].filter(Boolean) as any[];
 
     while (true) {
+      if (fatalTriggered) {
+        throw new FatalSchedulerError("disk full detected");
+      }
       if (!running) {
         pending = false;
         try {
@@ -1363,6 +1525,9 @@ export async function runScheduler({
             log("info", "scheduler", `remote root unavailable; retrying in ${delay} ms`);
             await idleWaitWithCommandPolling(delay);
             continue;
+          }
+          if (err instanceof FatalSchedulerError) {
+            throw err;
           }
           throw err;
         }
@@ -1444,6 +1609,12 @@ export async function runScheduler({
 
   try {
     await loop();
+  } catch (err) {
+    if (err instanceof FatalSchedulerError) {
+      process.exitCode = process.exitCode ?? 1;
+    } else {
+      throw err;
+    }
   } finally {
     await cleanup();
   }

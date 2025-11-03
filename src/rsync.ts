@@ -34,6 +34,28 @@ const MAX_PROGRESS_UPDATES_PER_SEC = Number(
   process.env.REFLECT_PROGRESS_MAX_HZ ?? 3,
 );
 
+export class RsyncError extends Error {
+  constructor(
+    message: string,
+    public readonly code: number | null,
+    public readonly context?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "RsyncError";
+  }
+}
+
+export class DiskFullError extends RsyncError {
+  constructor(
+    message: string,
+    code: number | null,
+    context?: Record<string, unknown>,
+  ) {
+    super(message, code, context);
+    this.name = "DiskFullError";
+  }
+}
+
 type RsyncLogOptions = {
   logger?: Logger;
   verbose?: boolean | string;
@@ -394,12 +416,40 @@ export function rsyncArgsFixMetaDirs(opts: RsyncRunOptions) {
   return a;
 }
 
+function isRsyncDiskFull(code: number | null, stderr?: string): boolean {
+  if (code === 28) return true;
+  if (!stderr) return false;
+  const lower = stderr.toLowerCase();
+  return (
+    lower.includes("no space") ||
+    lower.includes("disk is full") ||
+    lower.includes("filesystem full") ||
+    lower.includes("file system full")
+  );
+}
+
+export function assertRsyncOk(
+  label: string,
+  res: { code: number | null; ok: boolean; zero: boolean; stderr?: string },
+  context?: Record<string, unknown>,
+) {
+  if (res.ok) return;
+  const base =
+    typeof res.code === "number" ? `exit code ${res.code}` : "unknown exit code";
+  const message = `rsync ${label} failed (${base})`;
+  const errorContext = { label, ...context, code: res.code };
+  if (isRsyncDiskFull(res.code, res.stderr)) {
+    throw new DiskFullError(message, res.code ?? null, errorContext);
+  }
+  throw new RsyncError(message, res.code ?? null, errorContext);
+}
+
 export function run(
   cmd: string,
   args: string[],
   okCodes: number[] = [0],
   opts: RsyncRunOptions = {},
-): Promise<{ code: number | null; ok: boolean; zero: boolean }> {
+): Promise<{ code: number | null; ok: boolean; zero: boolean; stderr?: string }> {
   const t = Date.now();
   const { logger, debug } = resolveLogContext(opts);
   const wantProgress = typeof opts.onProgress === "function";
@@ -479,7 +529,7 @@ export function run(
           });
         } catch {}
       }
-      resolve({ code, ok, zero });
+      resolve({ code, ok, zero, stderr: stderrBuffer });
       if (debug) {
         logger.debug("rsync exit", {
           cmd,
@@ -698,13 +748,14 @@ export async function rsyncCopyDirs(
     ...runOpts,
     onProgress: progressHandler,
   });
+  assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
     logger.debug(`>>> rsync ${label} (dirs): done`, {
       code: res.code,
       ok: res.ok,
     });
   }
-  return { ok: res.ok, zero: res.zero };
+  return { ok: true, zero: res.zero };
 }
 
 export async function rsyncFixMeta(
@@ -738,13 +789,14 @@ export async function rsyncFixMeta(
   ];
   applySshTransport(args, from, to, opts);
   const res = await run("rsync", args, [0, 23, 24], opts);
+  assertRsyncOk(`${label} (meta)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta): done`, {
       code: res.code,
       ok: res.ok,
     });
   }
-  return { ok: res.ok, zero: res.zero };
+  return { ok: true, zero: res.zero };
 }
 
 export async function rsyncFixMetaDirs(
@@ -779,13 +831,14 @@ export async function rsyncFixMetaDirs(
   ];
   applySshTransport(args, from, to, opts);
   const res = await run("rsync", args, [0, 23, 24], opts);
+  assertRsyncOk(`${label} (meta dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta dirs): done`, {
       code: res.code,
       ok: res.ok,
     });
   }
-  return { ok: res.ok, zero: res.zero };
+  return { ok: true, zero: res.zero };
 }
 
 export async function rsyncDelete(
@@ -830,7 +883,8 @@ export async function rsyncDelete(
       to,
     ];
     applySshTransport(args, sourceRoot, to, opts);
-    await run("rsync", args, [0, 24], opts);
+    const res = await run("rsync", args, [0, 24], opts);
+    assertRsyncOk(`delete ${label}`, res, { from: sourceRoot, to });
   } finally {
     if (tmpEmptyDir) {
       await rm(tmpEmptyDir, { recursive: true, force: true });
