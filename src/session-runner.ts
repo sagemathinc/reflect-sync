@@ -6,6 +6,7 @@ import {
   type SessionRow,
 } from "./session-db.js";
 import { deserializeIgnoreRules } from "./ignore.js";
+import { resolveSelfLaunch } from "./self-launch.js";
 
 export function spawnSchedulerForSession(
   sessionDb: string,
@@ -20,8 +21,9 @@ export function spawnSchedulerForSession(
   const baseDb: string = row.base_db ?? sessionPaths.base_db;
   const hashAlg: string = row.hash_alg ?? "sha256";
 
-  const args: string[] = process.env.REFLECT_BUNDLED ? [] : [process.argv[1]];
-  args.push(
+  const launcher = resolveSelfLaunch();
+  const args: string[] = [
+    ...launcher.args,
     "scheduler",
     "--alpha-root",
     row.alpha_root,
@@ -39,7 +41,7 @@ export function spawnSchedulerForSession(
     hashAlg,
     "--compress",
     row.compress ?? "auto",
-  );
+  ];
 
   const ignorePatterns = deserializeIgnoreRules(row.ignore_rules ?? null);
   for (const pattern of ignorePatterns) {
@@ -71,7 +73,7 @@ export function spawnSchedulerForSession(
 
   // Debug output suppressed to avoid polluting CLI stdout contracts.
   // console.log(`${process.execPath} ${argsJoin(args)}`);
-  const child = spawn(process.execPath, args, {
+  const child = spawn(launcher.command, args, {
     stdio: "ignore",
     detached: true,
     env: process.env,

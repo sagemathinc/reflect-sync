@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // src/cli.ts (ESM, TypeScript)
+import fs from "node:fs";
+import path from "node:path";
 import { Command, Option } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { registerForwardCommands } from "./forward-cli.js";
@@ -14,6 +16,19 @@ import {
 } from "./logger.js";
 import pkg from "../package.json" with { type: "json" };
 import { collectIgnoreOption } from "./ignore.js";
+
+if (!process.env.REFLECT_ENTRY) {
+  const entry = process.argv[1];
+  if (entry) {
+    try {
+      if (fs.existsSync(entry)) {
+        process.env.REFLECT_ENTRY = path.resolve(entry);
+      }
+    } catch {
+      // ignore fs errors; we will fall back to process.execPath when spawning
+    }
+  }
+}
 
 function resolveLogLevel(command: Command): LogLevel {
   const raw = (command.optsWithGlobals() as any)?.logLevel as

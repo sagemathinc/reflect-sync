@@ -22,6 +22,7 @@ import { spawnSchedulerForSession } from "./session-runner.js";
 import { launchForwardProcess } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
 import { ConsoleLogger, type Logger } from "./logger.js";
+import { resolveSelfLaunch } from "./self-launch.js";
 
 const DAEMON_DIR = join(getReflectSyncHome(), "daemon");
 const PID_FILE = join(DAEMON_DIR, "reflect.pid");
@@ -189,9 +190,15 @@ async function runSupervisorLoop(
 
 function spawnDetachedDaemon(sessionDb: string) {
   ensureDir();
-  const args: string[] = process.env.REFLECT_BUNDLED ? [] : [process.argv[1]];
-  args.push("daemon", "run", "--session-db", sessionDb);
-  const child = spawn(process.execPath, args, {
+  const launcher = resolveSelfLaunch();
+  const args: string[] = [
+    ...launcher.args,
+    "daemon",
+    "run",
+    "--session-db",
+    sessionDb,
+  ];
+  const child = spawn(launcher.command, args, {
     stdio: "ignore",
     detached: true,
     env: process.env,
