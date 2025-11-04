@@ -1,16 +1,12 @@
 {
   "name": "reflect-sync",
-  "version": "0.8.9",
+  "version": "0.9.0",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/bundle.mjs",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+    ".": "./dist/bundle.mjs"
   },
-  "types": "dist/index.d.ts",
   "bin": {
     "reflect": "bin/reflect-sync.mjs",
     "reflect-sync": "bin/reflect-sync.mjs"
@@ -20,7 +16,7 @@
     "clean": "rm -rf dist node_modules bundle",
     "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest",
     "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch",
-    "prepublishOnly": "pnpm clean && pnpm install && pnpm build && pnpm test",
+    "prepublishOnly": "pnpm clean && pnpm bundle && rm dist/bundle.cjs && pnpm test",
     "bundle:worker": "rollup -c rollup.worker.mjs",
     "bundle:main": "rollup -c rollup.config.mjs",
     "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main",
@@ -31,7 +27,7 @@
   "engines": {
     "node": ">=22"
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["bin", "dist/bundle.mjs", "README.md", "LICENSE"],
   "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "MIT",
   "packageManager": "pnpm@10.19.0",

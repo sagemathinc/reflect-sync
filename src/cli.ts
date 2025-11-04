@@ -16,6 +16,7 @@ import {
 } from "./logger.js";
 import pkg from "../package.json" with { type: "json" };
 import { collectIgnoreOption } from "./ignore.js";
+import { registerInstallCommand } from "./install-cli.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -77,6 +78,7 @@ program
 
 registerSessionCommands(program);
 registerForwardCommands(program);
+registerInstallCommand(program);
 
 const ADVANCED_COMMANDS = new Set([
   "scan",

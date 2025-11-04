@@ -6,8 +6,11 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { execPath, execArgv, argv, env, exit } from "node:process";
 import path from "node:path";
+import fs from "node:fs";
 
-const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const bundlePath = fileURLToPath(new URL("../dist/bundle.mjs", import.meta.url));
+const cliFallback = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const targetPath = fileExistsSync(bundlePath) ? bundlePath : cliFallback;
 const hasNoWarn =
   execArgv.includes("--no-warnings") ||
   String(env.NODE_OPTIONS || "").includes("--no-warnings");
@@ -15,7 +18,7 @@ const hasNoWarn =
 if (!hasNoWarn) {
   const child = spawn(
     execPath,
-    ["--no-warnings", ...execArgv, cliPath, ...argv.slice(2)],
+    ["--no-warnings", ...execArgv, targetPath, ...argv.slice(2)],
     {
       stdio: "inherit",
       env, // preserve env
@@ -27,7 +30,7 @@ if (!hasNoWarn) {
   });
 } else {
   // Already running with --no-warnings; just load the CLI.
-  await import(pathToFileURL(cliPath).href);
+  await import(pathToFileURL(targetPath).href);
 }
 
 function pathToFileURL(p) {
@@ -35,4 +38,13 @@ function pathToFileURL(p) {
   // node >=16 has URL.pathToFileURL but doing inline to avoid extra import
   u.pathname = path.resolve(p).split(path.sep).join("/");
   return u;
+}
+
+function fileExistsSync(p) {
+  try {
+    fs.statSync(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
