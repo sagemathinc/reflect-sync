@@ -12,7 +12,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 - **Realtime micro\-sync** for hot files \(debounced, safe on partial edits\)
 - **SSH\-friendly**: stream remote deltas over stdin
 - **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
-- **Lightweight:** The npm package is under 100KB compressed; decompressed, with all dependencies is under 2MB.
+- **Very Lightweight:** The reflect-sync npm package is under 100KB compressed (about 300KB uncompressed), including all dependencies.
 
 > Requires **Node.js 22+**.
 

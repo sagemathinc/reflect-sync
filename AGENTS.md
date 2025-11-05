@@ -31,6 +31,9 @@ command) before opening a PR.
 
 ## Commit & Pull Request Guidelines
 
+- Do not automatically commit after completing a task.  The developers will manually review all code before it is comited to git.
+- Do not delete files that are not checked into git.
+
 History favors concise, present-tense messages (`fix remote watcher reconnect`, `implement compression`). Keep the subject under ~60 characters and skip
 trailing punctuation. For PRs, include a short problem statement, outline the solution, and link any tracked issues. Attach CLI transcripts or screenshots
 when changing user-visible behavior, and call out test coverage adjustments. Request at least one review when touching scheduler or rsync pipelines.
