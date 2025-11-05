@@ -34,6 +34,31 @@ const banner = `
       console.warn(output);
     });
   }
+  if (!process.__REFLECT_UNCAUGHT_HANDLER__) {
+    process.__REFLECT_UNCAUGHT_HANDLER__ = true;
+    const summarize = (raw) => {
+      const text = typeof raw === 'string' ? raw : String(raw ?? '');
+      const trimmed = text.trim();
+      const MAX_LEN = 2048;
+      if (trimmed.length > MAX_LEN) {
+        return trimmed.slice(0, MAX_LEN) + '… [' + trimmed.length + ' chars truncated]';
+      }
+      return trimmed;
+    };
+    process.on('uncaughtException', (err) => {
+      const raw = err?.stack ?? err?.message ?? err;
+      console.error(summarize(raw));
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (reason) => {
+      const raw =
+        (reason && (reason.stack || reason.message)) ??
+        reason ??
+        'unknown rejection';
+      console.error(summarize(raw));
+      process.exit(1);
+    });
+  }
 `;
 
 const external = (id) => id.startsWith("node:");
