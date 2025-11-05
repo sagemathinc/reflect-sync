@@ -132,6 +132,12 @@ program
     "prune deleted entries at least this old *before* doing the scan",
   )
   .option("--numeric-ids", "include uid and gid in file hashes", false)
+  .option(
+    "-i, --ignore <pattern>",
+    "gitignore-style ignore rule (repeat or comma-separated)",
+    collectIgnoreOption,
+    [] as string[],
+  )
   .action(
     async (
       opts: {
@@ -144,6 +150,7 @@ program
         vacume: boolean;
         pruneMs: string;
         numericIds: boolean;
+        ignore?: string[];
       },
       command,
     ) => {
