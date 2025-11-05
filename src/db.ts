@@ -24,6 +24,7 @@ export class Database extends DatabaseSync {
 }
 
 const PRAGMAS = [
+  "busy_timeout = 5000",
   "auto_vacuum = INCREMENTAL",
   "temp_store = MEMORY",
   "journal_mode = WAL",
@@ -105,6 +106,7 @@ CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
 export function getBaseDb(dbPath: string): Database {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
+  db.pragma("busy_timeout = 5000");
   db.pragma("auto_vacuum = INCREMENTAL");
   db.pragma("temp_store = MEMORY");
   db.pragma("journal_mode = WAL");

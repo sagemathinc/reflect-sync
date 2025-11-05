@@ -236,6 +236,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   const db = new Database(sessionDbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
+  db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
 
   db.exec(`
