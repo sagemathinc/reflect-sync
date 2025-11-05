@@ -287,12 +287,22 @@ program
     "max concurrent hot watchers",
     String(MAX_WATCHERS),
   )
+  .option(
+    "-i, --ignore <pattern>",
+    "gitignore-style ignore rule (repeat or comma-separated)",
+    collectIgnoreOption,
+    [] as string[],
+  )
   .action(async (opts, command) => {
     const { runWatch } = await import("./watch.js");
-    await runWatch({
+    const merged = {
       ...command.optsWithGlobals(),
       ...opts,
-    });
+    } as any;
+    if (Array.isArray(merged.ignore)) {
+      merged.ignoreRules = merged.ignore;
+    }
+    await runWatch(merged);
   });
 
 // Default help when no subcommand given
