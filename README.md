@@ -167,12 +167,12 @@ Each forward row stores its `ssh` invocation. The daemon \(`reflect daemon start
 
 ## How Reflect works \(short\)
 
-- **Scan** writes metadata (`path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime`) to SQLite. Hashing is streamed and parallelized; we only rehash when `ctime` changed since the last hash.
-- **Merge** builds temp tables with _relative_ paths, computes the 3-way plan (changed A, changed B, deleted A/B, resolve conflicts by `--prefer`), then feeds rsync with NUL-separated `--files-from` lists.
+- **Scan** writes metadata \(`path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime`\) to SQLite. Hashing is streamed and parallelized; we only rehash when `ctime` changed since the last hash.  _Scanning never crosses filesytem boundaries._
+- **Merge** builds temp tables with _relative_ paths, computes the 3\-way plan \(changed A, changed B, deleted A/B, resolve conflicts by `--prefer`\), then feeds rsync with NUL\-separated `--files-from` lists.
 - **Scheduler**:
-  - shallow root watchers + bounded deep “hot” watchers (recently touched subtrees),
-  - **micro-sync** a small list of hot files immediately,
-  - periodically run a full scan + merge; interval adapts to prior cycle time and recent rsync errors.
+  - shallow root watchers \+ bounded deep “hot” watchers \(recently touched subtrees\),
+  - **micro\-sync** a small list of hot files immediately,
+  - periodically run a full scan \+ merge; interval adapts to prior cycle time and recent rsync errors.
   - **Progress logging:** hashing and rsync stages emit logs tagged with `message="progress"` plus scopes in the metadata. Use `reflect logs <id> --message progress -f` to observe in real time.
 
 ---
@@ -337,3 +337,4 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+

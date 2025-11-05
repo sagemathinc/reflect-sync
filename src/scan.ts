@@ -3,7 +3,7 @@
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
-import { readlink } from "node:fs/promises";
+import { readlink, stat as statAsync } from "node:fs/promises";
 import { getDb } from "./db.js";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -123,6 +123,17 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   if (Array.isArray(ignoreRulesOpt)) ignoreRaw.push(...ignoreRulesOpt);
   if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
   const absRoot = path.resolve(root);
+  let rootDevice: number | undefined;
+  try {
+    const rootStat = await statAsync(absRoot);
+    rootDevice = rootStat.dev;
+  } catch (err) {
+    throw new Error(
+      `failed to stat scan root '${absRoot}': ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
   const syncHome = getReflectSyncHome();
   ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
@@ -564,6 +575,10 @@ ON CONFLICT(path) DO UPDATE SET
       },
       // Do not emit ignored directories/files/links as entries
       entryFilter: (e) => {
+        const st = (e as { stats?: import("fs").Stats }).stats;
+        if (rootDevice !== undefined && st && st.dev !== rootDevice) {
+          return false;
+        }
         const r = toRel(e.path, absRoot);
         if (e.dirent.isDirectory()) {
           return !ig.ignoresDir(r);
@@ -613,6 +628,9 @@ ON CONFLICT(path) DO UPDATE SET
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
       const st = entry.stats!;
+      if (rootDevice !== undefined && st.dev !== rootDevice) {
+        continue;
+      }
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
 
