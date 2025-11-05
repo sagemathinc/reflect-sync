@@ -623,11 +623,20 @@ export async function runScheduler({
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
-    const remoteLog = scoped("remote");
-    remoteLog.debug("ssh scan", {
-      host: params.host,
-      args: argsJoin(sshArgs),
-    });
+  const remoteLog = scoped("remote");
+  const summarizeStderr = (chunk: Buffer | string) => {
+    const raw = chunk.toString();
+    let trimmed = raw.trim();
+    const MAX_LEN = 1024;
+    if (trimmed.length > MAX_LEN) {
+      trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
+    }
+    return trimmed;
+  };
+  remoteLog.debug("ssh scan", {
+    host: params.host,
+    args: argsJoin(sshArgs),
+  });
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -636,7 +645,7 @@ export async function runScheduler({
     sshP.stderr?.on("data", (chunk) => {
       remoteLog.debug("ssh stderr", {
         host: params.host,
-        data: chunk.toString().trim(),
+        data: summarizeStderr(chunk),
       });
     });
     const stdout = sshP.stdout;
@@ -731,6 +740,15 @@ export async function runScheduler({
       sshArgs.push("--ignore", pattern);
     }
     const remoteLog = scoped(`remote.${side}`);
+    const summarizeStderr = (chunk: Buffer | string) => {
+      const raw = chunk.toString();
+      let trimmed = raw.trim();
+      const MAX_LEN = 1024;
+      if (trimmed.length > MAX_LEN) {
+        trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
+      }
+      return trimmed;
+    };
     remoteLog.debug("ssh watch", { args: argsJoin(sshArgs) });
 
     // stdin=pipe so we can send EOF to make remote `watch` exit
@@ -739,7 +757,7 @@ export async function runScheduler({
     });
 
     sshP.stderr?.on("data", (chunk) => {
-      remoteLog.debug("ssh stderr", { data: chunk.toString().trim() });
+      remoteLog.debug("ssh stderr", { data: summarizeStderr(chunk) });
     });
 
     const stdout = sshP.stdout;
