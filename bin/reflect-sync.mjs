@@ -9,8 +9,8 @@ import path from "node:path";
 import fs from "node:fs";
 
 const bundlePath = fileURLToPath(new URL("../dist/bundle.mjs", import.meta.url));
-const cliFallback = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
-const targetPath = fileExistsSync(bundlePath) ? bundlePath : cliFallback;
+const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const targetPath = fileExistsSync(cliPath) ? cliPath : bundlePath;
 const hasNoWarn =
   execArgv.includes("--no-warnings") ||
   String(env.NODE_OPTIONS || "").includes("--no-warnings");

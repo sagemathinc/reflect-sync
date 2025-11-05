@@ -37,7 +37,12 @@ const LEAVE_TEMP_FILES = false;
 function toBoolVerbose(v?: boolean | string): boolean {
   if (typeof v === "string") {
     const trimmed = v.trim().toLowerCase();
-    if (!trimmed || trimmed === "false" || trimmed === "0" || trimmed === "off") {
+    if (
+      !trimmed ||
+      trimmed === "false" ||
+      trimmed === "0" ||
+      trimmed === "off"
+    ) {
       return false;
     }
     return true;
@@ -56,15 +61,18 @@ function buildProgram(): Command {
     .option("--beta-db <path>", "beta sqlite", "beta.db")
     .option("--base-db <path>", "base sqlite", "base.db")
     .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-    .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
+    .option("--alpha-port <n>", "SSH port for alpha", (v) =>
+      Number.parseInt(v, 10),
+    )
     .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-    .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
+    .option("--beta-port <n>", "SSH port for beta", (v) =>
+      Number.parseInt(v, 10),
+    )
     .addOption(
       new Option("--prefer <side>", "conflict winner")
         .choices(["alpha", "beta"])
         .default("alpha"),
     )
-    .option("--lww-epsilon-ms <ms>", "LWW tie epsilon in ms", "3000")
     .option("--dry-run", "simulate without changing files", false)
     .option(
       "--compress <algo>",
@@ -97,7 +105,6 @@ type MergeRsyncOptions = {
   betaHost?: string;
   betaPort?: number;
   prefer: "alpha" | "beta";
-  lwwEpsilonMs?: string;
   dryRun: boolean | string;
   verbose?: boolean | string;
   compress?: string;
@@ -108,6 +115,8 @@ type MergeRsyncOptions = {
   ignoreRules?: string[];
   markAlphaToBeta?: (paths: string[]) => void;
   markBetaToAlpha?: (paths: string[]) => void;
+  isQuarantinedAlphaToBeta?: (path: string) => boolean;
+  isQuarantinedBetaToAlpha?: (path: string) => boolean;
 };
 
 // ---------- helpers ----------
@@ -129,7 +138,6 @@ export async function runMerge({
   betaHost,
   betaPort: rawBetaPort,
   prefer,
-  lwwEpsilonMs,
   dryRun,
   compress,
   sessionDb,
@@ -140,6 +148,8 @@ export async function runMerge({
   ignoreRules: rawIgnoreRules = [],
   markAlphaToBeta,
   markBetaToAlpha,
+  isQuarantinedAlphaToBeta,
+  isQuarantinedBetaToAlpha,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -150,10 +160,11 @@ export async function runMerge({
   const betaPort = coercePort(rawBetaPort);
 
   const level =
-    typeof logLevel === "string" ? parseLogLevel(logLevel, "info") : logLevel ?? "info";
+    typeof logLevel === "string"
+      ? parseLogLevel(logLevel, "info")
+      : (logLevel ?? "info");
   const logger = providedLogger ?? new ConsoleLogger(level);
   const debug = toBoolVerbose(verbose) || level === "debug";
-  const EPS = Number(lwwEpsilonMs || "3000") || 3000;
   const sshPort = alphaHost ? alphaPort : betaPort;
   const rsyncOpts = {
     dryRun,
@@ -547,10 +558,10 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE a.op_ts > b.op_ts + ?
+        WHERE a.op_ts > b.op_ts
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     const bothChangedToAlpha = db
@@ -561,10 +572,10 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE b.op_ts > a.op_ts + ?
+        WHERE b.op_ts > a.op_ts
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     const bothChangedTie = db
@@ -575,10 +586,10 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE ABS(a.op_ts - b.op_ts) <= ?
+        WHERE a.op_ts = b.op_ts
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     if (prefer === "alpha") {
@@ -614,11 +625,11 @@ export async function runMerge({
         LEFT JOIN alpha_rel a USING (rpath)
         LEFT JOIN beta_rel  b USING (rpath)
         LEFT JOIN base_rel  br USING (rpath)
-        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
-           OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
+        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0)
+           OR (COALESCE(a.op_ts, br.op_ts, 0) = COALESCE(b.op_ts, 0) AND ? = 'alpha')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     const toAlpha_conflict = db
@@ -630,11 +641,11 @@ export async function runMerge({
         LEFT JOIN alpha_rel a USING (rpath)
         LEFT JOIN beta_rel  b USING (rpath)
         LEFT JOIN base_rel  br USING (rpath)
-        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
-           OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
+        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0)
+           OR (COALESCE(b.op_ts, 0) = COALESCE(a.op_ts, br.op_ts, 0) AND ? = 'beta')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     let delInBeta = uniq([...delInBeta_noConflict, ...delInBeta_conflict]);
@@ -661,11 +672,11 @@ export async function runMerge({
         LEFT JOIN alpha_rel a USING (rpath)
         LEFT JOIN beta_rel  b USING (rpath)
         LEFT JOIN base_rel  br USING (rpath)
-        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
-           OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
+        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0)
+           OR (COALESCE(b.op_ts, br.op_ts, 0) = COALESCE(a.op_ts, 0) AND ? = 'beta')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     const toBeta_conflict = db
@@ -677,11 +688,11 @@ export async function runMerge({
         LEFT JOIN alpha_rel a USING (rpath)
         LEFT JOIN beta_rel  b USING (rpath)
         LEFT JOIN base_rel  br USING (rpath)
-        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
-           OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0)
+           OR (COALESCE(a.op_ts, 0) = COALESCE(b.op_ts, br.op_ts, 0) AND ? = 'alpha')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     let delInAlpha: string[];
@@ -730,10 +741,10 @@ export async function runMerge({
         JOIN tmp_dirs_changedB cB USING (rpath)
         JOIN alpha_dirs_rel a USING (rpath)
         JOIN beta_dirs_rel  b USING (rpath)
-        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, 0)
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     const bothDirsToAlpha = db
@@ -744,10 +755,10 @@ export async function runMerge({
         JOIN tmp_dirs_changedB cB USING (rpath)
         JOIN alpha_dirs_rel a USING (rpath)
         JOIN beta_dirs_rel  b USING (rpath)
-        WHERE COALESCE(b.op_ts,0) > COALESCE(a.op_ts,0) + ?
+        WHERE COALESCE(b.op_ts,0) > COALESCE(a.op_ts,0)
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     const bothDirsTie = db
@@ -758,10 +769,10 @@ export async function runMerge({
         JOIN tmp_dirs_changedB cB USING (rpath)
         JOIN alpha_dirs_rel a USING (rpath)
         JOIN beta_dirs_rel  b USING (rpath)
-        WHERE ABS(COALESCE(a.op_ts,0) - COALESCE(b.op_ts,0)) <= ?
+        WHERE COALESCE(a.op_ts,0) = COALESCE(b.op_ts,0)
       `,
       )
-      .all(EPS)
+      .all()
       .map((r) => r.rpath as string);
 
     if (prefer === "alpha") {
@@ -807,11 +818,11 @@ export async function runMerge({
         LEFT JOIN alpha_dirs_rel a USING (rpath)
         LEFT JOIN beta_dirs_rel  b USING (rpath)
         LEFT JOIN base_dirs_rel br USING (rpath)
-        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0) + ?
-           OR (ABS(COALESCE(a.op_ts, br.op_ts, 0) - COALESCE(b.op_ts, 0)) <= ? AND ? = 'alpha')
+        WHERE COALESCE(a.op_ts, br.op_ts, 0) > COALESCE(b.op_ts, 0)
+           OR (COALESCE(a.op_ts, br.op_ts, 0) = COALESCE(b.op_ts, 0) AND ? = 'alpha')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     const toAlphaDirs_conflict = db
@@ -823,11 +834,11 @@ export async function runMerge({
         LEFT JOIN alpha_dirs_rel a USING (rpath)
         LEFT JOIN beta_dirs_rel  b USING (rpath)
         LEFT JOIN base_dirs_rel br USING (rpath)
-        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0) + ?
-           OR (ABS(COALESCE(b.op_ts, 0) - COALESCE(a.op_ts, br.op_ts, 0)) <= ? AND ? = 'beta')
+        WHERE COALESCE(b.op_ts, 0) > COALESCE(a.op_ts, br.op_ts, 0)
+           OR (COALESCE(b.op_ts, 0) = COALESCE(a.op_ts, br.op_ts, 0) AND ? = 'beta')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     const delDirsInAlpha_conflict = db
@@ -839,11 +850,11 @@ export async function runMerge({
         LEFT JOIN alpha_dirs_rel a USING (rpath)
         LEFT JOIN beta_dirs_rel  b USING (rpath)
         LEFT JOIN base_dirs_rel br USING (rpath)
-        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0) + ?
-           OR (ABS(COALESCE(b.op_ts, br.op_ts, 0) - COALESCE(a.op_ts, 0)) <= ? AND ? = 'beta')
+        WHERE COALESCE(b.op_ts, br.op_ts, 0) > COALESCE(a.op_ts, 0)
+           OR (COALESCE(b.op_ts, br.op_ts, 0) = COALESCE(a.op_ts, 0) AND ? = 'beta')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     const toBetaDirs_conflict = db
@@ -855,11 +866,11 @@ export async function runMerge({
         LEFT JOIN alpha_dirs_rel a USING (rpath)
         LEFT JOIN beta_dirs_rel  b USING (rpath)
         LEFT JOIN base_dirs_rel br USING (rpath)
-        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0) + ?
-           OR (ABS(COALESCE(a.op_ts, 0) - COALESCE(b.op_ts, br.op_ts, 0)) <= ? AND ? = 'alpha')
+        WHERE COALESCE(a.op_ts, 0) > COALESCE(b.op_ts, br.op_ts, 0)
+           OR (COALESCE(a.op_ts, 0) = COALESCE(b.op_ts, br.op_ts, 0) AND ? = 'alpha')
       `,
       )
-      .all(EPS, EPS, prefer)
+      .all(prefer)
       .map((r) => r.rpath as string);
 
     let delDirsInBeta = uniq([
@@ -971,6 +982,19 @@ export async function runMerge({
     toAlphaDirs = uniq(toAlphaDirs);
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
+
+    if (isQuarantinedBetaToAlpha != null) {
+      const f = (x) => x.filter((path) => !isQuarantinedBetaToAlpha(path));
+      toAlpha = f(toAlpha);
+      delInAlpha = f(delInAlpha);
+      toAlphaDirs = f(toAlphaDirs);
+    }
+    if (isQuarantinedAlphaToBeta != null) {
+      const f = (x) => x.filter((path) => !isQuarantinedAlphaToBeta(path));
+      toBeta = f(toBeta);
+      delInBeta = f(delInBeta);
+      toBetaDirs = f(toBetaDirs);
+    }
 
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
@@ -1262,6 +1286,10 @@ export async function runMerge({
         prefer,
         dryRun,
         debug,
+        //         toBeta,
+        //         toAlpha,
+        //         delInBeta,
+        //         delInAlpha,
       });
 
       // ---------- rsync ----------
@@ -1474,10 +1502,9 @@ export async function runMerge({
         const beforeN = delDirsInBeta.length;
         delDirsInBeta = delDirsInBeta.filter((d) => !isChangedB.get(d)?.one);
         if (debug && beforeN !== delDirsInBeta.length) {
-          logger.warn(
-            "clamped dir deletions in beta due to prefer=beta",
-            { kept: beforeN - delDirsInBeta.length },
-          );
+          logger.warn("clamped dir deletions in beta due to prefer=beta", {
+            kept: beforeN - delDirsInBeta.length,
+          });
         }
       }
       if (prefer === "alpha" && delDirsInAlpha.length) {
@@ -1487,10 +1514,9 @@ export async function runMerge({
         const beforeN = delDirsInAlpha.length;
         delDirsInAlpha = delDirsInAlpha.filter((d) => !isChangedA.get(d)?.one);
         if (debug && beforeN !== delDirsInAlpha.length) {
-          logger.warn(
-            "clamped dir deletions in alpha due to prefer=alpha",
-            { kept: beforeN - delDirsInAlpha.length },
-          );
+          logger.warn("clamped dir deletions in alpha due to prefer=alpha", {
+            kept: beforeN - delDirsInAlpha.length,
+          });
         }
       }
 

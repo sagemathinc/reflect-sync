@@ -277,7 +277,7 @@ Not a perfect fit if you need:
 ## Semantics (brief)
 
 - **Change detection:** By **content hash, permissions and \(for root\) uid/gid**. Pure mtime or ctime changes do NOT count as edits. However, when there is an edit, the file is transfered with the mtime properly synced.
-- **Last write wins \(LWW\) resolution:** The newer op timestamp wins; within `--lww-epsilon-ms`, the **preferred side** wins.
+- **Last write wins \(LWW\) resolution:** The newer op timestamp wins, or preferred side in case of a tie.
 - **Type changes:** File ↔ symlink ↔ dir follow the same LWW rule \(so type can change if the winner differs\).
 - **Deletes:** Deletions are first\-class operations and replicate per LWW.
 - **Symlinks:** Stored with target string and hashed as `<target>`; preserved by rsync.
@@ -327,7 +327,7 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 
 **Legend:**
 
-- **LWW** = Last-Write-Wins. In ReflectSync, ties within `--lww-epsilon-ms` break toward your **preferred side** (alpha/beta).
+- **LWW** = Last-Write-Wins. In ReflectSync, ties break toward your **preferred side** (alpha/beta).
 - “Conflict copies” = tools that create duplicate files when both sides changed (e.g., `filename (conflict copy).txt`).
 
 **Rule of thumb**

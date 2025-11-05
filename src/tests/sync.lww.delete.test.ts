@@ -50,7 +50,7 @@ describe("LWW: delete vs modify", () => {
     // then modify alpha later (newer op_ts)
     await fsp.writeFile(a, "alpha-newer");
 
-    await sync(r, "beta", false, undefined, ["--lww-epsilon-ms", "50"]); // prefer irrelevant; newer op_ts should restore to beta
+    await sync(r, "beta", false, undefined); // prefer irrelevant; newer op_ts should restore to beta
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-newer");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha-newer");
   });

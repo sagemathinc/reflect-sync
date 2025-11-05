@@ -43,7 +43,7 @@ describe("reflex-sync: more symlink edge case tests", () => {
     await fsp.writeFile(aFile, "A1"); // hash change
 
     // Use a large epsilon so it's treated as a tie, then prefer alpha
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "200"]);
+    await sync(r, "alpha", false, undefined);
 
     await expect(isRegularFile(bPath)).resolves.toBe(true);
     await expect(fsp.readFile(bPath, "utf8")).resolves.toBe("A1");
@@ -76,7 +76,7 @@ describe("reflex-sync: more symlink edge case tests", () => {
     const future = new Date(Date.now() + 5000);
     await fsp.lutimes(bPath, future, future);
 
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "50"]);
+    await sync(r, "alpha", false, undefined);
 
     // Beta should win: keep symlink
     await expect(linkExists(bPath)).resolves.toBe(true);
@@ -102,7 +102,7 @@ describe("reflex-sync: more symlink edge case tests", () => {
 
     // Small sleep to avoid same-tick mtimes on coarse filesystems
     await new Promise((r2) => setTimeout(r2, 1100));
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "50"]);
+    await sync(r, "alpha", false, undefined);
 
     await expect(fileExists(join(aDir, "x"))).resolves.toBe(false);
     await expect(linkExists(bPath)).resolves.toBe(false);

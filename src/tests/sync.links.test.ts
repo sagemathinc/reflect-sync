@@ -138,7 +138,7 @@ describe("reflex-sync: symlink semantics", () => {
     // rewrite same contents to bump mtime; or use utimes if you prefer
     await fsp.writeFile(aFile, "alpha2");
 
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "50"]);
+    await sync(r, "alpha", false, undefined);
 
     // Expect beta back to a regular file with alpha's content
     await expect(isRegularFile(bPath)).resolves.toBe(true);

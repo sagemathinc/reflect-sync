@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.9.4",
+  "version": "0.10.2",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/bundle.mjs",
@@ -19,7 +19,7 @@
     "prepublishOnly": "pnpm clean && pnpm bundle && rm dist/bundle.cjs && pnpm test",
     "bundle:worker": "rollup -c rollup.worker.mjs",
     "bundle:main": "rollup -c rollup.config.mjs",
-    "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main",
+    "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main && chmod +x dist/bundle.mjs",
     "sea:blob": "node --experimental-sea-config sea.config.json",
     "sea:inject": "cp $(command -v node) dist/reflect-sync && pnpx postject dist/reflect-sync NODE_SEA_BLOB dist/reflect-sync.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 2>&1 | sed -E '/find string offset for section name/d'",
     "sea": "pnpm bundle && pnpm sea:blob && pnpm sea:inject"

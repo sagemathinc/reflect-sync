@@ -123,9 +123,13 @@ function buildProgram(): Command {
     .option("--dry-run", "simulate without changing files", false)
     // optional SSH endpoints (only one side may be remote)
     .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-    .option("--alpha-port <n>", "SSH port for alpha", (v) => Number.parseInt(v, 10))
+    .option("--alpha-port <n>", "SSH port for alpha", (v) =>
+      Number.parseInt(v, 10),
+    )
     .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-    .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
+    .option("--beta-port <n>", "SSH port for beta", (v) =>
+      Number.parseInt(v, 10),
+    )
     .option(
       "--alpha-remote-db <file>",
       "remote path to alpha sqlite db (on the SSH host)",
@@ -145,10 +149,7 @@ function buildProgram(): Command {
       "only sync during the full sync cycle",
       false,
     )
-    .option(
-      "--disable-micro-sync",
-      "disable realtime micro-sync watchers",
-    )
+    .option("--disable-micro-sync", "disable realtime micro-sync watchers")
     .option(
       "--disable-full-cycle",
       "disable automatic periodic full sync cycles",
@@ -395,12 +396,21 @@ export async function runScheduler({
   const betaIsRemote = !!betaHost;
 
   const remotePort = alphaHost ? alphaPort : betaPort;
-  compress = await resolveCompression(alphaHost || betaHost, compress, remotePort);
+  compress = await resolveCompression(
+    alphaHost || betaHost,
+    compress,
+    remotePort,
+  );
 
   // Resolve ~ for any remote paths once up-front
   const remoteLogConfig = { logger };
 
-  alphaRoot = await expandHome(alphaRoot, alphaHost, remoteLogConfig, alphaPort);
+  alphaRoot = await expandHome(
+    alphaRoot,
+    alphaHost,
+    remoteLogConfig,
+    alphaPort,
+  );
   betaRoot = await expandHome(betaRoot, betaHost, remoteLogConfig, betaPort);
   alphaRemoteDb = await expandHome(
     alphaRemoteDb || `~/.local/share/${CLI_NAME}/alpha.db`,
@@ -623,20 +633,20 @@ export async function runScheduler({
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
-  const remoteLog = scoped("remote");
-  const summarizeStderr = (chunk: Buffer | string) => {
-    const raw = chunk.toString();
-    let trimmed = raw.trim();
-    const MAX_LEN = 1024;
-    if (trimmed.length > MAX_LEN) {
-      trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
-    }
-    return trimmed;
-  };
-  remoteLog.debug("ssh scan", {
-    host: params.host,
-    args: argsJoin(sshArgs),
-  });
+    const remoteLog = scoped("remote");
+    const summarizeStderr = (chunk: Buffer | string) => {
+      const raw = chunk.toString();
+      let trimmed = raw.trim();
+      const MAX_LEN = 4096;
+      if (trimmed.length > MAX_LEN) {
+        trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
+      }
+      return trimmed;
+    };
+    remoteLog.debug("ssh scan", {
+      host: params.host,
+      args: argsJoin(sshArgs),
+    });
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -695,7 +705,10 @@ export async function runScheduler({
 
     if (ingestError) {
       remoteLog.error("ingest error", {
-        error: ingestError instanceof Error ? ingestError.message : String(ingestError),
+        error:
+          ingestError instanceof Error
+            ? ingestError.message
+            : String(ingestError),
       });
       if (isDiskFullCause(ingestError)) {
         const fatalMessage = pauseForDiskFull(
@@ -707,7 +720,7 @@ export async function runScheduler({
     }
 
     return {
-      code: ok ? 0 : sshCode ?? 1,
+      code: ok ? 0 : (sshCode ?? 1),
       ms: Date.now() - t0,
       ok,
       lastZero: ok,
@@ -1241,10 +1254,7 @@ export async function runScheduler({
           .join("; ") || "scan failed";
       log("warn", "scan", message);
       sessionWriter?.error(message);
-      backoffMs = Math.min(
-        backoffMs ? backoffMs * 2 : 10_000,
-        MAX_BACKOFF_MS,
-      );
+      backoffMs = Math.min(backoffMs ? backoffMs * 2 : 10_000, MAX_BACKOFF_MS);
       lastCycleMs = MIN_INTERVAL_MS;
       running = false;
       return;
@@ -1280,12 +1290,15 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
+        isQuarantinedAlphaToBeta: microSync.isQuarantinedAlphaToBeta,
+        isQuarantinedBetaToAlpha: microSync.isQuarantinedBetaToAlpha,
       });
       mergeOk = true;
     } catch (err) {
       mergeError = err;
       mergeLogger.error("merge failed", {
         error: err instanceof Error ? err.message : String(err),
+        stack: err.stack,
       });
     }
     const mergeMs = Date.now() - mergeStart;

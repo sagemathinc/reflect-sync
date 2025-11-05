@@ -178,20 +178,26 @@ export async function rsyncCopyDirsChunked(
     if (debug) {
       logger.debug(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
     }
-    await rsyncCopyDirs(fromRoot, toRoot, lf, `${label} (dirs chunk ${idx + 1})`, {
-      dryRun: opts.dryRun,
-      verbose: opts.verbose,
-      logger,
-      logLevel: opts.logLevel,
-      sshPort: opts.sshPort,
-      progressScope: scope,
-      progressMeta: {
-        ...(progressMeta ?? {}),
-        label,
-        chunkIndex: idx + 1,
-        chunkCount: listFiles.length,
+    await rsyncCopyDirs(
+      fromRoot,
+      toRoot,
+      lf,
+      `${label} (dirs chunk ${idx + 1})`,
+      {
+        dryRun: opts.dryRun,
+        verbose: opts.verbose,
+        logger,
+        logLevel: opts.logLevel,
+        sshPort: opts.sshPort,
+        progressScope: scope,
+        progressMeta: {
+          ...(progressMeta ?? {}),
+          label,
+          chunkIndex: idx + 1,
+          chunkCount: listFiles.length,
+        },
       },
-    });
+    );
   });
 }
 
@@ -348,12 +354,11 @@ function numericIdsFlag(): string[] {
   }
 }
 
-export function rsyncArgsBase(
-  opts: RsyncRunOptions,
-  from: string,
-  to: string,
-) {
-  const a = ["-a", "-I", "--relative", ...numericIdsFlag()];
+export function rsyncArgsBase(opts: RsyncRunOptions, from: string, to: string) {
+  // it is critical to use --inplace, since otherwise rsync creates temp files
+  // with random names, which get sync'd back, causing all manner of problems
+  // (e.g., breaking "git clone", which doesn't like random broken pack files appearing!)
+  const a = ["-a", "-I", "--relative", "--inplace", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (isLocal(from) && isLocal(to)) {
     // don't use the rsync delta algorithm
@@ -435,7 +440,9 @@ export function assertRsyncOk(
 ) {
   if (res.ok) return;
   const base =
-    typeof res.code === "number" ? `exit code ${res.code}` : "unknown exit code";
+    typeof res.code === "number"
+      ? `exit code ${res.code}`
+      : "unknown exit code";
   const message = `rsync ${label} failed (${base})`;
   const errorContext = { label, ...context, code: res.code };
   if (isRsyncDiskFull(res.code, res.stderr)) {
@@ -449,12 +456,25 @@ export function run(
   args: string[],
   okCodes: number[] = [0],
   opts: RsyncRunOptions = {},
-): Promise<{ code: number | null; ok: boolean; zero: boolean; stderr?: string }> {
+): Promise<{
+  code: number | null;
+  ok: boolean;
+  zero: boolean;
+  stderr?: string;
+}> {
   const t = Date.now();
   const { logger, debug } = resolveLogContext(opts);
   const wantProgress = typeof opts.onProgress === "function";
   const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : args;
-  if (debug) logger.debug("rsync exec", { cmd, args: argsJoin(finalArgs) });
+  if (process.env.REFLECT_RSYNC_BWLIMIT) {
+    // This can be very useful for testing/debugging to simulate a slower network:
+    finalArgs.push(`--bwlimit=${process.env.REFLECT_RSYNC_BWLIMIT}`);
+  }
+  if (debug)
+    logger.debug("rsync exec", {
+      cmd,
+      args: argsJoin(finalArgs),
+    });
 
   const throttleMs =
     wantProgress && MAX_PROGRESS_UPDATES_PER_SEC > 0
@@ -490,10 +510,7 @@ export function run(
           if (event.percent < lastPercent) {
             continue;
           }
-          if (
-            event.percent === lastPercent &&
-            now - lastEmit < throttleMs
-          ) {
+          if (event.percent === lastPercent && now - lastEmit < throttleMs) {
             continue;
           }
           lastPercent = event.percent;
@@ -712,8 +729,7 @@ export async function rsyncCopyDirs(
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
-    if (debug)
-      logger.debug(`>>> rsync ${label} (dirs): nothing to do`);
+    if (debug) logger.debug(`>>> rsync ${label} (dirs): nothing to do`);
     return { ok: true, zero: false };
   }
   if (debug) {
@@ -721,12 +737,7 @@ export async function rsyncCopyDirs(
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
-  const args = [
-    ...rsyncArgsDirs(opts),
-    `--files-from=${listFile}`,
-    from,
-    to,
-  ];
+  const args = [...rsyncArgsDirs(opts), `--files-from=${listFile}`, from, to];
   applySshTransport(args, from, to, opts);
   const { progressScope, progressMeta, ...runOpts } = opts;
   const scope = progressScope ?? label;
@@ -814,8 +825,7 @@ export async function rsyncFixMetaDirs(
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
-    if (debug)
-      logger.debug(`>>> rsync ${label} (meta dirs): nothing to do`);
+    if (debug) logger.debug(`>>> rsync ${label} (meta dirs): nothing to do`);
     return { ok: true, zero: false };
   }
   if (debug) {
@@ -927,19 +937,19 @@ export async function rsyncDeleteChunked(
       `${label.replace(/[\s\(\)]+/g, "-")}.${i}.list`,
     );
     await writeNulList(listFile, batches[i]);
-      await rsyncDelete(
-        fromRoot,
-        toRoot,
-        listFile,
-        `${label} [${i + 1}/${batches.length}]`,
-        {
-          forceEmptySource: opts.forceEmptySource,
-          dryRun: opts.dryRun,
-          verbose: opts.verbose,
-          logger,
-          logLevel: opts.logLevel,
-          sshPort: opts.sshPort,
-        },
-      );
+    await rsyncDelete(
+      fromRoot,
+      toRoot,
+      listFile,
+      `${label} [${i + 1}/${batches.length}]`,
+      {
+        forceEmptySource: opts.forceEmptySource,
+        dryRun: opts.dryRun,
+        verbose: opts.verbose,
+        logger,
+        logLevel: opts.logLevel,
+        sshPort: opts.sshPort,
+      },
+    );
   }
 }

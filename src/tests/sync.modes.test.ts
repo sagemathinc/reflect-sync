@@ -78,7 +78,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     await fsp.chmod(b, 0o640); // beta  wants 640
 
     // Use a large epsilon so if op_ts is close, it's treated as a tie → prefer decides.
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "5000"]);
+    await sync(r, "alpha", false, undefined);
 
     expect(await getMode(a)).toBe(0o600);
     expect(await getMode(b)).toBe(0o600);
@@ -99,7 +99,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     await fsp.chmod(a, 0o640); // alpha 640
     await fsp.chmod(b, 0o644); // beta  644
 
-    await sync(r, "beta", false, undefined, ["--lww-epsilon-ms", "5000"]);
+    await sync(r, "beta", false, undefined);
 
     expect(await getMode(a)).toBe(0o644);
     expect(await getMode(b)).toBe(0o644);
@@ -124,7 +124,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     await fsp.chmod(bDir, 0o711); // beta  wants 711
 
     // prefer alpha
-    await sync(r, "alpha", false, undefined, ["--lww-epsilon-ms", "5000"]);
+    await sync(r, "alpha", false, undefined);
     expect(await getMode(aDir)).toBe(0o700);
     expect(await getMode(bDir)).toBe(0o700);
     expect(await fsp.readFile(aFile, "utf8")).toBe("k");
@@ -133,7 +133,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     // diverge again and prefer beta
     await fsp.chmod(aDir, 0o755);
     await fsp.chmod(bDir, 0o711);
-    await sync(r, "beta", false, undefined, ["--lww-epsilon-ms", "5000"]);
+    await sync(r, "beta", false, undefined);
     expect(await getMode(aDir)).toBe(0o711);
     expect(await getMode(bDir)).toBe(0o711);
   });

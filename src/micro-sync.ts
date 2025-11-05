@@ -47,6 +47,8 @@ type MicroSyncFn = ((
 ) => Promise<void>) & {
   markAlphaToBeta: (paths: string[]) => void;
   markBetaToAlpha: (paths: string[]) => void;
+  isQuarantinedAlphaToBeta: (path: string) => boolean;
+  isQuarantinedBetaToAlpha: (path: string) => boolean;
 };
 
 export function makeMicroSync({
@@ -68,11 +70,8 @@ export function makeMicroSync({
 
   const microLogger = logger.child("micro");
 
-  const ECHO_SUPPRESS_MS = Number(
-    process.env.REFLECT_MICRO_ECHO_SUPPRESS_MS ?? 2500,
-  );
   const ECHO_WINDOW_MS = Number(
-    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 3_000,
+    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 10_000,
   );
 
   const quarantineAlphaToBeta = new Map<string, number>();
@@ -102,10 +101,12 @@ export function makeMicroSync({
       lastB2A.set(p, nowFn());
     }
   };
-  const isQuarantinedAlphaToBeta = (p: string) =>
-    (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
-  const isQuarantinedBetaToAlpha = (p: string) =>
-    (quarantineBetaToAlpha.get(p) ?? 0) > nowFn();
+  const isQuarantinedAlphaToBeta = (p: string) => {
+    return (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
+  };
+  const isQuarantinedBetaToAlpha = (p: string) => {
+    return (quarantineBetaToAlpha.get(p) ?? 0) > nowFn();
+  };
 
   function rsyncRoots(
     fromRoot: string,
@@ -209,6 +210,7 @@ export function makeMicroSync({
           ...transport,
           "-a",
           "-I",
+          "--inplace",
           "--relative",
           "--from0",
           ...compArgs,
@@ -219,10 +221,10 @@ export function makeMicroSync({
         ],
         [0, 23, 24],
         {
-          logger,
-          logLevel: "info",
+          logger: microLogger,
+          logLevel: "debug",
           onProgress: (event: RsyncProgressEvent) => {
-            logger.info("progress", {
+            microLogger.info("progress", {
               scope: progressScope,
               stage: "micro",
               direction,
@@ -254,6 +256,7 @@ export function makeMicroSync({
           ...transport,
           "-a",
           "-I",
+          "--inplace",
           "--relative",
           "--from0",
           ...compArgs,
@@ -264,10 +267,10 @@ export function makeMicroSync({
         ],
         [0, 23, 24],
         {
-          logger,
-          logLevel: "info",
+          logger: microLogger,
+          logLevel: "debug",
           onProgress: (event: RsyncProgressEvent) => {
-            logger.info("progress", {
+            microLogger.info("progress", {
               scope: progressScope,
               stage: "micro",
               direction,
@@ -313,15 +316,14 @@ export function makeMicroSync({
   }
 
   const microSync: MicroSyncFn = async function microSync(
+    // rpathsAlpha are paths in alpha that will be copied to beta
     rpathsAlpha: string[],
     rpathsBeta: string[],
   ) {
     if (process.env.REFLECT_DISABLE_AUTOMATIC_COPY === "1") {
       return;
     }
-    if (typeof isMergeActive === "function" && isMergeActive()) {
-      extendAlphaToBetaQuarantine(rpathsAlpha, Date.now());
-      extendBetaToAlphaQuarantine(rpathsBeta, Date.now());
+    if (isMergeActive?.()) {
       return;
     }
     const setA = new Set(rpathsAlpha);
@@ -344,57 +346,15 @@ export function makeMicroSync({
         toAlpha.push(r);
       }
     }
+    toAlpha = toAlpha.filter((r) => !isQuarantinedBetaToAlpha(r));
+    toBeta = toBeta.filter((r) => !isQuarantinedAlphaToBeta(r));
 
-    // Echo suppression (only when it’s a one-sided echo)
-    const now = Date.now();
-    const filteredToBeta: string[] = [];
-    for (const r of toBeta) {
-      let missingOnAlpha = false;
-      if (isQuarantinedAlphaToBeta(r)) {
-        if (!alphaIsRemote) {
-          missingOnAlpha = (await statKind(alphaRoot, r)) === "missing";
-          if (missingOnAlpha) {
-            quarantineAlphaToBeta.delete(r);
-          } else {
-            continue;
-          }
-        } else {
-          continue;
-        }
-      }
-      if (!missingOnAlpha && setA.has(r) && !setB.has(r)) {
-        const tB2A = lastB2A.get(r) || 0;
-        if (now - tB2A < ECHO_SUPPRESS_MS) continue;
-      }
-      filteredToBeta.push(r);
-    }
-    toBeta = filteredToBeta;
-
-    const filteredToAlpha: string[] = [];
-    for (const r of toAlpha) {
-      let missingOnBeta = false;
-      if (isQuarantinedBetaToAlpha(r)) {
-        if (!betaIsRemote) {
-          missingOnBeta = (await statKind(betaRoot, r)) === "missing";
-          if (missingOnBeta) {
-            quarantineBetaToAlpha.delete(r);
-          } else {
-            continue;
-          }
-        } else {
-          continue;
-        }
-      }
-      if (!missingOnBeta && !setA.has(r) && setB.has(r)) {
-        const tA2B = lastA2B.get(r) || 0;
-        if (now - tA2B < ECHO_SUPPRESS_MS) continue;
-      }
-      filteredToAlpha.push(r);
-    }
-    toAlpha = filteredToAlpha;
+    extendAlphaToBetaQuarantine(toAlpha, Date.now());
+    extendBetaToAlphaQuarantine(toBeta, Date.now());
 
     // NOTE: we may also act on directories/symlinks and deletions below,
     // so don't early-return if file lists are empty.
+    // (is this right?)
 
     const tmp = await mkdtemp(path.join(tmpdir(), "micro-plan-"));
     try {
@@ -409,6 +369,11 @@ export function makeMicroSync({
             "info",
             "realtime",
             `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
+          );
+          log(
+            "info",
+            "realtime",
+            `alpha→beta ${toBeta.length} paths: ${JSON.stringify(toBeta)}`,
           );
           await rsyncCopyOrDelete("alpha->beta", listAllA2B);
           const t = Date.now();
@@ -556,12 +521,22 @@ export function makeMicroSync({
   };
 
   microSync.markAlphaToBeta = (paths: string[]) => {
+    //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
+    log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
+    // do NOT allow a copy *back* in the other direction for a short
+    // period of time.
+    extendBetaToAlphaQuarantine(paths);
+  };
+
+  microSync.isQuarantinedAlphaToBeta = isQuarantinedAlphaToBeta;
+
+  microSync.markBetaToAlpha = (paths: string[]) => {
+    //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
+    log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
     extendAlphaToBetaQuarantine(paths);
   };
 
-  microSync.markBetaToAlpha = (paths: string[]) => {
-    extendBetaToAlphaQuarantine(paths);
-  };
+  microSync.isQuarantinedBetaToAlpha = isQuarantinedBetaToAlpha;
 
   return microSync;
 }
