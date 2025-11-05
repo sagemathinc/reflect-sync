@@ -31,14 +31,12 @@
   "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "MIT",
   "packageManager": "pnpm@10.19.0",
-  "dependencies": {
+  "devDependencies": {
     "@nodelib/fs.walk": "^3.0.1",
     "ascii-table3": "^1.0.1",
     "chokidar": "^4.0.3",
     "commander": "^14.0.2",
-    "ignore": "^7.0.5"
-  },
-  "devDependencies": {
+    "ignore": "^7.0.5",
     "@commander-js/extra-typings": "^14.0.0",
     "@rollup/plugin-commonjs": "^29.0.0",
     "@rollup/plugin-json": "^6.1.0",
