@@ -3,10 +3,12 @@
 import { Command } from "commander";
 import { ensureSessionDb, getSessionDbPath, resolveSessionRow } from "./session-db.js";
 import type { Database } from "./db.js";
+import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_CYCLES = 3;
+const PROGRESS_MESSAGE_FILTER = "progress";
 
 type DigestSnapshot = {
   timestamp: number | null;
@@ -15,6 +17,14 @@ type DigestSnapshot = {
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+interface ProgressState {
+  enabled: boolean;
+  json: boolean;
+  sessionDbPath: string;
+  sessionId: number;
+  lastLogId: number;
+}
 
 function parsePositiveInt(raw: string | number | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
@@ -78,6 +88,47 @@ function checkSessionRunning(
   return { ok: true };
 }
 
+function renderProgressRow(row: SessionLogRow, asJson: boolean): void {
+  if (asJson) {
+    // Match the JSON emitted by `reflect logs --json`
+    const payload = {
+      id: row.id,
+      session_id: row.session_id,
+      ts: row.ts,
+      level: row.level,
+      scope: row.scope,
+      message: row.message,
+      meta: row.meta ?? null,
+    };
+    console.log(JSON.stringify(payload));
+    return;
+  }
+
+  const timestamp = new Date(row.ts).toISOString();
+  const scope = row.scope ? ` [${row.scope}]` : "";
+  const meta =
+    row.meta && Object.keys(row.meta).length
+      ? ` ${JSON.stringify(row.meta)}`
+      : "";
+  console.log(
+    `${timestamp} ${row.level.toUpperCase()}${scope} ${row.message}${meta}`,
+  );
+}
+
+function drainProgressLogs(state: ProgressState): void {
+  if (!state.enabled) return;
+  const rows = fetchSessionLogs(state.sessionDbPath, state.sessionId, {
+    afterId: state.lastLogId,
+    message: PROGRESS_MESSAGE_FILTER,
+    order: "asc",
+  });
+  if (!rows.length) return;
+  for (const row of rows) {
+    renderProgressRow(row, state.json);
+    state.lastLogId = Math.max(state.lastLogId, row.id);
+  }
+}
+
 function enqueueSyncCommand(db: Database, sessionId: number, attempt: number): number {
   const ts = Date.now();
   const payload = JSON.stringify({ requested_at: ts, attempt });
@@ -95,6 +146,7 @@ async function waitForCommandAck(
   sessionId: number,
   commandId: number,
   timeoutMs: number,
+  progress?: ProgressState,
 ): Promise<void> {
   const started = Date.now();
   while (true) {
@@ -105,6 +157,10 @@ async function waitForCommandAck(
       throw new Error("sync command disappeared before acknowledgement");
     }
     if (row.acked === 1) return;
+
+    if (progress) {
+      drainProgressLogs(progress);
+    }
 
     const running = checkSessionRunning(db, sessionId);
     if (!running.ok) {
@@ -133,6 +189,7 @@ async function runSyncForSession(
   ref: string,
   maxCycles: number,
   timeoutMs: number,
+  progress?: { enabled: boolean; json: boolean },
 ): Promise<number> {
   const sessionRow = resolveSessionRow(sessionDbPath, ref);
   if (!sessionRow) {
@@ -146,13 +203,25 @@ async function runSyncForSession(
   }
 
   let previousDigests: DigestSnapshot | null = null;
+  const progressState: ProgressState | undefined = progress?.enabled
+    ? {
+        enabled: true,
+        json: !!progress.json,
+        sessionDbPath,
+        sessionId: sessionRow.id,
+        lastLogId: 0,
+      }
+    : undefined;
 
   for (let attempt = 1; attempt <= maxCycles; attempt += 1) {
     console.log(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
     const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt);
-    await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs);
+    await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs, progressState);
+    if (progressState) {
+      drainProgressLogs(progressState);
+    }
 
     const snapshot = getDigestSnapshot(db, sessionRow.id);
     const { alpha, beta } = snapshot;
@@ -219,14 +288,25 @@ export function registerSessionSync(sessionCmd: Command) {
       "maximum time to wait for each cycle",
       String(DEFAULT_TIMEOUT_MS),
     )
+    .option("--progress", "stream progress logs while syncing", false)
+    .option("--json", "emit progress logs as JSON", false)
     .action(
       async (
         refs: string[],
-        opts: { sessionDb: string; maxCycles?: string; timeout?: string },
+        opts: {
+          sessionDb: string;
+          maxCycles?: string;
+          timeout?: string;
+          progress?: boolean;
+          json?: boolean;
+        },
       ) => {
         const maxCycles = parsePositiveInt(opts.maxCycles, DEFAULT_MAX_CYCLES);
         const timeoutMs = parsePositiveInt(opts.timeout, DEFAULT_TIMEOUT_MS);
         const sessionDbPath = opts.sessionDb ?? getSessionDbPath();
+        const progressConfig = opts.progress
+          ? { enabled: true, json: !!opts.json }
+          : undefined;
 
         const db = ensureSessionDb(sessionDbPath);
         try {
@@ -234,7 +314,14 @@ export function registerSessionSync(sessionCmd: Command) {
             const trimmed = ref.trim();
             if (!trimmed) continue;
             try {
-              await runSyncForSession(db, sessionDbPath, trimmed, maxCycles, timeoutMs);
+              await runSyncForSession(
+                db,
+                sessionDbPath,
+                trimmed,
+                maxCycles,
+                timeoutMs,
+                progressConfig,
+              );
             } catch (err) {
               const message =
                 err instanceof Error ? err.message : String(err ?? "unknown error");
