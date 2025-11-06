@@ -121,8 +121,16 @@ describe("reflex-sync: more symlink edge case tests", () => {
     await fsp.rename(join(r.bRoot, "x"), join(r.bRoot, "x2"));
     await sync(r, "alpha");
 
-    expect(await fsp.readdir(r.aRoot)).toEqual(["x.link", "x2"]);
-    expect(await fsp.readdir(r.bRoot)).toEqual(["x.link", "x2"]);
+    expect(await fsp.readdir(r.aRoot)).toEqual([
+      ".reflect-rsync-tmp",
+      "x.link",
+      "x2",
+    ]);
+    expect(await fsp.readdir(r.bRoot)).toEqual([
+      ".reflect-rsync-tmp",
+      "x.link",
+      "x2",
+    ]);
     await expect(linkExists(join(r.aRoot, "x.link")));
     await expect(linkExists(join(r.bRoot, "x.link")));
   });

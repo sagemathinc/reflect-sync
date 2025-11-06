@@ -21,6 +21,7 @@ import {
   autoIgnoreForRoot,
 } from "./ignore.js";
 import { getReflectSyncHome } from "./session-db.js";
+import { ensureTempDir } from "./rsync.js";
 
 // ---------- types ----------
 type WatchOpts = {
@@ -108,6 +109,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     ignoreRules: rawIgnoreRules,
   } = opts;
   const rootAbs = path.resolve(root);
+  await ensureTempDir(rootAbs);
   const ignoreRaw = Array.isArray(rawIgnoreRules) ? [...rawIgnoreRules] : [];
   ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);

@@ -1,6 +1,7 @@
 import ignore from "ignore";
 import path from "node:path";
 import os from "node:os";
+import { RSYNC_TEMP_DIR } from "./rsync.js";
 
 export type Ignorer = {
   ignoresFile: (r: string) => boolean; // file/symlink path
@@ -84,7 +85,8 @@ export function autoIgnoreForRoot(
   root: string,
   syncHome: string,
 ): string[] {
-  if (!root || !syncHome) return [];
+  if (!root) return [];
+  const patterns: string[] = [];
   const resolveTilde = (p: string) => {
     if (!p) return p;
     if (p === "~") return os.homedir();
@@ -92,14 +94,17 @@ export function autoIgnoreForRoot(
     return p;
   };
   const rootAbs = path.resolve(resolveTilde(root));
-  const homeAbs = path.resolve(syncHome);
-  const rel = path.relative(rootAbs, homeAbs);
-  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
-    return [];
+  if (syncHome) {
+    const homeAbs = path.resolve(syncHome);
+    const rel = path.relative(rootAbs, homeAbs);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      const posix = rel.split(path.sep).join("/");
+      const dirPattern = posix.endsWith("/") ? posix : `${posix}/`;
+      patterns.push(dirPattern);
+    }
   }
-  const posix = rel.split(path.sep).join("/");
-  const dirPattern = posix.endsWith("/") ? posix : `${posix}/`;
-  return normalizeIgnorePatterns([dirPattern]);
+  patterns.push(`${RSYNC_TEMP_DIR}/`);
+  return normalizeIgnorePatterns(patterns);
 }
 
 function ignoredByEitherFile(r: string, aIg: Ignorer, bIg: Ignorer): boolean {

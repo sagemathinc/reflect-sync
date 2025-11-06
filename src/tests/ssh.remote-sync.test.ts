@@ -149,8 +149,16 @@ describe("SSH remote sync", () => {
         10,
       );
 
-      expect(await fsp.readdir(alphaRoot)).toEqual(["x.link", "x2"]);
-      expect(await fsp.readdir(betaRootRemote)).toEqual(["x.link", "x2"]);
+      expect(await fsp.readdir(alphaRoot)).toEqual([
+        ".reflect-rsync-tmp",
+        "x.link",
+        "x2",
+      ]);
+      expect(await fsp.readdir(betaRootRemote)).toEqual([
+        ".reflect-rsync-tmp",
+        "x.link",
+        "x2",
+      ]);
       await expect(linkExists(join(alphaRoot, "x.link")));
       await expect(linkExists(join(betaRootRemote, "x.link")));
     } finally {

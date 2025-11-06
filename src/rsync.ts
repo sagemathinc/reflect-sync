@@ -1,7 +1,7 @@
 // src/rsync.ts
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, stat as fsStat } from "node:fs/promises";
+import { mkdtemp, rm, stat as fsStat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
 import { finished } from "node:stream/promises";
@@ -22,6 +22,21 @@ const REFLECT_COPY_CONCURRENCY = Number(
   process.env.REFLECT_COPY_CONCURRENCY ?? 2,
 );
 const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
+
+export const RSYNC_TEMP_DIR =
+  process.env.REFLECT_RSYNC_TEMP_DIR ?? ".reflect-rsync-tmp";
+
+export async function ensureTempDir(root: string): Promise<void> {
+  if (!root) return;
+  const dir = path.join(root, RSYNC_TEMP_DIR);
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch (err: any) {
+    if (err?.code !== "EEXIST") {
+      throw err;
+    }
+  }
+}
 
 const PROGRESS_ARGS = [
   "--outbuf=L",
@@ -462,7 +477,15 @@ export function run(
   const t = Date.now();
   const { logger, debug } = resolveLogContext(opts);
   const wantProgress = typeof opts.onProgress === "function";
-  const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : args;
+  const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : [...args];
+  if (!finalArgs.some((arg) => arg.startsWith("--temp-dir="))) {
+    const filesFromIndex = finalArgs.findIndex((arg) =>
+      arg.startsWith("--files-from="),
+    );
+    const insertIndex =
+      filesFromIndex >= 0 ? filesFromIndex : Math.max(finalArgs.length - 2, 0);
+    finalArgs.splice(insertIndex, 0, `--temp-dir=${RSYNC_TEMP_DIR}`);
+  }
   if (process.env.REFLECT_RSYNC_BWLIMIT) {
     // This can be very useful for testing/debugging to simulate a slower network:
     finalArgs.push(`--bwlimit=${process.env.REFLECT_RSYNC_BWLIMIT}`);

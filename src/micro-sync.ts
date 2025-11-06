@@ -71,7 +71,7 @@ export function makeMicroSync({
   const microLogger = logger.child("micro");
 
   const ECHO_WINDOW_MS = Number(
-    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 10_000,
+    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 30_000,
   );
 
   // quarantineAlphaToBeta records the files we copied (or deleted

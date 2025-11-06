@@ -26,6 +26,7 @@ import {
 } from "./hash.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { getReflectSyncHome } from "./session-db.js";
+import { ensureTempDir } from "./rsync.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -123,6 +124,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   if (Array.isArray(ignoreRulesOpt)) ignoreRaw.push(...ignoreRulesOpt);
   if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
   const absRoot = path.resolve(root);
+  await ensureTempDir(absRoot);
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
