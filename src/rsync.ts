@@ -355,10 +355,7 @@ function numericIdsFlag(): string[] {
 }
 
 export function rsyncArgsBase(opts: RsyncRunOptions, from: string, to: string) {
-  // it is critical to use --inplace, since otherwise rsync creates temp files
-  // with random names, which get sync'd back, causing all manner of problems
-  // (e.g., breaking "git clone", which doesn't like random broken pack files appearing!)
-  const a = ["-a", "-I", "--relative", "--inplace", ...numericIdsFlag()];
+  const a = ["-a", "-I", "--relative", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
   if (isLocal(from) && isLocal(to)) {
     // don't use the rsync delta algorithm
