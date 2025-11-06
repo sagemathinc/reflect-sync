@@ -993,12 +993,10 @@ export async function runMerge({
 
     const alphaBounceCandidates = uniq([
       ...toBeta,
-      ...delInBeta,
       ...toBetaDirs,
     ]);
     const betaBounceCandidates = uniq([
       ...toAlpha,
-      ...delInAlpha,
       ...toAlphaDirs,
     ]);
 
@@ -1040,11 +1038,9 @@ export async function runMerge({
       paths.filter((p) => !skip.has(p));
 
     toBeta = filterBounce(toBeta, skipAlphaToBeta);
-    delInBeta = filterBounce(delInBeta, skipAlphaToBeta);
     toBetaDirs = filterBounce(toBetaDirs, skipAlphaToBeta);
 
     toAlpha = filterBounce(toAlpha, skipBetaToAlpha);
-    delInAlpha = filterBounce(delInAlpha, skipBetaToAlpha);
     toAlphaDirs = filterBounce(toAlphaDirs, skipBetaToAlpha);
 
     // --- helpers: POSIX-y parent and normalization
