@@ -8,10 +8,13 @@
 
 import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { join, normalize, resolve, dirname } from "node:path";
 import os from "node:os";
 import { countSchedulerCycles, dirExists, linkExists, waitFor } from "./util";
 import { canSshLocalhost } from "./ssh-util";
+import { getDb } from "../db";
 //import { wait } from "./util";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees
@@ -103,13 +106,137 @@ describe("SSH remote sync", () => {
     await fsp.mkdir(betaRootRemote, { recursive: true });
   });
 
+  beforeEach(async () => {
+    await fsp.rm(alphaRoot, { recursive: true, force: true });
+    await fsp.rm(betaRootRemote, { recursive: true, force: true });
+    await fsp.mkdir(alphaRoot, { recursive: true });
+    await fsp.mkdir(betaRootRemote, { recursive: true });
+    await Promise.all(
+      [alphaDb, betaDb, baseDb].map((p) =>
+        fsp.rm(p, { recursive: true, force: true }).catch(() => {}),
+      ),
+    );
+  });
+
   afterAll(async () => {
     if (tmp) {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
   });
 
-  test("create directory that is target of symlink, sync, move directory, sync", async () => {
+  const wait = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function writeLongPack(
+    file: string,
+    {
+      iterations,
+      chunkSize,
+      delayMs,
+    }: { iterations: number; chunkSize: number; delayMs: number },
+  ) {
+    await fsp.mkdir(normalize(dirname(file)), { recursive: true });
+    const handle = await fsp.open(file, "w");
+    try {
+      for (let i = 0; i < iterations; i++) {
+        const chunk = Buffer.alloc(chunkSize, i % 251);
+        await handle.write(chunk);
+        if (delayMs > 0) {
+          await wait(delayMs);
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async function hashFile(file: string): Promise<string> {
+    const hash = createHash("sha256");
+    await new Promise<void>((resolve, reject) => {
+      const rs = createReadStream(file);
+      rs.on("data", (chunk) => hash.update(chunk));
+      rs.on("error", reject);
+      rs.on("end", resolve);
+    });
+    return hash.digest("hex");
+  }
+
+  it("sustained writes on alpha mirror to remote beta without bounce", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
+
+    const relPath = "packs/stream.pack";
+    const alphaFile = join(alphaRoot, relPath);
+    const betaFile = join(betaRootRemote, relPath);
+
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        20_000,
+        20,
+      );
+
+      await writeLongPack(alphaFile, {
+        iterations: 96,
+        chunkSize: 256 * 1024,
+        delayMs: 15,
+      });
+
+      await waitFor(
+        async () => {
+          try {
+            const [statAlpha, statBeta] = await Promise.all([
+              fsp.stat(alphaFile),
+              fsp.stat(betaFile),
+            ]);
+            return statAlpha.size > 0 && statBeta.size === statAlpha.size;
+          } catch {
+            return false;
+          }
+        },
+        (ok) => ok,
+        30_000,
+        50,
+      );
+
+      // wait for an additional cycle to allow any pending transfers to settle
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 3,
+        20_000,
+        20,
+      );
+
+      const [alphaHash, betaHash] = await Promise.all([
+        hashFile(alphaFile),
+        hashFile(betaFile),
+      ]);
+      expect(betaHash).toBe(alphaHash);
+
+      const db = getDb(alphaDb);
+      try {
+        const row = db
+          .prepare(
+            `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
+          )
+          .get(relPath);
+        expect(row).toBeUndefined();
+      } finally {
+        db.close();
+      }
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 20_000);
+
+  it("create directory that is target of symlink, sync, move directory, sync", async () => {
     const child = startSchedulerRemote({
       alphaRoot,
       betaRootRemote,
