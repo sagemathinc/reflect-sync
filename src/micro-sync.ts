@@ -264,6 +264,7 @@ export function makeMicroSync({
         : "micro.rsync.beta->alpha";
 
     if (direction === "alpha->beta") {
+      const tempDirArg = betaIsRemote ? ".reflect-rsync-tmp" : betaTempDir;
       const { from, to, transport } = rsyncRoots(
         alphaRoot,
         alphaHost,
@@ -292,7 +293,7 @@ export function makeMicroSync({
         {
           logger: microLogger,
           logLevel: "debug",
-          tempDir: betaIsRemote ? undefined : betaTempDir,
+          tempDir: tempDirArg,
           onProgress: (event: RsyncProgressEvent) => {
             microLogger.info("progress", {
               scope: progressScope,
@@ -310,6 +311,7 @@ export function makeMicroSync({
       assertRsyncOk(`micro ${direction}`, res, { direction });
       return res.zero;
     } else {
+      const tempDirArg = alphaIsRemote ? ".reflect-rsync-tmp" : alphaTempDir;
       const { from, to, transport } = rsyncRoots(
         betaRoot,
         betaHost,
@@ -338,7 +340,7 @@ export function makeMicroSync({
         {
           logger: microLogger,
           logLevel: "debug",
-          tempDir: alphaIsRemote ? undefined : alphaTempDir,
+          tempDir: tempDirArg,
           onProgress: (event: RsyncProgressEvent) => {
             microLogger.info("progress", {
               scope: progressScope,

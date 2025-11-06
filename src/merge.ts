@@ -202,10 +202,14 @@ export async function runMerge({
 
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
+  let alphaTempArg: string | undefined;
+  let betaTempArg: string | undefined;
 
   async function main() {
     alphaTempDir = !alphaHost ? await ensureTempDir(alphaRoot) : undefined;
     betaTempDir = !betaHost ? await ensureTempDir(betaRoot) : undefined;
+    alphaTempArg = alphaHost ? ".reflect-rsync-tmp" : alphaTempDir;
+    betaTempArg = betaHost ? ".reflect-rsync-tmp" : betaTempDir;
     // ---------- DB ----------
     // ensure alpha/beta exist (creates schema if missing)
     getDb(alphaDb);
@@ -1360,7 +1364,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
-          tempDir: alphaHost ? undefined : alphaTempDir,
+          tempDir: alphaTempArg,
         },
       );
       if (delInAlpha.length && markBetaToAlpha) {
@@ -1375,7 +1379,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
-          tempDir: betaHost ? undefined : betaTempDir,
+          tempDir: betaTempArg,
         },
       );
       if (delInBeta.length && markAlphaToBeta) {
@@ -1395,7 +1399,7 @@ export async function runMerge({
           {
             forceEmptySource: true,
             ...rsyncOpts,
-            tempDir: alphaHost ? undefined : alphaTempDir,
+            tempDir: alphaTempArg,
           },
         );
         if (markBetaToAlpha) {
@@ -1412,7 +1416,7 @@ export async function runMerge({
           {
             forceEmptySource: true,
             ...rsyncOpts,
-            tempDir: betaHost ? undefined : betaTempDir,
+            tempDir: betaTempArg,
           },
         );
         if (markAlphaToBeta) {
@@ -1431,7 +1435,7 @@ export async function runMerge({
           "alpha→beta",
           {
             ...rsyncOpts,
-            tempDir: betaHost ? undefined : betaTempDir,
+            tempDir: betaTempArg,
           },
         )
       ).ok;
@@ -1443,7 +1447,7 @@ export async function runMerge({
           "beta→alpha",
           {
             ...rsyncOpts,
-            tempDir: alphaHost ? undefined : alphaTempDir,
+            tempDir: alphaTempArg,
           },
         )
       ).ok;
@@ -1490,7 +1494,7 @@ export async function runMerge({
               "alpha→beta",
               {
                 ...rsyncOpts,
-                tempDir: betaHost ? undefined : betaTempDir,
+                tempDir: betaTempArg,
                 progressScope: "merge.copy.alpha->beta",
                 progressMeta: {
                   stage: "copy",
@@ -1508,7 +1512,7 @@ export async function runMerge({
               "beta→alpha",
               {
                 ...rsyncOpts,
-                tempDir: alphaHost ? undefined : alphaTempDir,
+                tempDir: alphaTempArg,
                 progressScope: "merge.copy.beta->alpha",
                 progressMeta: {
                   stage: "copy",
@@ -1536,7 +1540,7 @@ export async function runMerge({
             "alpha→beta",
             {
               ...rsyncOpts,
-              tempDir: betaHost ? undefined : betaTempDir,
+              tempDir: betaTempArg,
               progressScope: "merge.copy.alpha->beta",
               progressMeta: {
                 stage: "copy",
@@ -1554,7 +1558,7 @@ export async function runMerge({
             "beta→alpha",
             {
               ...rsyncOpts,
-              tempDir: alphaHost ? undefined : alphaTempDir,
+              tempDir: alphaTempArg,
               progressScope: "merge.copy.beta->alpha",
               progressMeta: {
                 stage: "copy",
@@ -1608,7 +1612,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
-          tempDir: betaHost ? undefined : betaTempDir,
+          tempDir: betaTempArg,
         },
       );
       if (delDirsInBeta.length) {
@@ -1625,7 +1629,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
-          tempDir: alphaHost ? undefined : alphaTempDir,
+          tempDir: alphaTempArg,
         },
       );
       if (delDirsInAlpha.length) {
