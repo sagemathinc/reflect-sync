@@ -74,7 +74,13 @@ export function makeMicroSync({
     process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 10_000,
   );
 
+  // quarantineAlphaToBeta records the files we copied (or deleted
+  // or symlinked) *from* alpha to beta recently.  Thus these paths
+  // should not be copied from beta back to alpha too soon.
   const quarantineAlphaToBeta = new Map<string, number>();
+
+  // quarantineBetaToAlpha records the files we copied (or deleted
+  // or symlinked) *from* beta to alpha recently:
   const quarantineBetaToAlpha = new Map<string, number>();
 
   const lastA2B = new Map<string, number>();
@@ -84,8 +90,9 @@ export function makeMicroSync({
   const extendAlphaToBetaQuarantine = (
     paths: Iterable<string>,
     until?: number,
+    windowMs = ECHO_WINDOW_MS,
   ) => {
-    const expiry = (until ?? nowFn()) + ECHO_WINDOW_MS;
+    const expiry = (until ?? nowFn()) + windowMs;
     for (const p of paths) {
       quarantineAlphaToBeta.set(p, expiry);
       lastA2B.set(p, nowFn());
@@ -94,13 +101,18 @@ export function makeMicroSync({
   const extendBetaToAlphaQuarantine = (
     paths: Iterable<string>,
     until?: number,
+    windowMs = ECHO_WINDOW_MS,
   ) => {
-    const expiry = (until ?? nowFn()) + ECHO_WINDOW_MS;
+    const expiry = (until ?? nowFn()) + windowMs;
     for (const p of paths) {
       quarantineBetaToAlpha.set(p, expiry);
       lastB2A.set(p, nowFn());
     }
   };
+
+  // isQuarantinedAlphaToBeta returns true if we recently
+  // copied p from alpha to beta.  In this case, do NOT
+  // copy it from beta back to alpha.
   const isQuarantinedAlphaToBeta = (p: string) => {
     return (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
   };
@@ -338,19 +350,44 @@ export function makeMicroSync({
       const aTouched = setA.has(r);
       const bTouched = setB.has(r);
       if (aTouched && bTouched) {
-        if (prefer === "alpha") toBeta.push(r);
-        else toAlpha.push(r);
-      } else if (aTouched) {
+        // conflict.  If there is a quarantine in both directions
+        // do nothing.  If there is a quarantine in exactly one direction,
+        // copy in the other direction. If no quarantines, decide based
+        // on prefer.
+        const qToAlpha = isQuarantinedBetaToAlpha(r);
+        const qToBeta = isQuarantinedAlphaToBeta(r);
+        if (qToAlpha && qToBeta) {
+          // nothing
+        } else if (qToAlpha && !qToBeta) {
+          toBeta.push(r);
+        } else if (!qToAlpha && qToBeta) {
+          toAlpha.push(r);
+        } else {
+          if (prefer == "alpha") {
+            toAlpha.push(r);
+          } else {
+            toBeta.push(r);
+          }
+        }
+      } else if (aTouched && !isQuarantinedAlphaToBeta(r)) {
         toBeta.push(r);
-      } else {
+      } else if (!isQuarantinedBetaToAlpha(r)) {
         toAlpha.push(r);
       }
     }
-    toAlpha = toAlpha.filter((r) => !isQuarantinedBetaToAlpha(r));
-    toBeta = toBeta.filter((r) => !isQuarantinedAlphaToBeta(r));
 
-    extendAlphaToBetaQuarantine(toAlpha, Date.now());
-    extendBetaToAlphaQuarantine(toBeta, Date.now());
+    // we want PRE_COPY_WINDOW_MS to be effectively "infinite", but that's
+    // scary in case something goes wrong, so we set it to a few hours.  It needs
+    // to be at least as long as the microsync takes to run -- as a worrisome
+    // case, imagine microsync copying a very large file that takes 2 hours
+    // to copy over a slow network.  If the quarantine expires during that copy
+    // operation, then a full sync loop may see the file changed in the target
+    // and copy the unfinished file *back*, thus corrupting the original file!
+    const PRE_COPY_WINDOW_MS = Number(
+      process.env.REFLECT_MICRO_PRECOPY_WINDOW_MS ?? 3 * 60 * 60_000,
+    );
+    extendAlphaToBetaQuarantine(toBeta, Date.now(), PRE_COPY_WINDOW_MS);
+    extendBetaToAlphaQuarantine(toAlpha, Date.now(), PRE_COPY_WINDOW_MS);
 
     // NOTE: we may also act on directories/symlinks and deletions below,
     // so don't early-return if file lists are empty.
@@ -370,14 +407,10 @@ export function makeMicroSync({
             "realtime",
             `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
           );
-          log(
-            "info",
-            "realtime",
-            `alpha→beta ${toBeta.length} paths: ${JSON.stringify(toBeta)}`,
-          );
           await rsyncCopyOrDelete("alpha->beta", listAllA2B);
           const t = Date.now();
           for (const r of toBeta) lastA2B.set(r, t);
+          extendAlphaToBetaQuarantine(toBeta, t);
         } else {
           // Local → Local: classify so we can keep reflink for files and still
           // handle deletions + dir/symlink create/remove.
@@ -437,6 +470,7 @@ export function makeMicroSync({
 
           const t = Date.now();
           for (const r of files.concat(others, missing)) lastA2B.set(r, t);
+          extendAlphaToBetaQuarantine(files.concat(others, missing), t);
         }
       }
 
@@ -455,6 +489,7 @@ export function makeMicroSync({
           await rsyncCopyOrDelete("beta->alpha", listAllB2A);
           const t = Date.now();
           for (const r of toAlpha) lastB2A.set(r, t);
+          extendBetaToAlphaQuarantine(toAlpha, t);
         } else {
           // Local → Local classification + fast path
           const { files, others, missing } = await classifyLocal(
@@ -513,8 +548,16 @@ export function makeMicroSync({
 
           const t = Date.now();
           for (const r of files.concat(others, missing)) lastB2A.set(r, t);
+          extendBetaToAlphaQuarantine(files.concat(others, missing), t);
         }
       }
+    } catch (err) {
+      // something went wrong above -- it's very important to not leave the quarantines
+      // at "really long", so we reset them to now, since some of the updates to
+      // quarantines after finishing rsyncs above may have got missed.
+      extendBetaToAlphaQuarantine(toAlpha, Date.now());
+      extendAlphaToBetaQuarantine(toBeta, Date.now());
+      throw err;
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

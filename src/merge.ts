@@ -983,17 +983,17 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    if (isQuarantinedBetaToAlpha != null) {
-      const f = (x) => x.filter((path) => !isQuarantinedBetaToAlpha(path));
-      toAlpha = f(toAlpha);
-      delInAlpha = f(delInAlpha);
-      toAlphaDirs = f(toAlphaDirs);
-    }
     if (isQuarantinedAlphaToBeta != null) {
       const f = (x) => x.filter((path) => !isQuarantinedAlphaToBeta(path));
       toBeta = f(toBeta);
       delInBeta = f(delInBeta);
       toBetaDirs = f(toBetaDirs);
+    }
+    if (isQuarantinedBetaToAlpha != null) {
+      const f = (x) => x.filter((path) => !isQuarantinedBetaToAlpha(path));
+      toAlpha = f(toAlpha);
+      delInAlpha = f(delInAlpha);
+      toAlphaDirs = f(toAlphaDirs);
     }
 
     // --- helpers: POSIX-y parent and normalization
