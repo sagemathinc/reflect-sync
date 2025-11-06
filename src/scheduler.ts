@@ -22,6 +22,7 @@ import {
   handleWatchErrors,
   isRecent,
 } from "./hotwatch.js";
+import { recordHotEvent } from "./hot-events.js";
 import {
   ensureSessionDb,
   SessionWriter,
@@ -871,6 +872,11 @@ export async function runScheduler({
       if (r.startsWith("/")) r = r.slice(1);
       if (!r) return;
       (side === "alpha" ? hotAlpha : hotBeta).add(r);
+      if (side === "alpha") {
+        recordHotEvent(alphaDb, "alpha", r, "remote-watch");
+      } else {
+        recordHotEvent(betaDb, "beta", r, "remote-watch");
+      }
       scheduleHotFlush();
     };
 
@@ -1137,6 +1143,7 @@ export async function runScheduler({
     const r = rel(alphaRoot, abs);
     if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
       hotAlpha.add(r);
+      recordHotEvent(alphaDb, "alpha", r, "hotwatch");
       scheduleHotFlush();
     }
   }
@@ -1144,6 +1151,7 @@ export async function runScheduler({
     const r = rel(betaRoot, abs);
     if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
       hotBeta.add(r);
+      recordHotEvent(betaDb, "beta", r, "hotwatch");
       scheduleHotFlush();
     }
   }

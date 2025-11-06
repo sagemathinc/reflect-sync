@@ -86,6 +86,17 @@ CREATE INDEX IF NOT EXISTS files_pdo ON files(path, deleted, op_ts);
 `);
 
   db.exec(`
+  CREATE TABLE IF NOT EXISTS hot_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    side TEXT NOT NULL,
+    op_ts INTEGER,
+    source TEXT
+  );
+  CREATE INDEX IF NOT EXISTS hot_events_ts_idx ON hot_events(op_ts);
+`);
+
+  db.exec(`
   CREATE TABLE IF NOT EXISTS links (
     path       TEXT PRIMARY KEY NOT NULL,
     target     TEXT,

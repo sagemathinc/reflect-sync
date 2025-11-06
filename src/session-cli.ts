@@ -10,6 +10,7 @@ import {
   setDesiredState,
   setActualState,
   recordHeartbeat,
+  deriveSessionPaths,
   type SessionRow,
 } from "./session-db.js";
 import {
@@ -20,7 +21,6 @@ import {
   editSession,
 } from "./session-manage.js";
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
-import { registerSessionMonitor } from "./session-monitor.js";
 import { registerSessionSync } from "./session-sync.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 import {
@@ -40,6 +40,9 @@ import {
 import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
 import { queryRecent, querySize } from "./session-query.js";
 import { diffSession } from "./session-diff.js";
+import { getDb } from "./db.js";
+import type { Database } from "./db.js";
+import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -737,6 +740,39 @@ export function registerSessionCommands(program: Command) {
 
   addSessionDbOption(
     program
+      .command("monitor <id-or-name>")
+      .description("Stream change events for a session")
+      .option("--json", "emit JSON output", false)
+      .option("--alpha-only", "only watch alpha", false)
+      .option("--beta-only", "only watch beta", false)
+      .option(
+        "--poll-interval <ms>",
+        "scan poll interval in milliseconds",
+        (v: string) => Number.parseInt(v, 10),
+      )
+      .option(
+        "--hot-interval <ms>",
+        "hot events poll interval in milliseconds",
+        (v: string) => Number.parseInt(v, 10),
+      )
+      .option(
+        "--since <ms>",
+        "look back this many milliseconds before start",
+        (v: string) => Number.parseInt(v, 10),
+      )
+      .action(async (ref: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        try {
+          await runWatchCommand(sessionDb, ref, opts);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+        }
+      }),
+  );
+
+  addSessionDbOption(
+    program
       .command("diff")
       .description("Show paths that differ between alpha and beta")
       .argument("<id-or-name>", "session id or name")
@@ -927,8 +963,284 @@ export function registerSessionCommands(program: Command) {
       ),
   );
 
-  registerSessionMonitor(program);
   registerSessionSync(program);
   registerSessionStatus(program);
   registerSessionDaemon(program);
+}
+
+type WatchCommandOptions = {
+  json?: boolean;
+  alphaOnly?: boolean;
+  betaOnly?: boolean;
+  pollInterval?: number;
+  hotInterval?: number;
+  since?: number;
+};
+
+type WatchEventPayload = {
+  side: "alpha" | "beta";
+  path: string;
+  source: string;
+  opTs: number;
+  kind?: string | null;
+  size?: number | null;
+  mtime?: number | null;
+  hash?: string | null;
+  target?: string | null;
+  deleted?: boolean;
+};
+
+async function runWatchCommand(
+  sessionDbPath: string,
+  ref: string,
+  opts: WatchCommandOptions,
+) {
+  const row = requireSessionRow(sessionDbPath, ref);
+  const derived = deriveSessionPaths(row.id);
+  const alphaDbPath = row.alpha_db ?? derived.alpha_db;
+  const betaDbPath = row.beta_db ?? derived.beta_db;
+  if (!alphaDbPath || !betaDbPath) {
+    throw new Error("session is missing alpha/beta database paths");
+  }
+  let watchAlpha = !opts.betaOnly;
+  let watchBeta = !opts.alphaOnly;
+  if (!watchAlpha && !watchBeta) {
+    watchAlpha = true;
+    watchBeta = true;
+  }
+
+  const pollInterval = clampPositive(opts.pollInterval, 2000);
+  const hotInterval = clampPositive(
+    opts.hotInterval,
+    Math.min(1000, Math.max(250, Math.floor(pollInterval / 2))),
+  );
+  const sinceOpTs =
+    opts.since != null && Number.isFinite(Number(opts.since))
+      ? Math.max(0, Date.now() - Number(opts.since))
+      : undefined;
+
+  const alphaHandle = watchAlpha ? getDb(alphaDbPath) : null;
+  const betaHandle = watchBeta ? getDb(betaDbPath) : null;
+
+  try {
+    let lastAlphaScanOpTs = watchAlpha
+      ? sinceOpTs ?? getMaxOpTs(alphaDbPath)
+      : 0;
+    let lastBetaScanOpTs = watchBeta
+      ? sinceOpTs ?? getMaxOpTs(betaDbPath)
+      : 0;
+    let lastAlphaHotOpTs = sinceOpTs ?? 0;
+    let lastBetaHotOpTs = sinceOpTs ?? 0;
+    let lastAlphaScanPoll = 0;
+    let lastBetaScanPoll = 0;
+
+    let running = true;
+    const stop = () => {
+      running = false;
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+
+    while (running) {
+      const loopStart = Date.now();
+      if (watchAlpha) {
+        lastAlphaHotOpTs = await drainHotEvents(
+          alphaDbPath,
+          "alpha",
+          lastAlphaHotOpTs,
+          alphaHandle,
+          !!opts.json,
+        );
+      }
+      if (watchBeta) {
+        lastBetaHotOpTs = await drainHotEvents(
+          betaDbPath,
+          "beta",
+          lastBetaHotOpTs,
+          betaHandle,
+          !!opts.json,
+        );
+      }
+
+      const now = Date.now();
+      if (watchAlpha && now - lastAlphaScanPoll >= pollInterval) {
+        lastAlphaScanOpTs = await drainScanEvents(
+          alphaHandle!,
+          "alpha",
+          lastAlphaScanOpTs,
+          !!opts.json,
+        );
+        lastAlphaScanPoll = now;
+      }
+      if (watchBeta && now - lastBetaScanPoll >= pollInterval) {
+        lastBetaScanOpTs = await drainScanEvents(
+          betaHandle!,
+          "beta",
+          lastBetaScanOpTs,
+          !!opts.json,
+        );
+        lastBetaScanPoll = now;
+      }
+
+      const elapsed = Date.now() - loopStart;
+      const waitMs = Math.max(hotInterval - elapsed, 100);
+      if (waitMs > 0 && running) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+  } finally {
+    alphaHandle?.close();
+    betaHandle?.close();
+  }
+}
+
+async function drainHotEvents(
+  dbPath: string,
+  side: "alpha" | "beta",
+  since: number,
+  handle: Database | null,
+  json: boolean,
+): Promise<number> {
+  let max = since;
+  const limit = 500;
+  while (true) {
+    const rows = fetchHotEvents(dbPath, max, { side, limit });
+    if (!rows.length) break;
+    for (const row of rows) {
+      max = Math.max(max, row.opTs);
+      const meta = handle ? lookupLatestMeta(handle, row.path) : null;
+      outputWatchEvent(
+        {
+          side,
+          source: row.source ?? "hotwatch",
+          path: row.path,
+          opTs: row.opTs,
+          kind: meta?.kind ?? null,
+          size: meta?.size ?? null,
+          mtime: meta?.mtime ?? null,
+          hash: meta?.hash ?? null,
+          target: meta?.target ?? null,
+          deleted: meta?.deleted ?? false,
+        },
+        json,
+      );
+    }
+    if (rows.length < limit) break;
+  }
+  return max;
+}
+
+async function drainScanEvents(
+  handle: Database,
+  side: "alpha" | "beta",
+  since: number,
+  json: boolean,
+): Promise<number> {
+  let max = since;
+  const limit = 500;
+  while (true) {
+    const rows = fetchScanEvents(handle, max, limit);
+    if (!rows.length) break;
+    for (const row of rows) {
+      max = Math.max(max, row.opTs);
+      outputWatchEvent({ side, source: "scan", ...row }, json);
+    }
+    if (rows.length < limit) break;
+  }
+  return max;
+}
+
+type ScanRow = {
+  path: string;
+  opTs: number;
+  kind: string;
+  size: number | null;
+  mtime: number | null;
+  hash: string | null;
+  target?: string | null;
+  deleted: boolean;
+};
+
+function fetchScanEvents(
+  handle: Database,
+  since: number,
+  limit: number,
+): ScanRow[] {
+  const stmt = handle.prepare(
+    `SELECT path, op_ts as opTs, 'file' as kind, size, mtime, hash, target, deleted
+       FROM (
+         SELECT path, op_ts, size, mtime, hash, NULL as target, deleted FROM files WHERE op_ts > ?
+         UNION ALL
+         SELECT path, op_ts, NULL, mtime, hash, NULL, deleted FROM dirs WHERE op_ts > ?
+         UNION ALL
+         SELECT path, op_ts, NULL, mtime, hash, target, deleted FROM links WHERE op_ts > ?
+       )
+       ORDER BY opTs ASC
+       LIMIT ?`,
+  );
+  const raw = stmt.all(since, since, since, limit) as Record<string, any>[];
+  return raw.map((row) => ({
+    path: row.path as string,
+    opTs: Number(row.opTs),
+    kind: row.kind as string,
+    size: row.size != null ? Number(row.size) : null,
+    mtime: row.mtime != null ? Number(row.mtime) : null,
+    hash: row.hash != null ? String(row.hash) : null,
+    target: row.target != null ? String(row.target) : null,
+    deleted: !!row.deleted,
+  }));
+}
+
+function lookupLatestMeta(
+  handle: Database,
+  path: string,
+): (Omit<ScanRow, "opTs"> & { path: string }) | null {
+  const row = handle
+    .prepare(
+      `SELECT kind, size, mtime, hash, target, deleted
+       FROM (
+         SELECT 'file' as kind, size, mtime, hash, NULL as target, deleted, op_ts FROM files WHERE path = ?
+         UNION ALL
+         SELECT 'dir' as kind, NULL as size, mtime, hash, NULL as target, deleted, op_ts FROM dirs WHERE path = ?
+         UNION ALL
+         SELECT 'link' as kind, NULL as size, mtime, hash, target, deleted, op_ts FROM links WHERE path = ?
+       )
+       ORDER BY op_ts DESC
+       LIMIT 1`,
+    )
+    .get(path, path, path) as
+    | { kind: string; size: number | null; mtime: number | null; hash: string | null; target: string | null; deleted: number }
+    | undefined;
+  if (!row) return null;
+  return {
+    path,
+    kind: row.kind,
+    size: row.size ?? null,
+    mtime: row.mtime ?? null,
+    hash: row.hash ?? null,
+    target: row.target ?? null,
+    deleted: !!row.deleted,
+  };
+}
+
+function outputWatchEvent(event: WatchEventPayload, json: boolean) {
+  if (json) {
+    console.log(JSON.stringify(event));
+    return;
+  }
+  const parts = [
+    new Date(event.opTs).toISOString(),
+    `[${event.side}]`,
+    event.source,
+    event.path,
+  ];
+  if (event.kind) {
+    parts.push(`(${event.kind}${event.deleted ? ", deleted" : ""})`);
+  } else if (event.deleted) {
+    parts.push("(deleted)");
+  }
+  if (event.hash) {
+    parts.push(`hash=${event.hash}`);
+  }
+  console.log(parts.join(" "));
 }
