@@ -1,13 +1,8 @@
 // src/micro-sync.ts
 import path from "node:path";
 import { tmpdir } from "node:os";
-import {
-  mkdtemp,
-  rm,
-  writeFile,
-  lstat as fsLstat,
-  stat as fsStat,
-} from "node:fs/promises";
+import { mkdtemp, rm, writeFile, lstat as fsLstat, stat as fsStat } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
   run as runRsync,
@@ -87,19 +82,89 @@ export function makeMicroSync({
 
   const dedupe = (paths: Iterable<string>) => Array.from(new Set(paths));
 
+  const buildSignatureFromFs = (
+    root: string,
+    relPath: string,
+  ): SendSignature | null => {
+    try {
+      const abs = path.join(root, relPath);
+      const st = lstatSync(abs);
+      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      if (st.isSymbolicLink()) {
+        return {
+          kind: "link",
+          opTs: mtime,
+          mtime,
+          size: st.size,
+        };
+      }
+      if (st.isDirectory()) {
+        return {
+          kind: "dir",
+          opTs: mtime,
+          mtime,
+        };
+      }
+      if (st.isFile()) {
+        return {
+          kind: "file",
+          opTs: mtime,
+          size: st.size,
+          mtime,
+        };
+      }
+      return {
+        kind: "file",
+        opTs: mtime,
+        size: st.size,
+        mtime,
+      };
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        return {
+          kind: "missing",
+          opTs: Date.now(),
+        };
+      }
+      return null;
+    }
+  };
+
   const recordDirection = (
-    sourceDb: string,
-    destDb: string,
     direction: SyncDirection,
     paths: string[],
   ) => {
     if (!paths.length) return;
     const unique = dedupe(paths);
-    const stamps = fetchOpStamps(sourceDb, unique);
-    const entries = unique.map((path) => ({
-      path,
-      signature: signatureFromStamp(stamps.get(path)),
-    }));
+    const destDb =
+      direction === "alpha->beta" ? betaDbPath : alphaDbPath;
+    const destRoot =
+      direction === "alpha->beta" ? betaRoot : alphaRoot;
+    const destIsRemote =
+      direction === "alpha->beta" ? betaIsRemote : alphaIsRemote;
+    const sourceDb =
+      direction === "alpha->beta" ? alphaDbPath : betaDbPath;
+
+    const destStamps = fetchOpStamps(destDb, unique);
+    const sourceStamps = fetchOpStamps(sourceDb, unique);
+
+    const entries = unique.map((path) => {
+      let signature = signatureFromStamp(destStamps.get(path));
+      if (!signature && !destIsRemote) {
+        signature = buildSignatureFromFs(destRoot, path);
+      }
+      if (!signature) {
+        signature = signatureFromStamp(sourceStamps.get(path));
+      }
+      microLogger.debug("record recent send", {
+        direction,
+        path,
+        signature,
+        destDb,
+        sourceDb,
+      });
+      return { path, signature };
+    });
     recordRecentSend(destDb, direction, entries);
   };
 
@@ -342,6 +407,23 @@ export function makeMicroSync({
       betaSigMap.set(path, signatureFromStamp(betaStamps.get(path)));
     }
 
+    if (!alphaIsRemote) {
+      for (const path of setA) {
+        if (!alphaSigMap.get(path)) {
+          const sig = buildSignatureFromFs(alphaRoot, path);
+          if (sig) alphaSigMap.set(path, sig);
+        }
+      }
+    }
+    if (!betaIsRemote) {
+      for (const path of setB) {
+        if (!betaSigMap.get(path)) {
+          const sig = buildSignatureFromFs(betaRoot, path);
+          if (sig) betaSigMap.set(path, sig);
+        }
+      }
+    }
+
     const recentFromBeta = getRecentSendSignatures(
       alphaDbPath,
       "beta->alpha",
@@ -372,6 +454,17 @@ export function makeMicroSync({
         microLogger.debug("skip beta→alpha bounce", { path });
         continue;
       }
+      microLogger.debug("queue beta→alpha", {
+        path,
+        sig,
+        last,
+        reason:
+          sig && last
+            ? "signature-mismatch"
+            : sig
+              ? "no-recent-record"
+              : "no-signature",
+      });
       toAlphaSet.add(path);
     }
 
@@ -397,11 +490,6 @@ export function makeMicroSync({
       if (toBeta.length) {
         const listAllA2B = path.join(tmp, "alpha2beta.all");
         await writeFile(listAllA2B, join0(toBeta));
-        const toBetaEntries = toBeta.map((path) => ({
-          path,
-          signature: alphaSigMap.get(path) ?? null,
-        }));
-
         if (alphaIsRemote || betaIsRemote) {
           // Remote source or dest: single unified rsync that both copies and deletes.
           log(
@@ -468,18 +556,13 @@ export function makeMicroSync({
           }
         }
 
-        recordRecentSend(betaDbPath, "alpha->beta", toBetaEntries);
+        recordDirection("alpha->beta", toBeta);
       }
 
       // ===== β → α =====
       if (toAlpha.length) {
         const listAllB2A = path.join(tmp, "beta2alpha.all");
         await writeFile(listAllB2A, join0(toAlpha));
-        const toAlphaEntries = toAlpha.map((path) => ({
-          path,
-          signature: betaSigMap.get(path) ?? null,
-        }));
-
         if (alphaIsRemote || betaIsRemote) {
           // Remote: single unified rsync that both copies and deletes.
           log(
@@ -545,7 +628,7 @@ export function makeMicroSync({
           }
         }
 
-        recordRecentSend(alphaDbPath, "beta->alpha", toAlphaEntries);
+        recordDirection("beta->alpha", toAlpha);
       }
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -555,13 +638,13 @@ export function makeMicroSync({
   microSync.markAlphaToBeta = (paths: string[]) => {
     //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
-    recordDirection(alphaDbPath, betaDbPath, "alpha->beta", paths);
+    recordDirection("alpha->beta", paths);
   };
 
   microSync.markBetaToAlpha = (paths: string[]) => {
     //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
-    recordDirection(betaDbPath, alphaDbPath, "beta->alpha", paths);
+    recordDirection("beta->alpha", paths);
   };
 
   return microSync;

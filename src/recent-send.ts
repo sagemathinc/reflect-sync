@@ -8,7 +8,6 @@ export type SendSignature = {
   opTs: number | null;
   size?: number | null;
   mtime?: number | null;
-  ctime?: number | null;
   hash?: string | null;
 };
 
@@ -31,7 +30,6 @@ function compactSignature(sig: SendSignature | null): SendSignature | null {
   };
   if (sig.size != null) normalized.size = sig.size;
   if (sig.mtime != null) normalized.mtime = sig.mtime;
-  if (sig.ctime != null) normalized.ctime = sig.ctime;
   if (sig.hash != null) normalized.hash = sig.hash;
   return normalized;
 }
@@ -44,7 +42,6 @@ export function signatureFromStamp(stamp?: OpStamp): SendSignature | null {
     opTs: stamp.opTs ?? null,
     size: stamp.size ?? null,
     mtime: stamp.mtime ?? null,
-    ctime: stamp.ctime ?? null,
     hash: stamp.hash ?? null,
   });
 }
@@ -55,13 +52,16 @@ export function signatureEquals(
 ): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
+  const same = (x: number | string | null | undefined, y: typeof x) => {
+    if (x == null || y == null) return true;
+    return x === y;
+  };
   return (
     a.kind === b.kind &&
-    (a.opTs ?? null) === (b.opTs ?? null) &&
-    (a.size ?? null) === (b.size ?? null) &&
-    (a.mtime ?? null) === (b.mtime ?? null) &&
-    (a.ctime ?? null) === (b.ctime ?? null) &&
-    (a.hash ?? null) === (b.hash ?? null)
+    same(a.opTs, b.opTs) &&
+    same(a.size, b.size) &&
+    same(a.mtime, b.mtime) &&
+    same(a.hash, b.hash)
   );
 }
 
