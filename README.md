@@ -163,6 +163,20 @@ reflect forward terminate <id-or-name>
 
 Each forward row stores its `ssh` invocation. The daemon \(`reflect daemon start`\) keeps the background `ssh` process alive and restarts it if necessary. `reflect forward list` surfaces the recorded PID and command, and marks forwards as `error` when the underlying process has disappeared.
 
+### Monitoring changes in real time
+
+The `reflect monitor` command streams change events (hot watcher hits and scan-driven deltas) for any session. It’s useful for dashboards and editors:
+
+```bash
+reflect monitor 7                     # human-readable stream for both sides
+reflect monitor 7 --json --alpha-only # machine-friendly JSON for alpha only
+reflect monitor project-a --since=60000  # replay the last minute of activity, then keep streaming
+```
+
+Each event includes the side, path, source (`hotwatch`, `scan`, `remote-watch`), timestamps, and hashes when available. Use `--beta-only`, `--poll-interval`, or `--hot-interval` to tune the feed.
+
+The monitor command allows you to watch a potentially huge nested directory with hundreds of thousands of files on Linux, without using too many inotify handles.
+
 ---
 
 ## How Reflect works \(short\)
@@ -337,4 +351,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-
