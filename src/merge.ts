@@ -19,6 +19,7 @@ import {
   rsyncCopyChunked,
   rsyncCopyDirs,
   rsyncDeleteChunked,
+  ensureTempDir,
 } from "./rsync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import { createHash } from "node:crypto";
@@ -197,7 +198,12 @@ export async function runMerge({
     xs.slice().sort((a, b) => depth(b) - depth(a));
   const nonRoot = (xs: string[]) => xs.filter((r) => r && r !== ".");
 
+  let alphaTempDir: string | undefined;
+  let betaTempDir: string | undefined;
+
   async function main() {
+    alphaTempDir = !alphaHost ? await ensureTempDir(alphaRoot) : undefined;
+    betaTempDir = !betaHost ? await ensureTempDir(betaRoot) : undefined;
     // ---------- DB ----------
     // ensure alpha/beta exist (creates schema if missing)
     getDb(alphaDb);
@@ -1313,6 +1319,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
+          tempDir: alphaHost ? undefined : alphaTempDir,
         },
       );
       await rsyncDeleteChunked(
@@ -1324,6 +1331,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
+          tempDir: betaHost ? undefined : betaTempDir,
         },
       );
       done();
@@ -1337,7 +1345,11 @@ export async function runMerge({
           alpha,
           preDeleteDirsOnAlphaForBetaFiles,
           "cleanup dir→file on alpha",
-          { forceEmptySource: true },
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+            tempDir: alphaHost ? undefined : alphaTempDir,
+          },
         );
       }
       if (prefer === "alpha" && preDeleteDirsOnBetaForAlphaFiles.length) {
@@ -1347,7 +1359,11 @@ export async function runMerge({
           beta,
           preDeleteDirsOnBetaForAlphaFiles,
           "cleanup dir→file on beta",
-          { forceEmptySource: true },
+          {
+            forceEmptySource: true,
+            ...rsyncOpts,
+            tempDir: betaHost ? undefined : betaTempDir,
+          },
         );
       }
       done();
@@ -1360,7 +1376,10 @@ export async function runMerge({
           beta,
           listToBetaDirs,
           "alpha→beta",
-          rsyncOpts,
+          {
+            ...rsyncOpts,
+            tempDir: betaHost ? undefined : betaTempDir,
+          },
         )
       ).ok;
       copyDirsBetaAlphaOk = (
@@ -1369,7 +1388,10 @@ export async function runMerge({
           alpha,
           listToAlphaDirs,
           "beta→alpha",
-          rsyncOpts,
+          {
+            ...rsyncOpts,
+            tempDir: alphaHost ? undefined : alphaTempDir,
+          },
         )
       ).ok;
       if (copyDirsAlphaBetaOk && toBetaDirs.length) {
@@ -1415,6 +1437,7 @@ export async function runMerge({
               "alpha→beta",
               {
                 ...rsyncOpts,
+                tempDir: betaHost ? undefined : betaTempDir,
                 progressScope: "merge.copy.alpha->beta",
                 progressMeta: {
                   stage: "copy",
@@ -1432,6 +1455,7 @@ export async function runMerge({
               "beta→alpha",
               {
                 ...rsyncOpts,
+                tempDir: alphaHost ? undefined : alphaTempDir,
                 progressScope: "merge.copy.beta->alpha",
                 progressMeta: {
                   stage: "copy",
@@ -1459,6 +1483,7 @@ export async function runMerge({
             "alpha→beta",
             {
               ...rsyncOpts,
+              tempDir: betaHost ? undefined : betaTempDir,
               progressScope: "merge.copy.alpha->beta",
               progressMeta: {
                 stage: "copy",
@@ -1476,6 +1501,7 @@ export async function runMerge({
             "beta→alpha",
             {
               ...rsyncOpts,
+              tempDir: alphaHost ? undefined : alphaTempDir,
               progressScope: "merge.copy.beta->alpha",
               progressMeta: {
                 stage: "copy",
@@ -1529,6 +1555,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
+          tempDir: betaHost ? undefined : betaTempDir,
         },
       );
       await rsyncDeleteChunked(
@@ -1540,6 +1567,7 @@ export async function runMerge({
         {
           forceEmptySource: true,
           ...rsyncOpts,
+          tempDir: alphaHost ? undefined : alphaTempDir,
         },
       );
       done();

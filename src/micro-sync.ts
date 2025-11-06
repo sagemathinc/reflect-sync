@@ -13,6 +13,7 @@ import {
   run as runRsync,
   type RsyncProgressEvent,
   assertRsyncOk,
+  ensureTempDir,
 } from "./rsync.js";
 import {
   isCompressing,
@@ -73,6 +74,9 @@ export function makeMicroSync({
   const ECHO_WINDOW_MS = Number(
     process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 30_000,
   );
+
+  let alphaTempDir: string | undefined;
+  let betaTempDir: string | undefined;
 
   // quarantineAlphaToBeta records the files we copied (or deleted
   // or symlinked) *from* alpha to beta recently.  Thus these paths
@@ -234,6 +238,7 @@ export function makeMicroSync({
         {
           logger: microLogger,
           logLevel: "debug",
+          tempDir: betaIsRemote ? undefined : betaTempDir,
           onProgress: (event: RsyncProgressEvent) => {
             microLogger.info("progress", {
               scope: progressScope,
@@ -279,6 +284,7 @@ export function makeMicroSync({
         {
           logger: microLogger,
           logLevel: "debug",
+          tempDir: alphaIsRemote ? undefined : alphaTempDir,
           onProgress: (event: RsyncProgressEvent) => {
             microLogger.info("progress", {
               scope: progressScope,
@@ -336,6 +342,8 @@ export function makeMicroSync({
     if (isMergeActive?.()) {
       return;
     }
+    alphaTempDir = alphaIsRemote ? undefined : await ensureTempDir(alphaRoot);
+    betaTempDir = betaIsRemote ? undefined : await ensureTempDir(betaRoot);
     const setA = new Set(rpathsAlpha);
     const setB = new Set(rpathsBeta);
 

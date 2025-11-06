@@ -26,8 +26,8 @@ const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
 export const RSYNC_TEMP_DIR =
   process.env.REFLECT_RSYNC_TEMP_DIR ?? ".reflect-rsync-tmp";
 
-export async function ensureTempDir(root: string): Promise<void> {
-  if (!root) return;
+export async function ensureTempDir(root: string): Promise<string> {
+  if (!root) return "";
   const dir = path.join(root, RSYNC_TEMP_DIR);
   try {
     await mkdir(dir, { recursive: true });
@@ -36,6 +36,7 @@ export async function ensureTempDir(root: string): Promise<void> {
       throw err;
     }
   }
+  return dir;
 }
 
 const PROGRESS_ARGS = [
@@ -81,6 +82,7 @@ type RsyncLogOptions = {
 type RsyncRunOptions = RsyncLogOptions & {
   dryRun?: boolean | string;
   onProgress?: (event: RsyncProgressEvent) => void;
+  tempDir?: string;
 };
 
 export type RsyncProgressEvent = {
@@ -158,6 +160,7 @@ export async function rsyncCopyDirsChunked(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
@@ -204,6 +207,7 @@ export async function rsyncCopyDirsChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        tempDir: opts.tempDir,
         progressScope: scope,
         progressMeta: {
           ...(progressMeta ?? {}),
@@ -232,6 +236,7 @@ export async function rsyncCopyChunked(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
@@ -264,6 +269,7 @@ export async function rsyncCopyChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        tempDir: opts.tempDir,
         progressScope: scope,
         progressMeta: {
           ...(progressMeta ?? {}),
@@ -309,6 +315,7 @@ export async function rsyncCopyChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        tempDir: opts.tempDir,
         progressScope: scope,
         progressMeta: chunkMeta,
       },
@@ -478,13 +485,20 @@ export function run(
   const { logger, debug } = resolveLogContext(opts);
   const wantProgress = typeof opts.onProgress === "function";
   const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : [...args];
-  if (!finalArgs.some((arg) => arg.startsWith("--temp-dir="))) {
+  const tempDirArg =
+    opts.tempDir && opts.tempDir.trim()
+      ? opts.tempDir.trim()
+      : undefined;
+  if (
+    tempDirArg &&
+    !finalArgs.some((arg) => arg.startsWith("--temp-dir="))
+  ) {
     const filesFromIndex = finalArgs.findIndex((arg) =>
       arg.startsWith("--files-from="),
     );
     const insertIndex =
       filesFromIndex >= 0 ? filesFromIndex : Math.max(finalArgs.length - 2, 0);
-    finalArgs.splice(insertIndex, 0, `--temp-dir=${RSYNC_TEMP_DIR}`);
+    finalArgs.splice(insertIndex, 0, `--temp-dir=${tempDirArg}`);
   }
   if (process.env.REFLECT_RSYNC_BWLIMIT) {
     // This can be very useful for testing/debugging to simulate a slower network:
@@ -680,6 +694,7 @@ export async function rsyncCopy(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
@@ -722,6 +737,7 @@ export async function rsyncCopy(
   const res = await run("rsync", args, [0, 23, 24], {
     ...runOpts,
     onProgress: progressHandler,
+    tempDir: opts.tempDir,
   }); // accept partials
   if (debug) {
     logger.debug(`>>> rsync ${label}: done`, {
@@ -743,6 +759,7 @@ export async function rsyncCopyDirs(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
@@ -778,6 +795,7 @@ export async function rsyncCopyDirs(
   const res = await run("rsync", args, [0, 23, 24], {
     ...runOpts,
     onProgress: progressHandler,
+    tempDir: opts.tempDir,
   });
   assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
@@ -883,6 +901,7 @@ export async function rsyncDelete(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
   } = {},
 ): Promise<void> {
   const { logger, debug } = resolveLogContext(opts);
@@ -913,7 +932,10 @@ export async function rsyncDelete(
       to,
     ];
     applySshTransport(args, sourceRoot, to, opts);
-    const res = await run("rsync", args, [0, 24], opts);
+    const res = await run("rsync", args, [0, 24], {
+      ...opts,
+      tempDir: opts.tempDir,
+    });
     assertRsyncOk(`delete ${label}`, res, { from: sourceRoot, to });
   } finally {
     if (tmpEmptyDir) {
@@ -936,6 +958,7 @@ export async function rsyncDeleteChunked(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    tempDir?: string;
   } = {},
 ) {
   if (!rpaths.length) return;
@@ -969,6 +992,7 @@ export async function rsyncDeleteChunked(
         logger,
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
+        tempDir: opts.tempDir,
       },
     );
   }
