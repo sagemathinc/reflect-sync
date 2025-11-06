@@ -100,6 +100,21 @@ CREATE INDEX IF NOT EXISTS links_live_idx ON links(deleted, path);
 CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
   `);
 
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS recent_send (
+    path TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    op_ts INTEGER,
+    signature TEXT,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY(path, direction)
+  );
+  CREATE INDEX IF NOT EXISTS recent_send_dir_idx ON recent_send(direction);
+  `);
+  try {
+    db.exec(`ALTER TABLE recent_send ADD COLUMN signature TEXT`);
+  } catch {}
+
   return db;
 }
 

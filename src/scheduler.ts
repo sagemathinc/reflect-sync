@@ -915,6 +915,8 @@ export async function runScheduler({
   const microSync = makeMicroSync({
     alphaRoot,
     betaRoot,
+    alphaDbPath: alphaDb,
+    betaDbPath: betaDb,
     alphaHost,
     alphaPort,
     betaHost,
@@ -1290,8 +1292,6 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
-        isQuarantinedAlphaToBeta: microSync.isQuarantinedAlphaToBeta,
-        isQuarantinedBetaToAlpha: microSync.isQuarantinedBetaToAlpha,
       });
       mergeOk = true;
     } catch (err) {

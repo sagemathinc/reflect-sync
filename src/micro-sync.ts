@@ -16,16 +16,27 @@ import {
   ensureTempDir,
 } from "./rsync.js";
 import {
+  recordRecentSend,
+  getRecentSendSignatures,
+  signatureEquals,
+  signatureFromStamp,
+  type SendSignature,
+  type SyncDirection,
+} from "./recent-send.js";
+import {
   isCompressing,
   rsyncCompressionArgs,
   type RsyncCompressSpec,
 } from "./rsync-compression.js";
 import type { Logger } from "./logger.js";
+import { fetchOpStamps } from "./op-stamp.js";
 
 export type MicroSyncDeps = {
   isMergeActive?: () => boolean;
   alphaRoot: string;
   betaRoot: string;
+  alphaDbPath: string;
+  betaDbPath: string;
   alphaHost?: string;
   alphaPort?: number;
   betaHost?: string;
@@ -48,13 +59,13 @@ type MicroSyncFn = ((
 ) => Promise<void>) & {
   markAlphaToBeta: (paths: string[]) => void;
   markBetaToAlpha: (paths: string[]) => void;
-  isQuarantinedAlphaToBeta: (path: string) => boolean;
-  isQuarantinedBetaToAlpha: (path: string) => boolean;
 };
 
 export function makeMicroSync({
   alphaRoot,
   betaRoot,
+  alphaDbPath,
+  betaDbPath,
   alphaHost,
   alphaPort,
   betaHost,
@@ -71,57 +82,25 @@ export function makeMicroSync({
 
   const microLogger = logger.child("micro");
 
-  const ECHO_WINDOW_MS = Number(
-    process.env.REFLECT_MICRO_ECHO_WINDOW_MS ?? 30_000,
-  );
-
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
 
-  // quarantineAlphaToBeta records the files we copied (or deleted
-  // or symlinked) *from* alpha to beta recently.  Thus these paths
-  // should not be copied from beta back to alpha too soon.
-  const quarantineAlphaToBeta = new Map<string, number>();
+  const dedupe = (paths: Iterable<string>) => Array.from(new Set(paths));
 
-  // quarantineBetaToAlpha records the files we copied (or deleted
-  // or symlinked) *from* beta to alpha recently:
-  const quarantineBetaToAlpha = new Map<string, number>();
-
-  const lastA2B = new Map<string, number>();
-  const lastB2A = new Map<string, number>();
-
-  const nowFn = () => Date.now();
-  const extendAlphaToBetaQuarantine = (
-    paths: Iterable<string>,
-    until?: number,
-    windowMs = ECHO_WINDOW_MS,
+  const recordDirection = (
+    sourceDb: string,
+    destDb: string,
+    direction: SyncDirection,
+    paths: string[],
   ) => {
-    const expiry = (until ?? nowFn()) + windowMs;
-    for (const p of paths) {
-      quarantineAlphaToBeta.set(p, expiry);
-      lastA2B.set(p, nowFn());
-    }
-  };
-  const extendBetaToAlphaQuarantine = (
-    paths: Iterable<string>,
-    until?: number,
-    windowMs = ECHO_WINDOW_MS,
-  ) => {
-    const expiry = (until ?? nowFn()) + windowMs;
-    for (const p of paths) {
-      quarantineBetaToAlpha.set(p, expiry);
-      lastB2A.set(p, nowFn());
-    }
-  };
-
-  // isQuarantinedAlphaToBeta returns true if we recently
-  // copied p from alpha to beta.  In this case, do NOT
-  // copy it from beta back to alpha.
-  const isQuarantinedAlphaToBeta = (p: string) => {
-    return (quarantineAlphaToBeta.get(p) ?? 0) > nowFn();
-  };
-  const isQuarantinedBetaToAlpha = (p: string) => {
-    return (quarantineBetaToAlpha.get(p) ?? 0) > nowFn();
+    if (!paths.length) return;
+    const unique = dedupe(paths);
+    const stamps = fetchOpStamps(sourceDb, unique);
+    const entries = unique.map((path) => ({
+      path,
+      signature: signatureFromStamp(stamps.get(path)),
+    }));
+    recordRecentSend(destDb, direction, entries);
   };
 
   function rsyncRoots(
@@ -347,57 +326,70 @@ export function makeMicroSync({
     const setA = new Set(rpathsAlpha);
     const setB = new Set(rpathsBeta);
 
-    let toBeta: string[] = [];
-    let toAlpha: string[] = [];
-
-    // Decide intended direction(s)
     const touched = new Set<string>([...setA, ...setB]);
-    for (const r of touched) {
-      const aTouched = setA.has(r);
-      const bTouched = setB.has(r);
-      if (aTouched && bTouched) {
-        // conflict.  If there is a quarantine in both directions
-        // do nothing.  If there is a quarantine in exactly one direction,
-        // copy in the other direction. If no quarantines, decide based
-        // on prefer.
-        const qToAlpha = isQuarantinedBetaToAlpha(r);
-        const qToBeta = isQuarantinedAlphaToBeta(r);
-        if (qToAlpha && qToBeta) {
-          // nothing
-        } else if (qToAlpha && !qToBeta) {
-          toBeta.push(r);
-        } else if (!qToAlpha && qToBeta) {
-          toAlpha.push(r);
+    if (!touched.size) {
+      return;
+    }
+    const touchedList = Array.from(touched);
+
+    const alphaStamps = fetchOpStamps(alphaDbPath, touchedList);
+    const betaStamps = fetchOpStamps(betaDbPath, touchedList);
+
+    const alphaSigMap = new Map<string, SendSignature | null>();
+    const betaSigMap = new Map<string, SendSignature | null>();
+    for (const path of touchedList) {
+      alphaSigMap.set(path, signatureFromStamp(alphaStamps.get(path)));
+      betaSigMap.set(path, signatureFromStamp(betaStamps.get(path)));
+    }
+
+    const recentFromBeta = getRecentSendSignatures(
+      alphaDbPath,
+      "beta->alpha",
+      touchedList,
+    );
+    const recentFromAlpha = getRecentSendSignatures(
+      betaDbPath,
+      "alpha->beta",
+      touchedList,
+    );
+
+    const toBetaSet = new Set<string>();
+    for (const path of setA) {
+      const sig = alphaSigMap.get(path) ?? null;
+      const last = recentFromBeta.get(path);
+      if (sig && last && signatureEquals(sig, last)) {
+        microLogger.debug("skip alpha→beta bounce", { path });
+        continue;
+      }
+      toBetaSet.add(path);
+    }
+
+    const toAlphaSet = new Set<string>();
+    for (const path of setB) {
+      const sig = betaSigMap.get(path) ?? null;
+      const last = recentFromAlpha.get(path);
+      if (sig && last && signatureEquals(sig, last)) {
+        microLogger.debug("skip beta→alpha bounce", { path });
+        continue;
+      }
+      toAlphaSet.add(path);
+    }
+
+    for (const path of [...toBetaSet]) {
+      if (toAlphaSet.has(path)) {
+        if (prefer === "alpha") {
+          toAlphaSet.delete(path);
         } else {
-          if (prefer == "alpha") {
-            toAlpha.push(r);
-          } else {
-            toBeta.push(r);
-          }
+          toBetaSet.delete(path);
         }
-      } else if (aTouched && !isQuarantinedAlphaToBeta(r)) {
-        toBeta.push(r);
-      } else if (!isQuarantinedBetaToAlpha(r)) {
-        toAlpha.push(r);
       }
     }
 
-    // we want PRE_COPY_WINDOW_MS to be effectively "infinite", but that's
-    // scary in case something goes wrong, so we set it to a few hours.  It needs
-    // to be at least as long as the microsync takes to run -- as a worrisome
-    // case, imagine microsync copying a very large file that takes 2 hours
-    // to copy over a slow network.  If the quarantine expires during that copy
-    // operation, then a full sync loop may see the file changed in the target
-    // and copy the unfinished file *back*, thus corrupting the original file!
-    const PRE_COPY_WINDOW_MS = Number(
-      process.env.REFLECT_MICRO_PRECOPY_WINDOW_MS ?? 3 * 60 * 60_000,
-    );
-    extendAlphaToBetaQuarantine(toBeta, Date.now(), PRE_COPY_WINDOW_MS);
-    extendBetaToAlphaQuarantine(toAlpha, Date.now(), PRE_COPY_WINDOW_MS);
+    let toBeta = Array.from(toBetaSet);
+    let toAlpha = Array.from(toAlphaSet);
 
     // NOTE: we may also act on directories/symlinks and deletions below,
     // so don't early-return if file lists are empty.
-    // (is this right?)
 
     const tmp = await mkdtemp(path.join(tmpdir(), "micro-plan-"));
     try {
@@ -405,6 +397,10 @@ export function makeMicroSync({
       if (toBeta.length) {
         const listAllA2B = path.join(tmp, "alpha2beta.all");
         await writeFile(listAllA2B, join0(toBeta));
+        const toBetaEntries = toBeta.map((path) => ({
+          path,
+          signature: alphaSigMap.get(path) ?? null,
+        }));
 
         if (alphaIsRemote || betaIsRemote) {
           // Remote source or dest: single unified rsync that both copies and deletes.
@@ -414,9 +410,6 @@ export function makeMicroSync({
             `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
           );
           await rsyncCopyOrDelete("alpha->beta", listAllA2B);
-          const t = Date.now();
-          for (const r of toBeta) lastA2B.set(r, t);
-          extendAlphaToBetaQuarantine(toBeta, t);
         } else {
           // Local → Local: classify so we can keep reflink for files and still
           // handle deletions + dir/symlink create/remove.
@@ -473,17 +466,19 @@ export function makeMicroSync({
             log("info", "realtime", `alpha→beta deletes ${missing.length}`);
             await rsyncCopyOrDelete("alpha->beta", listMissing);
           }
-
-          const t = Date.now();
-          for (const r of files.concat(others, missing)) lastA2B.set(r, t);
-          extendAlphaToBetaQuarantine(files.concat(others, missing), t);
         }
+
+        recordRecentSend(betaDbPath, "alpha->beta", toBetaEntries);
       }
 
       // ===== β → α =====
       if (toAlpha.length) {
         const listAllB2A = path.join(tmp, "beta2alpha.all");
         await writeFile(listAllB2A, join0(toAlpha));
+        const toAlphaEntries = toAlpha.map((path) => ({
+          path,
+          signature: betaSigMap.get(path) ?? null,
+        }));
 
         if (alphaIsRemote || betaIsRemote) {
           // Remote: single unified rsync that both copies and deletes.
@@ -493,9 +488,6 @@ export function makeMicroSync({
             `beta→alpha ${toAlpha.length} paths (unified copy/delete)`,
           );
           await rsyncCopyOrDelete("beta->alpha", listAllB2A);
-          const t = Date.now();
-          for (const r of toAlpha) lastB2A.set(r, t);
-          extendBetaToAlphaQuarantine(toAlpha, t);
         } else {
           // Local → Local classification + fast path
           const { files, others, missing } = await classifyLocal(
@@ -551,19 +543,10 @@ export function makeMicroSync({
             log("info", "realtime", `beta→alpha deletes ${missing.length}`);
             await rsyncCopyOrDelete("beta->alpha", listMissing);
           }
-
-          const t = Date.now();
-          for (const r of files.concat(others, missing)) lastB2A.set(r, t);
-          extendBetaToAlphaQuarantine(files.concat(others, missing), t);
         }
+
+        recordRecentSend(alphaDbPath, "beta->alpha", toAlphaEntries);
       }
-    } catch (err) {
-      // something went wrong above -- it's very important to not leave the quarantines
-      // at "really long", so we reset them to now, since some of the updates to
-      // quarantines after finishing rsyncs above may have got missed.
-      extendBetaToAlphaQuarantine(toAlpha, Date.now());
-      extendAlphaToBetaQuarantine(toBeta, Date.now());
-      throw err;
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -572,20 +555,14 @@ export function makeMicroSync({
   microSync.markAlphaToBeta = (paths: string[]) => {
     //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
-    // do NOT allow a copy *back* in the other direction for a short
-    // period of time.
-    extendBetaToAlphaQuarantine(paths);
+    recordDirection(alphaDbPath, betaDbPath, "alpha->beta", paths);
   };
-
-  microSync.isQuarantinedAlphaToBeta = isQuarantinedAlphaToBeta;
 
   microSync.markBetaToAlpha = (paths: string[]) => {
     //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
-    extendAlphaToBetaQuarantine(paths);
+    recordDirection(betaDbPath, alphaDbPath, "beta->alpha", paths);
   };
-
-  microSync.isQuarantinedBetaToAlpha = isQuarantinedBetaToAlpha;
 
   return microSync;
 }

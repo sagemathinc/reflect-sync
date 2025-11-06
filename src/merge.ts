@@ -22,6 +22,12 @@ import {
   ensureTempDir,
 } from "./rsync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
+import {
+  getRecentSendSignatures,
+  signatureEquals,
+  signatureFromStamp,
+} from "./recent-send.js";
+import { fetchOpStamps } from "./op-stamp.js";
 import { createHash } from "node:crypto";
 import { updateSession } from "./session-db.js";
 import {
@@ -116,8 +122,6 @@ type MergeRsyncOptions = {
   ignoreRules?: string[];
   markAlphaToBeta?: (paths: string[]) => void;
   markBetaToAlpha?: (paths: string[]) => void;
-  isQuarantinedAlphaToBeta?: (path: string) => boolean;
-  isQuarantinedBetaToAlpha?: (path: string) => boolean;
 };
 
 // ---------- helpers ----------
@@ -149,8 +153,6 @@ export async function runMerge({
   ignoreRules: rawIgnoreRules = [],
   markAlphaToBeta,
   markBetaToAlpha,
-  isQuarantinedAlphaToBeta,
-  isQuarantinedBetaToAlpha,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -989,18 +991,61 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    if (isQuarantinedAlphaToBeta != null) {
-      const f = (x) => x.filter((path) => !isQuarantinedAlphaToBeta(path));
-      toBeta = f(toBeta);
-      delInBeta = f(delInBeta);
-      toBetaDirs = f(toBetaDirs);
+    const alphaBounceCandidates = uniq([
+      ...toBeta,
+      ...delInBeta,
+      ...toBetaDirs,
+    ]);
+    const betaBounceCandidates = uniq([
+      ...toAlpha,
+      ...delInAlpha,
+      ...toAlphaDirs,
+    ]);
+
+    const skipAlphaToBeta = new Set<string>();
+    if (alphaBounceCandidates.length) {
+      const stamps = fetchOpStamps(alphaDb, alphaBounceCandidates);
+      const recent = getRecentSendSignatures(
+        alphaDb,
+        "beta->alpha",
+        alphaBounceCandidates,
+      );
+      for (const path of alphaBounceCandidates) {
+        const sig = signatureFromStamp(stamps.get(path));
+        const last = recent.get(path);
+        if (sig && last && signatureEquals(sig, last)) {
+          skipAlphaToBeta.add(path);
+        }
+      }
     }
-    if (isQuarantinedBetaToAlpha != null) {
-      const f = (x) => x.filter((path) => !isQuarantinedBetaToAlpha(path));
-      toAlpha = f(toAlpha);
-      delInAlpha = f(delInAlpha);
-      toAlphaDirs = f(toAlphaDirs);
+
+    const skipBetaToAlpha = new Set<string>();
+    if (betaBounceCandidates.length) {
+      const stamps = fetchOpStamps(betaDb, betaBounceCandidates);
+      const recent = getRecentSendSignatures(
+        betaDb,
+        "alpha->beta",
+        betaBounceCandidates,
+      );
+      for (const path of betaBounceCandidates) {
+        const sig = signatureFromStamp(stamps.get(path));
+        const last = recent.get(path);
+        if (sig && last && signatureEquals(sig, last)) {
+          skipBetaToAlpha.add(path);
+        }
+      }
     }
+
+    const filterBounce = (paths: string[], skip: Set<string>) =>
+      paths.filter((p) => !skip.has(p));
+
+    toBeta = filterBounce(toBeta, skipAlphaToBeta);
+    delInBeta = filterBounce(delInBeta, skipAlphaToBeta);
+    toBetaDirs = filterBounce(toBetaDirs, skipAlphaToBeta);
+
+    toAlpha = filterBounce(toAlpha, skipBetaToAlpha);
+    delInAlpha = filterBounce(delInAlpha, skipBetaToAlpha);
+    toAlphaDirs = filterBounce(toAlphaDirs, skipBetaToAlpha);
 
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
@@ -1322,6 +1367,9 @@ export async function runMerge({
           tempDir: alphaHost ? undefined : alphaTempDir,
         },
       );
+      if (delInAlpha.length) {
+        markBetaToAlpha?.(delInAlpha);
+      }
       await rsyncDeleteChunked(
         tmp,
         alpha,
@@ -1334,6 +1382,9 @@ export async function runMerge({
           tempDir: betaHost ? undefined : betaTempDir,
         },
       );
+      if (delInBeta.length) {
+        markAlphaToBeta?.(delInBeta);
+      }
       done();
 
       // 1b) dir→file cleanup
@@ -1351,6 +1402,7 @@ export async function runMerge({
             tempDir: alphaHost ? undefined : alphaTempDir,
           },
         );
+        markBetaToAlpha?.(preDeleteDirsOnAlphaForBetaFiles);
       }
       if (prefer === "alpha" && preDeleteDirsOnBetaForAlphaFiles.length) {
         await rsyncDeleteChunked(
@@ -1365,6 +1417,7 @@ export async function runMerge({
             tempDir: betaHost ? undefined : betaTempDir,
           },
         );
+        markAlphaToBeta?.(preDeleteDirsOnBetaForAlphaFiles);
       }
       done();
 
@@ -1558,6 +1611,9 @@ export async function runMerge({
           tempDir: betaHost ? undefined : betaTempDir,
         },
       );
+      if (delDirsInBeta.length) {
+        markAlphaToBeta?.(delDirsInBeta);
+      }
       await rsyncDeleteChunked(
         tmp,
         beta,
@@ -1570,6 +1626,9 @@ export async function runMerge({
           tempDir: alphaHost ? undefined : alphaTempDir,
         },
       );
+      if (delDirsInAlpha.length) {
+        markBetaToAlpha?.(delDirsInAlpha);
+      }
       done();
 
       logger.info("rsync complete, updating base database");
