@@ -6,6 +6,7 @@ import { Command } from "commander";
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import readline from "node:readline";
+import { lstat, readlink } from "node:fs/promises";
 import {
   HotWatchManager,
   HOT_EVENTS,
@@ -22,6 +23,16 @@ import {
 } from "./ignore.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
+import {
+  type SendSignature,
+  signatureEquals,
+} from "./recent-send.js";
+import { modeHash, stringDigest, defaultHashAlg } from "./hash.js";
+
+const HASH_ALG = defaultHashAlg();
+const IGNORE_TTL_MS = Number(
+  process.env.REFLECT_REMOTE_IGNORE_TTL_MS ?? 60_000,
+);
 
 // ---------- types ----------
 type WatchOpts = {
@@ -57,7 +68,15 @@ function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
 }
 
 // ---------- JSON control channel on STDIN ----------
-function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
+function serveJsonControl(
+  mgr: HotWatchManager,
+  handleStat: (
+    requestId: number,
+    paths: string[],
+    ignore: boolean,
+  ) => Promise<void>,
+  onClose: () => Promise<void>,
+) {
   const rl = readline.createInterface({ input: process.stdin });
 
   rl.on("line", async (line) => {
@@ -83,6 +102,15 @@ function serveJsonControl(mgr: HotWatchManager, onClose: () => Promise<void>) {
             await mgr.add(clean);
           }
         }
+      } else if (op === "stat") {
+        const requestId = Number(msg.requestId ?? 0);
+        const ignore = Boolean(msg.ignore);
+        const paths: string[] = Array.isArray(msg.paths)
+          ? msg.paths.map((p) =>
+              norm(String(p || "").replace(/^\.\/+/, "")),
+            )
+          : [];
+        await handleStat(requestId, paths, ignore);
       } else if (op === "close") {
         await onClose();
       } else {
@@ -114,6 +142,19 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
+  const pendingIgnores = new Map<
+    string,
+    { signature: SendSignature; expiresAt: number }
+  >();
+  const pruneIgnores = () => {
+    const now = Date.now();
+    for (const [rel, entry] of pendingIgnores) {
+      if (entry.expiresAt < now) {
+        pendingIgnores.delete(rel);
+      }
+    }
+  };
+
   // Ensure process terminate when stdin closes (so this also closes when
   // used via ssh)
   (function bindShutdownHooks() {
@@ -132,7 +173,11 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
 
   const hotMgr = new HotWatchManager(
     rootAbs,
-    (abs, ev: HotWatchEvent) => {
+    async (abs, ev: HotWatchEvent) => {
+      const rel = relR(rootAbs, abs);
+      if (await shouldSuppress(rel)) {
+        return;
+      }
       emitEvent(abs, ev, rootAbs);
     },
     {
@@ -142,6 +187,138 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       ignoreRules,
     },
   );
+
+  async function computeSignature(
+    rel: string,
+  ): Promise<{ signature: SendSignature; target?: string | null }> {
+    const abs = path.join(rootAbs, rel);
+    try {
+      const st = await lstat(abs);
+      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      if (st.isSymbolicLink()) {
+        const target = await readlink(abs);
+        return {
+          signature: {
+            kind: "link",
+            opTs: mtime,
+            mtime,
+            hash: stringDigest(HASH_ALG, target),
+          },
+          target,
+        };
+      }
+      if (st.isDirectory()) {
+        return {
+          signature: {
+            kind: "dir",
+            opTs: mtime,
+            mtime,
+            hash: modeHash(st.mode),
+          },
+        };
+      }
+      if (st.isFile()) {
+        return {
+          signature: {
+            kind: "file",
+            opTs: mtime,
+            mtime,
+            size: st.size,
+          },
+        };
+      }
+      return {
+        signature: {
+          kind: "file",
+          opTs: mtime,
+          mtime,
+          size: st.size,
+        },
+      };
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        return {
+          signature: {
+            kind: "missing",
+            opTs: Date.now(),
+          },
+        };
+      }
+      throw err;
+    }
+  }
+
+  async function handleStatRequest(
+    requestId: number,
+    paths: string[],
+    ignore: boolean,
+  ) {
+    const now = Date.now();
+    pruneIgnores();
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    const entries: Array<{
+      path: string;
+      signature: SendSignature;
+      target?: string | null;
+    }> = [];
+    for (const rel of unique) {
+      try {
+        const { signature, target } = await computeSignature(rel);
+        entries.push({ path: rel, signature, target });
+        if (ignore) {
+          pendingIgnores.set(rel, {
+            signature,
+            expiresAt: now + IGNORE_TTL_MS,
+          });
+        }
+      } catch (err: any) {
+        console.error(
+          `watch: stat failed for '${rel}': ${String(err?.message || err)}`,
+        );
+        const signature: SendSignature = { kind: "missing", opTs: Date.now() };
+        entries.push({ path: rel, signature });
+        if (ignore) {
+          pendingIgnores.set(rel, {
+            signature,
+            expiresAt: now + IGNORE_TTL_MS,
+          });
+        }
+      }
+    }
+    const response = {
+      op: "stat",
+      requestId,
+      entries,
+    };
+    process.stdout.write(JSON.stringify(response) + "\n");
+  }
+
+  async function shouldSuppress(rel: string): Promise<boolean> {
+    if (!rel) return false;
+    const entry = pendingIgnores.get(rel);
+    if (!entry) return false;
+    if (Date.now() > entry.expiresAt) {
+      pendingIgnores.delete(rel);
+      return false;
+    }
+    try {
+      const { signature: currentSig } = await computeSignature(rel);
+      if (signatureEquals(currentSig, entry.signature)) {
+        entry.expiresAt = Date.now() + IGNORE_TTL_MS;
+        return true;
+      }
+      pendingIgnores.delete(rel);
+      return false;
+    } catch (err: any) {
+      console.error(
+        `watch: suppress check failed for '${rel}': ${String(
+          err?.message || err,
+        )}`,
+      );
+      pendingIgnores.delete(rel);
+      return false;
+    }
+  }
 
   const shallow: FSWatcher = chokidar.watch(rootAbs, {
     persistent: true,
@@ -155,6 +332,10 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   function wireShallow() {
     const handle = async (evt: HotWatchEvent, abs: string, stats?) => {
       // Send the event immediately (so microSync can act quickly)
+      const r = relR(rootAbs, abs);
+      if (await shouldSuppress(r)) {
+        return;
+      }
       emitEvent(abs, evt, rootAbs);
 
       if (!(await isRecent(abs, stats))) {
@@ -162,7 +343,6 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       }
 
       // Escalate: add a bounded hot watcher anchored at the parent dir
-      const r = relR(rootAbs, abs);
       const rdir = parentDir(r);
       if (rdir && rdir !== ".") {
         try {
@@ -184,7 +364,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   wireShallow();
 
   // Control channel
-  serveJsonControl(hotMgr, async () => {
+  serveJsonControl(hotMgr, handleStatRequest, async () => {
     try {
       await shallow.close();
     } catch {}

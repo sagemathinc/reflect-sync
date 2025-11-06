@@ -34,8 +34,12 @@ describe("HotWatchManager + sync: self-referential symlink loop", () => {
     const seenA: Array<{ ev: string; abs: string }> = [];
     const seenB: Array<{ ev: string; abs: string }> = [];
 
-    const onA = (abs: string, ev: any) => seenA.push({ ev, abs });
-    const onB = (abs: string, ev: any) => seenB.push({ ev, abs });
+    const onA = (abs: string, ev: any) => {
+      seenA.push({ ev, abs });
+    };
+    const onB = (abs: string, ev: any) => {
+      seenB.push({ ev, abs });
+    };
 
     const mgrA = new HotWatchManager(r.aRoot, onA, {
       hotDepth: 2,

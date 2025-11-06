@@ -79,7 +79,10 @@ export class HotWatchManager {
 
   constructor(
     private root: string,
-    private onHotEvent: (abs: string, ev: HotWatchEvent) => void,
+    private onHotEvent: (
+      abs: string,
+      ev: HotWatchEvent,
+    ) => void | Promise<void>,
     opts: HotWatchOptions = {},
   ) {
     this.opts = {
@@ -175,7 +178,7 @@ export class HotWatchManager {
       }
 
       // Forward allowed event
-      this.onHotEvent(absN, ev);
+      await this.onHotEvent(absN, ev);
 
       // escalate deeper when event is at frontier depth
       const d = relDepth(anchorAbs, absN);

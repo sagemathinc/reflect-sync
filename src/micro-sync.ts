@@ -46,14 +46,22 @@ export type MicroSyncDeps = {
   ) => void;
   compress?: RsyncCompressSpec;
   logger: Logger;
+  fetchRemoteAlphaSignatures?: (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => Promise<void>;
+  fetchRemoteBetaSignatures?: (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => Promise<void>;
 };
 
 type MicroSyncFn = ((
   rpathsAlpha: string[],
   rpathsBeta: string[],
 ) => Promise<void>) & {
-  markAlphaToBeta: (paths: string[]) => void;
-  markBetaToAlpha: (paths: string[]) => void;
+  markAlphaToBeta: (paths: string[]) => Promise<void>;
+  markBetaToAlpha: (paths: string[]) => Promise<void>;
 };
 
 export function makeMicroSync({
@@ -71,6 +79,8 @@ export function makeMicroSync({
   compress,
   logger,
   isMergeActive,
+  fetchRemoteAlphaSignatures,
+  fetchRemoteBetaSignatures,
 }: MicroSyncDeps) {
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
@@ -390,6 +400,36 @@ export function makeMicroSync({
     betaTempDir = betaIsRemote ? undefined : await ensureTempDir(betaRoot);
     const setA = new Set(rpathsAlpha);
     const setB = new Set(rpathsBeta);
+    const setAList = Array.from(setA);
+    const setBList = Array.from(setB);
+
+    const recentFromBetaPre = alphaIsRemote
+      ? getRecentSendSignatures(alphaDbPath, "beta->alpha", setAList)
+      : new Map<string, SendSignature | null>();
+    const recentFromAlphaPre = betaIsRemote
+      ? getRecentSendSignatures(betaDbPath, "alpha->beta", setBList)
+      : new Map<string, SendSignature | null>();
+
+    if (alphaIsRemote && fetchRemoteAlphaSignatures && setAList.length) {
+      const sentByBeta = setAList.filter((p) => recentFromBetaPre.has(p));
+      const others = setAList.filter((p) => !recentFromBetaPre.has(p));
+      if (sentByBeta.length) {
+        await fetchRemoteAlphaSignatures(sentByBeta, { ignore: true });
+      }
+      if (others.length) {
+        await fetchRemoteAlphaSignatures(others, { ignore: false });
+      }
+    }
+    if (betaIsRemote && fetchRemoteBetaSignatures && setBList.length) {
+      const sentByAlpha = setBList.filter((p) => recentFromAlphaPre.has(p));
+      const others = setBList.filter((p) => !recentFromAlphaPre.has(p));
+      if (sentByAlpha.length) {
+        await fetchRemoteBetaSignatures(sentByAlpha, { ignore: true });
+      }
+      if (others.length) {
+        await fetchRemoteBetaSignatures(others, { ignore: false });
+      }
+    }
 
     const touched = new Set<string>([...setA, ...setB]);
     if (!touched.size) {
@@ -556,6 +596,9 @@ export function makeMicroSync({
           }
         }
 
+        if (betaIsRemote && fetchRemoteBetaSignatures) {
+          await fetchRemoteBetaSignatures(toBeta, { ignore: true });
+        }
         recordDirection("alpha->beta", toBeta);
       }
 
@@ -628,6 +671,9 @@ export function makeMicroSync({
           }
         }
 
+        if (alphaIsRemote && fetchRemoteAlphaSignatures) {
+          await fetchRemoteAlphaSignatures(toAlpha, { ignore: true });
+        }
         recordDirection("beta->alpha", toAlpha);
       }
     } finally {
@@ -635,15 +681,21 @@ export function makeMicroSync({
     }
   };
 
-  microSync.markAlphaToBeta = (paths: string[]) => {
+  microSync.markAlphaToBeta = async (paths: string[]) => {
     //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
+    if (betaIsRemote && fetchRemoteBetaSignatures && paths.length) {
+      await fetchRemoteBetaSignatures(paths, { ignore: true });
+    }
     recordDirection("alpha->beta", paths);
   };
 
-  microSync.markBetaToAlpha = (paths: string[]) => {
+  microSync.markBetaToAlpha = async (paths: string[]) => {
     //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
+    if (alphaIsRemote && fetchRemoteAlphaSignatures && paths.length) {
+      await fetchRemoteAlphaSignatures(paths, { ignore: true });
+    }
     recordDirection("beta->alpha", paths);
   };
 

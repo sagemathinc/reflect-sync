@@ -39,6 +39,11 @@ import {
   remoteWhich,
   RemoteConnectionError,
 } from "./remote.js";
+import type { SendSignature } from "./recent-send.js";
+import {
+  applySignaturesToDb,
+  type SignatureEntry,
+} from "./signature-store.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
@@ -729,7 +734,14 @@ export async function runScheduler({
 
   // Remote delta stream (watch)
   // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
-  type StreamControl = { add: (dirs: string[]) => void; kill: () => void };
+  type StreamControl = {
+    add: (dirs: string[]) => void;
+    stat: (
+      paths: string[],
+      opts: { ignore: boolean },
+    ) => Promise<SignatureEntry[]>;
+    kill: () => void;
+  };
 
   async function startRemoteDeltaStream(
     side: "alpha" | "beta",
@@ -832,21 +844,125 @@ export async function runScheduler({
     });
 
     const rl = readline.createInterface({ input: watchStream });
+
+    interface PendingStat {
+      resolve: (entries: SignatureEntry[]) => void;
+      reject: (err: Error) => void;
+    }
+
+    let nextRequestId = 1;
+    const pendingStats = new Map<number, PendingStat>();
+    let statsInFlight = 0;
+    let bufferedEvents: any[] = [];
+
+    const flushBuffered = () => {
+      if (statsInFlight > 0 || bufferedEvents.length === 0) return;
+      const events = bufferedEvents;
+      bufferedEvents = [];
+      for (const evt of events) {
+        processEvent(evt);
+      }
+    };
+
+    const processEvent = (evt: any) => {
+      if (!evt?.path) return;
+      let r = String(evt.path);
+      if (r.startsWith(root)) r = r.slice(root.length);
+      if (r.startsWith("/")) r = r.slice(1);
+      if (!r) return;
+      (side === "alpha" ? hotAlpha : hotBeta).add(r);
+      scheduleHotFlush();
+    };
+
+    const failPending = (err: Error) => {
+      for (const pending of pendingStats.values()) {
+        pending.reject(err);
+      }
+      pendingStats.clear();
+      bufferedEvents = [];
+      statsInFlight = 0;
+    };
+
     rl.on("line", (line) => {
       if (!line) return;
+      let evt: any;
       try {
-        const evt = JSON.parse(line);
-        if (!evt.path) return;
-        let r = String(evt.path);
-        if (r.startsWith(root)) r = r.slice(root.length);
-        if (r.startsWith("/")) r = r.slice(1);
-        if (!r) return;
-        (side === "alpha" ? hotAlpha : hotBeta).add(r);
-        scheduleHotFlush();
+        evt = JSON.parse(line);
       } catch {
-        /* ignore malformed */
+        return;
       }
+      if (evt?.op === "stat") {
+        const requestId = Number(evt.requestId ?? 0);
+        const pending = pendingStats.get(requestId);
+        if (pending) {
+          pendingStats.delete(requestId);
+          statsInFlight = Math.max(0, statsInFlight - 1);
+          if (evt.error) {
+            pending.reject(
+              new Error(
+                typeof evt.error === "string"
+                  ? evt.error
+                  : String(evt.error),
+              ),
+            );
+            flushBuffered();
+            return;
+          }
+          const entries: SignatureEntry[] = [];
+          if (Array.isArray(evt.entries)) {
+            for (const entry of evt.entries) {
+              if (!entry?.path || !entry?.signature) continue;
+              entries.push({
+                path: String(entry.path),
+                signature: entry.signature as SendSignature,
+                target:
+                  entry.target === undefined
+                    ? undefined
+                    : entry.target ?? null,
+              });
+            }
+          }
+          pending.resolve(entries);
+        }
+        flushBuffered();
+        return;
+      }
+      if (statsInFlight > 0) {
+        bufferedEvents.push(evt);
+        return;
+      }
+      processEvent(evt);
     });
+
+    const requestStat = (
+      paths: string[],
+      opts: { ignore: boolean },
+    ): Promise<SignatureEntry[]> => {
+      const unique = Array.from(new Set(paths.filter(Boolean)));
+      if (!unique.length) {
+        return Promise.resolve([]);
+      }
+      const requestId = nextRequestId++;
+      statsInFlight += 1;
+      return new Promise((resolve, reject) => {
+        pendingStats.set(requestId, { resolve, reject });
+        try {
+          sshP.stdin?.write(
+            JSON.stringify({
+              op: "stat",
+              requestId,
+              paths: unique,
+              ignore: !!opts.ignore,
+            }) + "\n",
+          );
+        } catch (err) {
+          pendingStats.delete(requestId);
+          statsInFlight = Math.max(0, statsInFlight - 1);
+          reject(err as Error);
+          flushBuffered();
+        }
+      });
+    };
 
     const kill = () => {
       ingestAbort.abort();
@@ -874,6 +990,7 @@ export async function runScheduler({
       try {
         stdout.destroy();
       } catch {}
+      failPending(new Error("remote watch closed"));
     };
 
     sshP.on("exit", (code) => {
@@ -890,7 +1007,7 @@ export async function runScheduler({
       } catch {}
     };
 
-    return { add, kill };
+    return { add, stat: requestStat, kill };
   }
 
   function requestSoon(reason: string) {
@@ -910,6 +1027,57 @@ export async function runScheduler({
   let hotTimer: NodeJS.Timeout | null = null;
 
   let mergeActive = false;
+  let alphaStream: StreamControl | null = null;
+  let betaStream: StreamControl | null = null;
+
+  const chunkArray = <T>(arr: T[], size: number): T[][] => {
+    if (arr.length === 0) return [];
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) {
+      out.push(arr.slice(i, i + size));
+    }
+    return out;
+  };
+
+  const fetchAlphaRemoteSignatures = async (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => {
+    if (!paths.length) return;
+    if (!alphaStream?.stat) {
+      await ensureRemoteStreams();
+    }
+    if (!alphaStream?.stat) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    const collected: SignatureEntry[] = [];
+    for (const batch of chunkArray(unique, 1000)) {
+      const entries = await alphaStream.stat(batch, opts);
+      if (entries.length) collected.push(...entries);
+    }
+    if (collected.length) {
+      applySignaturesToDb(alphaDb, collected);
+    }
+  };
+
+  const fetchBetaRemoteSignatures = async (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => {
+    if (!paths.length) return;
+    if (!betaStream?.stat) {
+      await ensureRemoteStreams();
+    }
+    if (!betaStream?.stat) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    const collected: SignatureEntry[] = [];
+    for (const batch of chunkArray(unique, 1000)) {
+      const entries = await betaStream.stat(batch, opts);
+      if (entries.length) collected.push(...entries);
+    }
+    if (collected.length) {
+      applySignaturesToDb(betaDb, collected);
+    }
+  };
 
   // create the microSync closure
   const microSync = makeMicroSync({
@@ -927,6 +1095,12 @@ export async function runScheduler({
     log,
     logger,
     isMergeActive: () => mergeActive,
+    fetchRemoteAlphaSignatures: alphaIsRemote
+      ? fetchAlphaRemoteSignatures
+      : undefined,
+    fetchRemoteBetaSignatures: betaIsRemote
+      ? fetchBetaRemoteSignatures
+      : undefined,
   });
 
   function scheduleHotFlush() {
@@ -1546,8 +1720,6 @@ export async function runScheduler({
   }
 
   let remoteStreams: Array<{ kill: () => void }> = [];
-  let alphaStream: StreamControl | null = null;
-  let betaStream: StreamControl | null = null;
 
   async function ensureRemoteStreams() {
     if (alphaIsRemote && !alphaStream) {

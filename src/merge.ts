@@ -120,8 +120,8 @@ type MergeRsyncOptions = {
   logger?: Logger;
   logLevel?: LogLevel | string;
   ignoreRules?: string[];
-  markAlphaToBeta?: (paths: string[]) => void;
-  markBetaToAlpha?: (paths: string[]) => void;
+  markAlphaToBeta?: (paths: string[]) => Promise<void> | void;
+  markBetaToAlpha?: (paths: string[]) => Promise<void> | void;
 };
 
 // ---------- helpers ----------
@@ -1367,8 +1367,8 @@ export async function runMerge({
           tempDir: alphaHost ? undefined : alphaTempDir,
         },
       );
-      if (delInAlpha.length) {
-        markBetaToAlpha?.(delInAlpha);
+      if (delInAlpha.length && markBetaToAlpha) {
+        await markBetaToAlpha(delInAlpha);
       }
       await rsyncDeleteChunked(
         tmp,
@@ -1382,8 +1382,8 @@ export async function runMerge({
           tempDir: betaHost ? undefined : betaTempDir,
         },
       );
-      if (delInBeta.length) {
-        markAlphaToBeta?.(delInBeta);
+      if (delInBeta.length && markAlphaToBeta) {
+        await markAlphaToBeta(delInBeta);
       }
       done();
 
@@ -1402,7 +1402,9 @@ export async function runMerge({
             tempDir: alphaHost ? undefined : alphaTempDir,
           },
         );
-        markBetaToAlpha?.(preDeleteDirsOnAlphaForBetaFiles);
+        if (markBetaToAlpha) {
+          await markBetaToAlpha(preDeleteDirsOnAlphaForBetaFiles);
+        }
       }
       if (prefer === "alpha" && preDeleteDirsOnBetaForAlphaFiles.length) {
         await rsyncDeleteChunked(
@@ -1417,7 +1419,9 @@ export async function runMerge({
             tempDir: betaHost ? undefined : betaTempDir,
           },
         );
-        markAlphaToBeta?.(preDeleteDirsOnBetaForAlphaFiles);
+        if (markAlphaToBeta) {
+          await markAlphaToBeta(preDeleteDirsOnBetaForAlphaFiles);
+        }
       }
       done();
 
@@ -1447,11 +1451,11 @@ export async function runMerge({
           },
         )
       ).ok;
-      if (copyDirsAlphaBetaOk && toBetaDirs.length) {
-        markAlphaToBeta?.(toBetaDirs);
+      if (copyDirsAlphaBetaOk && toBetaDirs.length && markAlphaToBeta) {
+        await markAlphaToBeta(toBetaDirs);
       }
-      if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
-        markBetaToAlpha?.(toAlphaDirs);
+      if (copyDirsBetaAlphaOk && toAlphaDirs.length && markBetaToAlpha) {
+        await markBetaToAlpha(toAlphaDirs);
       }
       done();
 
@@ -1464,11 +1468,11 @@ export async function runMerge({
           await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
           copyAlphaBetaOk = toBeta.length === 0 || true;
           copyBetaAlphaOk = toAlpha.length === 0 || true;
-          if (toBetaRelative.length) {
-            markAlphaToBeta?.(toBetaRelative);
+          if (toBetaRelative.length && markAlphaToBeta) {
+            await markAlphaToBeta(toBetaRelative);
           }
-          if (toAlphaRelative.length) {
-            markBetaToAlpha?.(toAlphaRelative);
+          if (toAlphaRelative.length && markBetaToAlpha) {
+            await markBetaToAlpha(toAlphaRelative);
           }
           done();
         } catch (e) {
@@ -1517,11 +1521,11 @@ export async function runMerge({
               },
             )
           ).ok;
-          if (copyAlphaBetaOk && toBetaRelative.length) {
-            markAlphaToBeta?.(toBetaRelative);
+          if (copyAlphaBetaOk && toBetaRelative.length && markAlphaToBeta) {
+            await markAlphaToBeta(toBetaRelative);
           }
-          if (copyBetaAlphaOk && toAlphaRelative.length) {
-            markBetaToAlpha?.(toAlphaRelative);
+          if (copyBetaAlphaOk && toAlphaRelative.length && markBetaToAlpha) {
+            await markBetaToAlpha(toAlphaRelative);
           }
         }
       } else {
@@ -1563,11 +1567,11 @@ export async function runMerge({
             },
           )
         ).ok;
-        if (copyAlphaBetaOk && toBetaRelative.length) {
-          markAlphaToBeta?.(toBetaRelative);
+        if (copyAlphaBetaOk && toBetaRelative.length && markAlphaToBeta) {
+          await markAlphaToBeta(toBetaRelative);
         }
-        if (copyBetaAlphaOk && toAlphaRelative.length) {
-          markBetaToAlpha?.(toAlphaRelative);
+        if (copyBetaAlphaOk && toAlphaRelative.length && markBetaToAlpha) {
+          await markBetaToAlpha(toAlphaRelative);
         }
         done();
       }
@@ -1612,7 +1616,9 @@ export async function runMerge({
         },
       );
       if (delDirsInBeta.length) {
-        markAlphaToBeta?.(delDirsInBeta);
+        if (markAlphaToBeta) {
+          await markAlphaToBeta(delDirsInBeta);
+        }
       }
       await rsyncDeleteChunked(
         tmp,
