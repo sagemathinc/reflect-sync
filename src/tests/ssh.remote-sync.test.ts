@@ -6,19 +6,35 @@
  * full cycle.
  */
 
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import fsp from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join, normalize, resolve, dirname } from "node:path";
 import os from "node:os";
 import { countSchedulerCycles, dirExists, linkExists, waitFor } from "./util";
-import { canSshLocalhost } from "./ssh-util";
 import { getDb } from "../db";
 //import { wait } from "./util";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees
 const SCHED = resolve(__dirname, "../../dist/scheduler.js");
+
+const SSH_ENABLED = (() => {
+  try {
+    const res = spawnSync("ssh", [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=2",
+      "localhost",
+      "true",
+    ]);
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+})();
+const describeFn = SSH_ENABLED ? describe : describe.skip;
 
 function startSchedulerRemote(opts: {
   alphaRoot: string; // local
@@ -82,19 +98,12 @@ async function stopScheduler(p: ChildProcess) {
   }
 }
 
-describe("SSH remote sync", () => {
+describeFn("SSH remote sync", () => {
   let tmp: string = "";
   let alphaRoot: string, betaRootRemote: string;
   let alphaDb: string, betaDb: string, baseDb: string;
 
   beforeAll(async () => {
-    // We still require ssh localhost because the scheduler uses ssh to run the
-    // remote watch agent, but we won't use ssh to mutate the filesystem.
-    const ok = await canSshLocalhost();
-    if (!ok) {
-      throw Error("ssh localhost unavailable; skipping remote-watch test");
-    }
-
     tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-ssh-watch-"));
     alphaRoot = join(tmp, "alpha-local");
     betaRootRemote = join(tmp, "beta-remote");
@@ -236,7 +245,183 @@ describe("SSH remote sync", () => {
     }
   }, 20_000);
 
-  it("create directory that is target of symlink, sync, move directory, sync", async () => {
+  it("sqlite workload on alpha stays consistent on remote beta", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
+
+    const relPath = "databases/work.db";
+    const alphaFile = join(alphaRoot, relPath);
+    const betaFile = join(betaRootRemote, relPath);
+
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        20_000,
+        20,
+      );
+
+      await fsp.mkdir(dirname(alphaFile), { recursive: true });
+      const db = getDb(alphaFile);
+      try {
+        db.exec(`PRAGMA journal_mode = WAL;`);
+        db.exec(
+          `CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);`,
+        );
+        const insert = db.prepare(
+          `INSERT OR REPLACE INTO kv(key, value) VALUES (?, ?)`,
+        );
+        const tx = db.transaction(
+          (rows: Array<{ key: string; value: string }>) => {
+            for (const row of rows) insert.run(row.key, row.value);
+          },
+        );
+        for (let batch = 0; batch < 40; batch++) {
+          const rows = Array.from({ length: 50 }, (_, j) => ({
+            key: `key-${batch}-${j}`,
+            value: `value-${batch}-${j}`,
+          }));
+          tx(rows);
+          await wait(5);
+        }
+        db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);
+      } finally {
+        db.close();
+      }
+
+      await waitFor(
+        async () => {
+          try {
+            const [statAlpha, statBeta] = await Promise.all([
+              fsp.stat(alphaFile),
+              fsp.stat(betaFile),
+            ]);
+            return statAlpha.size === statBeta.size && statBeta.size > 0;
+          } catch {
+            return false;
+          }
+        },
+        (ok) => ok,
+        30_000,
+        50,
+      );
+
+      const [alphaHash, betaHash] = await Promise.all([
+        hashFile(alphaFile),
+        hashFile(betaFile),
+      ]);
+      expect(betaHash).toBe(alphaHash);
+
+      const betaDbHandle = getDb(betaFile);
+      try {
+        const rowCount = betaDbHandle
+          .prepare(`SELECT COUNT(*) AS n FROM kv`)
+          .get() as { n: number };
+        expect(rowCount.n).toBeGreaterThanOrEqual(40 * 50);
+      } finally {
+        betaDbHandle.close();
+      }
+
+      const meta = getDb(alphaDb);
+      try {
+        const row = meta
+          .prepare(
+            `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
+          )
+          .get(relPath);
+        expect(row).toBeUndefined();
+      } finally {
+        meta.close();
+      }
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 20_000);
+
+  it("bulk image dataset sync maintains parity without echo", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
+
+    const datasetDir = "dataset";
+    const alphaDataset = join(alphaRoot, datasetDir);
+    const betaDataset = join(betaRootRemote, datasetDir);
+
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        20_000,
+        20,
+      );
+
+      await fsp.mkdir(alphaDataset, { recursive: true });
+      const groups = 8;
+      const imagesPerGroup = 150;
+      const size = 2 * 1024;
+      for (let g = 0; g < groups; g++) {
+        const groupDir = join(alphaDataset, `group-${g}`);
+        await fsp.mkdir(groupDir, { recursive: true });
+        for (let i = 0; i < imagesPerGroup; i++) {
+          const file = join(groupDir, `image-${i}.bin`);
+          await fsp.writeFile(file, randomBytes(size));
+        }
+      }
+
+      await waitFor(
+        async () => {
+          try {
+            const [filesAlpha, filesBeta] = await Promise.all([
+              listDatasetFiles(alphaDataset),
+              listDatasetFiles(betaDataset),
+            ]);
+            return (
+              filesAlpha.length === groups * imagesPerGroup &&
+              filesAlpha.length === filesBeta.length
+            );
+          } catch {
+            return false;
+          }
+        },
+        (ok) => ok,
+        60_000,
+        100,
+      );
+
+      const [hashAlpha, hashBeta] = await Promise.all([
+        hashDirectory(alphaDataset),
+        hashDirectory(betaDataset),
+      ]);
+      expect(hashBeta).toBe(hashAlpha);
+
+      const meta = getDb(alphaDb);
+      try {
+        const row = meta
+          .prepare(
+            `SELECT COUNT(*) AS n FROM recent_send WHERE direction='beta->alpha' AND path LIKE ?`,
+          )
+          .get(`${datasetDir}%`) as { n: number };
+        expect(row.n).toBe(0);
+      } finally {
+        meta.close();
+      }
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 60_000);
+
+it("create directory that is target of symlink, sync, move directory, sync", async () => {
     const child = startSchedulerRemote({
       alphaRoot,
       betaRootRemote,
@@ -293,3 +478,46 @@ describe("SSH remote sync", () => {
     }
   }, 20_000);
 });
+
+async function listDatasetFiles(root: string): Promise<string[]> {
+  try {
+    const entries = await fsp.readdir(root, { withFileTypes: true });
+    const out: string[] = [];
+    for (const entry of entries) {
+      const full = join(root, entry.name);
+      if (entry.isDirectory()) {
+        const nested = await listDatasetFiles(full);
+        for (const child of nested) {
+          out.push(join(entry.name, child));
+        }
+      } else if (entry.isFile()) {
+        out.push(entry.name);
+      }
+    }
+    return out.sort();
+  } catch {
+    return [];
+  }
+}
+
+async function hashDirectory(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  const entries = await fsp.readdir(root, { withFileTypes: true }).catch(
+    () => [],
+  );
+  const sorted = entries.map((e) => e.name).sort();
+  for (const name of sorted) {
+    const entry = entries.find((e) => e.name === name)!;
+    const full = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const subHash = await hashDirectory(full);
+      hash.update(entry.name);
+      hash.update(subHash);
+    } else if (entry.isFile()) {
+      const data = await fsp.readFile(full);
+      hash.update(entry.name);
+      hash.update(data);
+    }
+  }
+  return hash.digest("hex");
+}
