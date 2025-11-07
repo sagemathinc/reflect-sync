@@ -17,7 +17,8 @@ import {
   type SessionPatch,
 } from "./session-db.js";
 import { ensureRemoteParentDir, sshDeleteDirectory } from "./remote.js";
-import { dirname } from "node:path";
+import path from "node:path";
+import os from "node:os";
 import { CLI_NAME } from "./constants.js";
 import { rm } from "node:fs/promises";
 import type { Logger } from "./logger.js";
@@ -65,9 +66,9 @@ export async function terminateSession({
       ? (row.alpha_port ?? undefined)
       : (row.beta_port ?? undefined);
   if (host) {
-    const path = row.alpha_remote_db || row.beta_remote_db;
-    if (path) {
-      const dir = dirname(path);
+    const remotePath = row.alpha_remote_db || row.beta_remote_db;
+    if (remotePath) {
+      const dir = path.dirname(remotePath);
       // includes is just a sanity check...
       if (dir.includes(CLI_NAME)) {
         // delete it over ssh
@@ -81,14 +82,14 @@ export async function terminateSession({
         } catch (err) {
           if (!force) {
             console.error(
-              `session ${id} -- unable to delete ${host}:${path} -- you could use --force and manually delete`,
+              `session ${id} -- unable to delete ${host}:${remotePath} -- you could use --force and manually delete`,
               err,
             );
             return;
           } else {
             // non-fatal
             console.warn(
-              `session ${id} -- failed to delete ${host}:${path}`,
+              `session ${id} -- failed to delete ${host}:${remotePath}`,
               err,
             );
           }
@@ -149,10 +150,10 @@ export async function resetSession({
   const addRemote = (
     host?: string | null,
     port?: number | null,
-    path?: string | null,
+    remotePath?: string | null,
   ) => {
-    if (!host || !path) return;
-    const dir = dirname(path);
+    if (!host || !remotePath) return;
+    const dir = path.dirname(remotePath);
     const key = remoteKey(host, port ?? undefined);
     if (!remoteDirs.has(key)) {
       remoteDirs.set(key, { host, port: port ?? undefined, dirs: new Set() });
@@ -165,7 +166,7 @@ export async function resetSession({
         paths: new Set(),
       });
     }
-    remoteDbPaths.get(key)!.paths.add(path);
+    remoteDbPaths.get(key)!.paths.add(remotePath);
   };
 
   addRemote(row.alpha_host, row.alpha_port, row.alpha_remote_db);
@@ -284,6 +285,14 @@ export function parseEndpoint(spec: string): Endpoint {
   return { host: hostPart, port, root: path };
 }
 
+function canonicalizeLocalRoot(root: string): string {
+  if (!root) return path.resolve(root);
+  if (root.startsWith("~")) {
+    root = path.join(os.homedir(), root.slice(1));
+  }
+  return path.resolve(root);
+}
+
 function parseLabelPairs(pairs: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const p of pairs || []) {
@@ -362,6 +371,12 @@ export async function newSession({
 
   const a = parseEndpoint(alphaSpec);
   const b = parseEndpoint(betaSpec);
+  if (!a.host) {
+    a.root = canonicalizeLocalRoot(a.root);
+  }
+  if (!b.host) {
+    b.root = canonicalizeLocalRoot(b.root);
+  }
   compress = `${compress}${compressLevel ? ":" + compressLevel : ""}`;
   let sessionName: string | undefined;
   if (typeof name === "string") {
