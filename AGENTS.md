@@ -37,3 +37,7 @@ command) before opening a PR.
 History favors concise, present-tense messages (`fix remote watcher reconnect`, `implement compression`). Keep the subject under ~60 characters and skip
 trailing punctuation. For PRs, include a short problem statement, outline the solution, and link any tracked issues. Attach CLI transcripts or screenshots
 when changing user-visible behavior, and call out test coverage adjustments. Request at least one review when touching scheduler or rsync pipelines.
+
+## Philosophy
+
+- Solve the real problem, avoiding whack-a-mole.
