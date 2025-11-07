@@ -1,5 +1,6 @@
 import { getDb } from "./db.js";
 import type { SendSignature } from "./recent-send.js";
+import { withUpdatedMetadataHash } from "./hash-meta.js";
 
 export interface SignatureEntry {
   path: string;
@@ -15,11 +16,13 @@ export interface SignatureEntry {
 export function applySignaturesToDb(
   dbPath: string,
   entries: SignatureEntry[],
+  opts: { numericIds?: boolean } = {},
 ): void {
   if (!entries.length) return;
   const db = getDb(dbPath);
   try {
     const now = Date.now();
+    const lookupHash = db.prepare(`SELECT hash FROM files WHERE path = ?`);
     const upsertFile = db.prepare(`
 INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
 VALUES (?, ?, NULL, ?, ?, ?, 0, ?, NULL)
@@ -86,16 +89,38 @@ ON CONFLICT(path) DO UPDATE SET
       for (const { path, signature, target } of rows) {
         const opTs = signature.opTs ?? now;
         switch (signature.kind) {
-          case "file":
+          case "file": {
+            let hashValue = signature.hash ?? null;
+            if (!hashValue && (signature.mode != null || opts.numericIds)) {
+              try {
+                const row = lookupHash.get(path) as { hash?: string | null };
+                hashValue = row?.hash ?? null;
+              } catch {}
+            }
+            if (hashValue && (signature.mode != null || opts.numericIds)) {
+              const updated = withUpdatedMetadataHash(
+                hashValue,
+                {
+                  mode: signature.mode ?? 0,
+                  uid: signature.uid ?? null,
+                  gid: signature.gid ?? null,
+                },
+                !!opts.numericIds,
+              );
+              if (updated) {
+                hashValue = updated;
+              }
+            }
             upsertFile.run(
               path,
               signature.size ?? null,
               signature.mtime ?? null,
               opTs,
-              signature.hash ?? null,
+              hashValue,
               now,
             );
             break;
+          }
           case "dir":
             upsertDir.run(
               path,

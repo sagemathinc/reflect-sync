@@ -28,7 +28,7 @@ import {
   type SendSignature,
   signatureEquals,
 } from "./recent-send.js";
-import { modeHash, stringDigest, defaultHashAlg } from "./hash.js";
+import { stringDigest, defaultHashAlg, modeHash } from "./hash.js";
 import {
   DeviceBoundary,
   type DeviceCheckOptions,
@@ -47,6 +47,7 @@ type WatchOpts = {
   hotTtlMs: number;
   maxHotWatchers: number;
   ignoreRules: string[];
+  numericIds: boolean;
 };
 
 // ---------- helpers ----------
@@ -140,6 +141,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     hotTtlMs,
     maxHotWatchers,
     ignoreRules: rawIgnoreRules,
+    numericIds,
   } = opts;
   const rootAbs = path.resolve(root);
   await ensureTempDir(rootAbs);
@@ -265,13 +267,19 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         };
       }
       if (st.isFile()) {
+        const signature: SendSignature = {
+          kind: "file",
+          opTs: mtime,
+          mtime,
+          size: st.size,
+          mode: st.mode,
+        };
+        if (numericIds) {
+          signature.uid = st.uid;
+          signature.gid = st.gid;
+        }
         return {
-          signature: {
-            kind: "file",
-            opTs: mtime,
-            mtime,
-            size: st.size,
-          },
+          signature,
         };
       }
       return {
@@ -465,6 +473,11 @@ function buildProgram() {
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
       [] as string[],
+    )
+    .option(
+      "--numeric-ids",
+      "include uid:gid metadata in hashes (requires root on both sides)",
+      false,
     );
 
   return program;
@@ -479,6 +492,8 @@ async function mainFromCli() {
     hotTtlMs: string;
     maxHotWatchers: string;
     ignore?: string[];
+    db?: string;
+    numericIds?: boolean;
   };
 
   await runWatch({
@@ -488,6 +503,7 @@ async function mainFromCli() {
     hotTtlMs: Number(opts.hotTtlMs),
     maxHotWatchers: Number(opts.maxHotWatchers),
     ignoreRules: opts.ignore ?? [],
+    numericIds: Boolean(opts.numericIds),
   });
 }
 

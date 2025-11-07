@@ -25,6 +25,10 @@ import {
 } from "./rsync-compression.js";
 import type { Logger } from "./logger.js";
 import { fetchOpStamps } from "./op-stamp.js";
+import {
+  applySignaturesToDb,
+  type SignatureEntry,
+} from "./signature-store.js";
 
 export type MicroSyncDeps = {
   isMergeActive?: () => boolean;
@@ -54,6 +58,7 @@ export type MicroSyncDeps = {
     paths: string[],
     opts: { ignore: boolean },
   ) => Promise<void>;
+  numericIds?: boolean;
 };
 
 export type MarkDirectionOptions = {
@@ -91,6 +96,7 @@ export function makeMicroSync({
   isMergeActive,
   fetchRemoteAlphaSignatures,
   fetchRemoteBetaSignatures,
+  numericIds = false,
 }: MicroSyncDeps) {
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
@@ -168,14 +174,35 @@ export function makeMicroSync({
     const destStamps = fetchOpStamps(destDb, unique);
     const sourceStamps = fetchOpStamps(sourceDb, unique);
 
-    const entries = unique.map((path) => {
-      let signature = signatureFromStamp(destStamps.get(path));
+    const applyEntries: SignatureEntry[] = [];
+    const recentEntries = unique.map((path) => {
+      const destStamp = destStamps.get(path);
+      const sourceStamp = sourceStamps.get(path);
+
+      let signature = signatureFromStamp(destStamp);
       if (!signature && !destIsRemote) {
         signature = buildSignatureFromFs(destRoot, path);
       }
       if (!signature) {
-        signature = signatureFromStamp(sourceStamps.get(path));
+        signature = signatureFromStamp(sourceStamp);
       }
+
+      if (!signature) {
+        signature = {
+          kind: "missing",
+          opTs: Date.now(),
+        };
+      }
+
+      const target =
+        sourceStamp?.target ??
+        destStamp?.target ??
+        undefined;
+
+      if (destIsRemote && signature.kind === "file") {
+        applyEntries.push({ path, signature, target });
+      }
+
       microLogger.debug("record recent send", {
         direction,
         path,
@@ -185,7 +212,10 @@ export function makeMicroSync({
       });
       return { path, signature };
     });
-    recordRecentSend(destDb, direction, entries);
+    recordRecentSend(destDb, direction, recentEntries);
+    if (destIsRemote && applyEntries.length) {
+      applySignaturesToDb(destDb, applyEntries, { numericIds });
+    }
   };
 
   function rsyncRoots(

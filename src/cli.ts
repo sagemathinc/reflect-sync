@@ -293,6 +293,11 @@ program
     collectIgnoreOption,
     [] as string[],
   )
+  .option(
+    "--numeric-ids",
+    "include uid:gid metadata in hashes (requires root on both sides)",
+    false,
+  )
   .action(async (opts, command) => {
     const { runWatch } = await import("./watch.js");
     const merged = {

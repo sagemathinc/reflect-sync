@@ -788,6 +788,9 @@ export async function runScheduler({
       sshArgs.push("-p", String(port));
     }
     sshArgs.push(host, `${remoteCommand} watch`, "--root", root);
+    if (numericIds) {
+      sshArgs.push("--numeric-ids");
+    }
     for (const pattern of ignoreRules) {
       sshArgs.push("--ignore", pattern);
     }
@@ -1087,7 +1090,7 @@ export async function runScheduler({
       if (entries.length) collected.push(...entries);
     }
     if (collected.length) {
-      applySignaturesToDb(alphaDb, collected);
+      applySignaturesToDb(alphaDb, collected, { numericIds });
     }
   };
 
@@ -1107,7 +1110,7 @@ export async function runScheduler({
       if (entries.length) collected.push(...entries);
     }
     if (collected.length) {
-      applySignaturesToDb(betaDb, collected);
+      applySignaturesToDb(betaDb, collected, { numericIds });
     }
   };
 
@@ -1133,6 +1136,7 @@ export async function runScheduler({
     fetchRemoteBetaSignatures: betaIsRemote
       ? fetchBetaRemoteSignatures
       : undefined,
+    numericIds,
   });
 
   function scheduleHotFlush() {

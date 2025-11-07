@@ -9,6 +9,9 @@ export type SendSignature = {
   size?: number | null;
   mtime?: number | null;
   hash?: string | null;
+  mode?: number | null;
+  uid?: number | null;
+  gid?: number | null;
 };
 
 const SQLITE_MAX_VARIABLE_NUMBER = 999;

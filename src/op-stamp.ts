@@ -10,6 +10,7 @@ export interface OpStamp {
   mtime?: number | null;
   ctime?: number | null;
   hash?: string | null;
+  target?: string | null;
 }
 
 const SQLITE_MAX_VARIABLE_NUMBER = 999;
@@ -73,7 +74,7 @@ export function fetchOpStamps(
       }
 
       const linksStmt = db.prepare(
-        `SELECT path, op_ts, deleted, hash FROM links WHERE path IN (${placeholders})`,
+        `SELECT path, op_ts, deleted, hash, target FROM links WHERE path IN (${placeholders})`,
       );
       for (const row of linksStmt.iterate(...batch)) {
         const deleted = Boolean(row.deleted);
@@ -84,6 +85,7 @@ export function fetchOpStamps(
             opTs: row.op_ts as number | null,
             deleted,
             hash: row.hash as string | null,
+            target: row.target as string | null,
           });
         }
       }
