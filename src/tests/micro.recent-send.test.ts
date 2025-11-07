@@ -8,7 +8,12 @@ import { ConsoleLogger } from "../logger";
 import { getRecentSendSignatures } from "../recent-send";
 
 jest.mock("../rsync.js", () => {
-  const run = jest.fn().mockResolvedValue({ zero: false });
+  const run = jest.fn().mockResolvedValue({
+    code: 0,
+    ok: true,
+    zero: true,
+    stderr: "",
+  });
   return {
     run,
     assertRsyncOk: jest.fn(),
@@ -19,6 +24,16 @@ jest.mock("../rsync.js", () => {
 const { run: runRsync } = jest.requireMock("../rsync.js") as {
   run: jest.MockedFunction<any>;
 };
+
+afterEach(() => {
+  runRsync.mockReset();
+  runRsync.mockResolvedValue({
+    code: 0,
+    ok: true,
+    zero: true,
+    stderr: "",
+  });
+});
 
 function insertFileRow(
   dbPath: string,
@@ -99,8 +114,80 @@ describe("micro-sync recent-send integration", () => {
 
     insertFileRow(betaDbPath, pathRel, now, hash);
 
-    await micro([], [pathRel]);
+  await micro([], [pathRel]);
 
-    expect(runRsync).toHaveBeenCalledTimes(1);
+  expect(runRsync).toHaveBeenCalledTimes(1);
+});
+
+it("surfaces partial alpha→beta transfers as retryable errors", async () => {
+  runRsync.mockResolvedValueOnce({
+    code: 23,
+    ok: true,
+    zero: false,
+    stderr: "file changed on sender",
   });
+
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), "reflect-partial-"));
+  const alphaRoot = path.join(work, "alpha");
+  const betaRoot = path.join(work, "beta");
+  await fs.mkdir(alphaRoot, { recursive: true });
+  await fs.mkdir(betaRoot, { recursive: true });
+  const alphaDbPath = path.join(work, "pa.db");
+  const betaDbPath = path.join(work, "pb.db");
+  getDb(alphaDbPath).close();
+  getDb(betaDbPath).close();
+
+  const micro = makeMicroSync({
+    alphaRoot,
+    betaRoot,
+    alphaDbPath,
+    betaDbPath,
+    alphaHost: "alpha-remote",
+    prefer: "alpha",
+    dryRun: false,
+    log: () => {},
+    logger: new ConsoleLogger("error"),
+  });
+
+  await expect(micro(["foo.txt"], [])).rejects.toMatchObject({
+    alphaPaths: ["foo.txt"],
+  });
+  await fs.rm(work, { recursive: true, force: true });
+});
+
+it("surfaces partial beta→alpha transfers as retryable errors", async () => {
+  runRsync.mockResolvedValueOnce({
+    code: 23,
+    ok: true,
+    zero: false,
+    stderr: "file changed on sender",
+  });
+
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), "reflect-partial-2-"));
+  const alphaRoot = path.join(work, "alpha");
+  const betaRoot = path.join(work, "beta");
+  await fs.mkdir(alphaRoot, { recursive: true });
+  await fs.mkdir(betaRoot, { recursive: true });
+  const alphaDbPath = path.join(work, "pa2.db");
+  const betaDbPath = path.join(work, "pb2.db");
+  getDb(alphaDbPath).close();
+  getDb(betaDbPath).close();
+
+  const micro = makeMicroSync({
+    alphaRoot,
+    betaRoot,
+    alphaDbPath,
+    betaDbPath,
+    betaHost: "beta-remote",
+    prefer: "alpha",
+    dryRun: false,
+    log: () => {},
+    logger: new ConsoleLogger("error"),
+  });
+
+  await expect(micro([], ["bar.txt"])).rejects.toMatchObject({
+    betaPaths: ["bar.txt"],
+  });
+  await fs.rm(work, { recursive: true, force: true });
+});
 });

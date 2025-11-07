@@ -31,7 +31,7 @@ import {
   setActualState,
   getReflectSyncHome,
 } from "./session-db.js";
-import { makeMicroSync } from "./micro-sync.js";
+import { makeMicroSync, PartialTransferError } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
 import {
@@ -1394,13 +1394,35 @@ export async function runScheduler({
           await microSync(alphaPartition.ready, betaPartition.ready);
         }
       } catch (e: any) {
-        if (isDiskFullCause(e)) {
+        if (e instanceof PartialTransferError) {
+          const retryAlpha = e.alphaPaths ?? [];
+          const retryBeta = e.betaPaths ?? [];
+          if (retryAlpha.length) {
+            for (const relPath of retryAlpha) {
+              if (!relPath) continue;
+              hotAlpha.add(relPath);
+              recordHotEvent(alphaDb, "alpha", relPath, "partial-retry");
+            }
+          }
+          if (retryBeta.length) {
+            for (const relPath of retryBeta) {
+              if (!relPath) continue;
+              hotBeta.add(relPath);
+              recordHotEvent(betaDb, "beta", relPath, "partial-retry");
+            }
+          }
+          log("warn", "realtime", "partial transfer detected; retry scheduled", {
+            retryAlpha: retryAlpha.length,
+            retryBeta: retryBeta.length,
+          });
+        } else if (isDiskFullCause(e)) {
           pauseForDiskFull("disk full during realtime sync", e);
           return;
+        } else {
+          log("warn", "realtime", "microSync failed", {
+            err: String(e?.message || e),
+          });
         }
-        log("warn", "realtime", "microSync failed", {
-          err: String(e?.message || e),
-        });
       } finally {
         if (fatalTriggered) return;
         // run another micro pass if more landed

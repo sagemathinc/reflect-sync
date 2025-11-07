@@ -11,7 +11,12 @@ import {
 import type { SignatureEntry } from "../signature-store";
 
 jest.mock("../rsync.js", () => {
-  const run = jest.fn().mockResolvedValue({ zero: false });
+  const run = jest.fn().mockResolvedValue({
+    code: 0,
+    ok: true,
+    zero: true,
+    stderr: "",
+  });
   return {
     __esModule: true,
     run,
@@ -23,6 +28,16 @@ jest.mock("../rsync.js", () => {
 const mockedRsync = jest.requireMock("../rsync.js") as {
   run: jest.MockedFunction<any>;
 };
+
+afterEach(() => {
+  mockedRsync.run.mockReset();
+  mockedRsync.run.mockResolvedValue({
+    code: 0,
+    ok: true,
+    zero: true,
+    stderr: "",
+  });
+});
 
 const createTestLogger = () => {
   const logger: any = {

@@ -30,6 +30,25 @@ import {
   type SignatureEntry,
 } from "./signature-store.js";
 
+export class PartialTransferError extends Error {
+  alphaPaths?: string[];
+  betaPaths?: string[];
+
+  constructor(
+    message: string,
+    data: { alphaPaths?: string[]; betaPaths?: string[] } = {},
+  ) {
+    super(message);
+    this.name = "PartialTransferError";
+    if (data.alphaPaths?.length) {
+      this.alphaPaths = Array.from(new Set(data.alphaPaths.filter(Boolean)));
+    }
+    if (data.betaPaths?.length) {
+      this.betaPaths = Array.from(new Set(data.betaPaths.filter(Boolean)));
+    }
+  }
+}
+
 type ReleaseEntry = {
   path: string;
   watermark?: number | null;
@@ -122,6 +141,39 @@ export function makeMicroSync({
   let betaTempDir: string | undefined;
 
   const dedupe = (paths: Iterable<string>) => Array.from(new Set(paths));
+
+  const logPartial = (
+    direction: "alpha->beta" | "beta->alpha",
+    paths: string[],
+    res: RsyncResult,
+  ) => {
+    microLogger.warn("partial transfer detected", {
+      direction,
+      paths: paths.length,
+      code: res.code,
+      stderr: res.stderr ? res.stderr.slice(0, 200) : undefined,
+    });
+  };
+
+  const ensureNoPartial = (
+    direction: "alpha->beta" | "beta->alpha",
+    paths: string[],
+    res: RsyncResult,
+  ) => {
+    if (res.code !== 23) return;
+    const unique = dedupe(paths);
+    if (!unique.length) return;
+    logPartial(direction, unique, res);
+    if (direction === "alpha->beta") {
+      throw new PartialTransferError("alpha→beta transfer incomplete", {
+        alphaPaths: unique,
+      });
+    } else {
+      throw new PartialTransferError("beta→alpha transfer incomplete", {
+        betaPaths: unique,
+      });
+    }
+  };
 
   const buildSignatureFromFs = (
     root: string,
@@ -371,11 +423,18 @@ export function makeMicroSync({
     }
   }
 
+  type RsyncResult = {
+    code: number | null;
+    zero: boolean;
+    ok: boolean;
+    stderr?: string;
+  };
+
   async function doRsync(
     direction: "alpha->beta" | "beta->alpha",
     listFile: string,
     extra: string[] = [],
-  ): Promise<boolean> {
+  ): Promise<RsyncResult> {
     const compArgs = rsyncCompressionArgs(compress);
     const progressScope =
       direction === "alpha->beta"
@@ -428,7 +487,7 @@ export function makeMicroSync({
         },
       );
       assertRsyncOk(`micro ${direction}`, res, { direction });
-      return res.zero;
+      return res;
     } else {
       const tempDirArg = alphaIsRemote ? ".reflect-rsync-tmp" : alphaTempDir;
       const { from, to, transport } = rsyncRoots(
@@ -475,7 +534,7 @@ export function makeMicroSync({
         },
       );
       assertRsyncOk(`micro ${direction}`, res, { direction });
-      return res.zero;
+      return res;
     }
   }
 
@@ -485,7 +544,7 @@ export function makeMicroSync({
   async function rsyncCopyOrDelete(
     direction: "alpha->beta" | "beta->alpha",
     listFile: string,
-  ) {
+  ): Promise<RsyncResult> {
     // --delete-missing-args ensures a missing source path deletes the dest
     // --force allows removing non-empty directories when targeted
     return await doRsync(direction, listFile, [
@@ -499,7 +558,7 @@ export function makeMicroSync({
   async function rsyncDirsAndLinks(
     direction: "alpha->beta" | "beta->alpha",
     listFile: string,
-  ) {
+  ): Promise<RsyncResult> {
     // Keep attributes like -a but suppress recursion:
     //   --no-recursive overrides -r from -a, --dirs copies directory entries,
     //   symlinks are handled via -l inside -a.
@@ -668,7 +727,11 @@ export function makeMicroSync({
               "realtime",
               `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
             );
-            await rsyncCopyOrDelete("alpha->beta", listAllA2B);
+            const res = await rsyncCopyOrDelete("alpha->beta", listAllA2B);
+            if (needBetaLock && betaLockedPaths.length && res.code === 23) {
+              await betaRemoteLock!.unlock(betaLockedPaths);
+            }
+            ensureNoPartial("alpha->beta", toBeta, res);
           } else {
             const { files, others, missing } = await classifyLocal(
               alphaRoot,
@@ -698,7 +761,8 @@ export function makeMicroSync({
                 }
               }
               if (!ok) {
-                await doRsync("alpha->beta", listFiles);
+                const res = await doRsync("alpha->beta", listFiles);
+                ensureNoPartial("alpha->beta", files, res);
               }
             }
             const listOther = path.join(tmp, "alpha2beta.other");
@@ -709,13 +773,15 @@ export function makeMicroSync({
                 "realtime",
                 `alpha→beta dirs/symlinks ${others.length} (no-recursive)`,
               );
-              await rsyncDirsAndLinks("alpha->beta", listOther);
+              const res = await rsyncDirsAndLinks("alpha->beta", listOther);
+              ensureNoPartial("alpha->beta", others, res);
             }
             const listMissing = path.join(tmp, "alpha2beta.missing");
             await writeFile(listMissing, join0(missing));
             if (await fileNonEmpty(listMissing)) {
               log("info", "realtime", `alpha→beta deletes ${missing.length}`);
-              await rsyncCopyOrDelete("alpha->beta", listMissing);
+              const res = await rsyncCopyOrDelete("alpha->beta", listMissing);
+              ensureNoPartial("alpha->beta", missing, res);
             }
           }
 
@@ -765,7 +831,11 @@ export function makeMicroSync({
               "realtime",
               `beta→alpha ${toAlpha.length} paths (unified copy/delete)`,
             );
-            await rsyncCopyOrDelete("beta->alpha", listAllB2A);
+            const res = await rsyncCopyOrDelete("beta->alpha", listAllB2A);
+            if (needAlphaLock && alphaLockedPaths.length && res.code === 23) {
+              await alphaRemoteLock!.unlock(alphaLockedPaths);
+            }
+            ensureNoPartial("beta->alpha", toAlpha, res);
           } else {
             const { files, others, missing } = await classifyLocal(
               betaRoot,
@@ -795,7 +865,8 @@ export function makeMicroSync({
                 }
               }
               if (!ok) {
-                await doRsync("beta->alpha", listFiles);
+                const res = await doRsync("beta->alpha", listFiles);
+                ensureNoPartial("beta->alpha", files, res);
               }
             }
             const listOther = path.join(tmp, "beta2alpha.other");
@@ -806,13 +877,15 @@ export function makeMicroSync({
                 "realtime",
                 `beta→alpha dirs/symlinks ${others.length} (no-recursive)`,
               );
-              await rsyncDirsAndLinks("beta->alpha", listOther);
+              const res = await rsyncDirsAndLinks("beta->alpha", listOther);
+              ensureNoPartial("beta->alpha", others, res);
             }
             const listMissing = path.join(tmp, "beta2alpha.missing");
             await writeFile(listMissing, join0(missing));
             if (await fileNonEmpty(listMissing)) {
               log("info", "realtime", `beta→alpha deletes ${missing.length}`);
-              await rsyncCopyOrDelete("beta->alpha", listMissing);
+              const res = await rsyncCopyOrDelete("beta->alpha", listMissing);
+              ensureNoPartial("beta->alpha", missing, res);
             }
           }
 
