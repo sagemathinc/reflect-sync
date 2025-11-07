@@ -1284,6 +1284,21 @@ export async function runScheduler({
     }
   };
 
+  const alphaLockHandle = alphaIsRemote
+    ? {
+        lock: lockRemoteAlphaPaths,
+        release: releaseRemoteAlphaPaths,
+        unlock: unlockRemoteAlphaPaths,
+      }
+    : undefined;
+  const betaLockHandle = betaIsRemote
+    ? {
+        lock: lockRemoteBetaPaths,
+        release: releaseRemoteBetaPaths,
+        unlock: unlockRemoteBetaPaths,
+      }
+    : undefined;
+
   // create the microSync closure
   const microSync = makeMicroSync({
     alphaRoot,
@@ -1306,20 +1321,8 @@ export async function runScheduler({
     fetchRemoteBetaSignatures: betaIsRemote
       ? fetchBetaRemoteSignatures
       : undefined,
-    alphaRemoteLock: alphaIsRemote
-      ? {
-          lock: lockRemoteAlphaPaths,
-          release: releaseRemoteAlphaPaths,
-          unlock: unlockRemoteAlphaPaths,
-        }
-      : undefined,
-    betaRemoteLock: betaIsRemote
-      ? {
-          lock: lockRemoteBetaPaths,
-          release: releaseRemoteBetaPaths,
-          unlock: unlockRemoteBetaPaths,
-        }
-      : undefined,
+    alphaRemoteLock: alphaLockHandle,
+    betaRemoteLock: betaLockHandle,
     numericIds,
   });
 
@@ -1814,13 +1817,15 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
-        fetchRemoteAlphaSignatures: alphaIsRemote
-          ? fetchAlphaRemoteSignatures
-          : undefined,
-        fetchRemoteBetaSignatures: betaIsRemote
-          ? fetchBetaRemoteSignatures
-          : undefined,
-      });
+      fetchRemoteAlphaSignatures: alphaIsRemote
+        ? fetchAlphaRemoteSignatures
+        : undefined,
+      fetchRemoteBetaSignatures: betaIsRemote
+        ? fetchBetaRemoteSignatures
+        : undefined,
+      alphaRemoteLock: alphaLockHandle,
+      betaRemoteLock: betaLockHandle,
+    });
       mergeOk = true;
     } catch (err) {
       mergeError = err;

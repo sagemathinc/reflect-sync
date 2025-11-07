@@ -239,6 +239,15 @@ export async function rsyncCopyChunked(
     tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
+    onChunkResult?: (
+      chunkPaths: string[],
+      result: {
+        ok: boolean;
+        zero: boolean;
+        code: number | null;
+        stderr?: string;
+      },
+    ) => void | Promise<void>;
   } = {},
 ): Promise<{ ok: boolean }> {
   if (!fileRpaths.length) return { ok: true };
@@ -303,7 +312,7 @@ export async function rsyncCopyChunked(
       chunkIndex: idx + 1,
       chunkCount: listFiles.length,
     };
-    const { ok } = await rsyncCopy(
+    const result = await rsyncCopy(
       fromRoot,
       toRoot,
       lf,
@@ -320,7 +329,10 @@ export async function rsyncCopyChunked(
         progressMeta: chunkMeta,
       },
     );
-    if (!ok) allOk = false;
+    if (opts.onChunkResult) {
+      await opts.onChunkResult(batches[idx], result);
+    }
+    if (!result.ok) allOk = false;
   });
 
   return { ok: allOk };
@@ -698,11 +710,11 @@ export async function rsyncCopy(
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
-): Promise<{ ok: boolean; zero: boolean }> {
+): Promise<{ ok: boolean; zero: boolean; code: number | null; stderr?: string }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync ${label}: nothing to do`);
-    return { ok: true, zero: false };
+    return { ok: true, zero: false, code: 0 };
   }
   if (debug) {
     logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
@@ -745,7 +757,7 @@ export async function rsyncCopy(
       ok: res.ok,
     });
   }
-  return { ok: res.ok, zero: res.zero };
+  return { ok: res.ok, zero: res.zero, code: res.code, stderr: res.stderr };
 }
 
 export async function rsyncCopyDirs(

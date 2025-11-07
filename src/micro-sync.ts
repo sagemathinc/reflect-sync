@@ -54,7 +54,7 @@ type ReleaseEntry = {
   watermark?: number | null;
 };
 
-type RemoteLockHandle = {
+export type RemoteLockHandle = {
   lock: (paths: string[]) => Promise<void>;
   release: (entries: ReleaseEntry[]) => Promise<void>;
   unlock: (paths: string[]) => Promise<void>;
@@ -155,12 +155,16 @@ export function makeMicroSync({
     });
   };
 
+  const isVanishedWarning = (stderr?: string | null) =>
+    typeof stderr === "string" &&
+    stderr.toLowerCase().includes("vanished");
+
   const ensureNoPartial = (
     direction: "alpha->beta" | "beta->alpha",
     paths: string[],
     res: RsyncResult,
   ) => {
-    if (res.code !== 23) return;
+    if (res.code !== 23 || isVanishedWarning(res.stderr)) return;
     const unique = dedupe(paths);
     if (!unique.length) return;
     logPartial(direction, unique, res);

@@ -21,7 +21,8 @@ import {
   rsyncDeleteChunked,
   ensureTempDir,
 } from "./rsync.js";
-import type { MarkDirectionOptions } from "./micro-sync.js";
+import { PartialTransferError } from "./micro-sync.js";
+import type { MarkDirectionOptions, RemoteLockHandle } from "./micro-sync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
   getRecentSendSignatures,
@@ -138,6 +139,8 @@ type MergeRsyncOptions = {
     paths: string[],
     opts: { ignore: boolean },
   ) => Promise<SignatureEntry[]> | Promise<void> | void;
+  alphaRemoteLock?: RemoteLockHandle;
+  betaRemoteLock?: RemoteLockHandle;
 };
 
 // ---------- helpers ----------
@@ -146,6 +149,52 @@ function join0(items: string[]) {
   return filtered.length
     ? Buffer.from(filtered.join("\0") + "\0")
     : Buffer.alloc(0);
+}
+
+type ReleaseEntry = {
+  path: string;
+  watermark?: number | null;
+};
+
+const buildReleaseEntries = (
+  releasePaths: string[],
+  signatures: SignatureEntry[],
+): ReleaseEntry[] => {
+  if (!releasePaths.length || !signatures.length) return [];
+  const sigMap = new Map<string, SignatureEntry["signature"]>();
+  for (const entry of signatures) {
+    sigMap.set(entry.path, entry.signature);
+  }
+  const entries: ReleaseEntry[] = [];
+  for (const path of releasePaths) {
+    const sig = sigMap.get(path);
+    if (!sig || sig.kind === "missing") continue;
+    const watermark = sig.ctime ?? sig.mtime ?? sig.opTs ?? Date.now();
+    entries.push({ path, watermark });
+  }
+  return entries;
+};
+
+async function finalizeRemoteLock(
+  handle: RemoteLockHandle | undefined,
+  lockedPaths: string[],
+  releasePaths: string[],
+  signatures: SignatureEntry[],
+) {
+  if (!handle || !lockedPaths.length) return;
+  if (!releasePaths.length) {
+    await handle.unlock(lockedPaths);
+    return;
+  }
+  const releaseEntries = buildReleaseEntries(releasePaths, signatures);
+  const released = new Set(releaseEntries.map((e) => e.path));
+  if (releaseEntries.length) {
+    await handle.release(releaseEntries);
+  }
+  const leftovers = lockedPaths.filter((p) => !released.has(p));
+  if (leftovers.length) {
+    await handle.unlock(leftovers);
+  }
 }
 
 export async function runMerge({
@@ -171,6 +220,8 @@ export async function runMerge({
   markBetaToAlpha,
   fetchRemoteAlphaSignatures,
   fetchRemoteBetaSignatures,
+  alphaRemoteLock,
+  betaRemoteLock,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -217,6 +268,7 @@ export async function runMerge({
   const sortDeepestFirst = (xs: string[]) =>
     xs.slice().sort((a, b) => depth(b) - depth(a));
   const nonRoot = (xs: string[]) => xs.filter((r) => r && r !== ".");
+
 
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
@@ -1041,57 +1093,39 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    const alphaBounceCandidates = uniq([
-      ...toBeta,
-      ...toBetaDirs,
-    ]);
-    const betaBounceCandidates = uniq([
-      ...toAlpha,
-      ...toAlphaDirs,
-    ]);
-
-    const skipAlphaToBeta = new Set<string>();
-    if (alphaBounceCandidates.length) {
-      const stamps = fetchOpStamps(alphaDb, alphaBounceCandidates);
-      const recent = getRecentSendSignatures(
-        alphaDb,
-        "beta->alpha",
-        alphaBounceCandidates,
-      );
-      for (const path of alphaBounceCandidates) {
+    const filterBounceByRecent = (
+      direction: "alpha->beta" | "beta->alpha",
+      paths: string[],
+    ): string[] => {
+      if (!paths.length) return paths;
+      const unique = uniq(paths);
+      const dbPath = direction === "alpha->beta" ? alphaDb : betaDb;
+      const recentDirection =
+        direction === "alpha->beta" ? "beta->alpha" : "alpha->beta";
+      const stamps = fetchOpStamps(dbPath, unique);
+      const recent = getRecentSendSignatures(dbPath, recentDirection, unique);
+      const keep: string[] = [];
+      for (const path of paths) {
         const sig = signatureFromStamp(stamps.get(path));
         const last = recent.get(path);
         if (sig && last && signatureEquals(sig, last)) {
-          skipAlphaToBeta.add(path);
+          if (debug) {
+            logger.debug("merge bounce: skipping redundant copy", {
+              direction,
+              path,
+            });
+          }
+          continue;
         }
+        keep.push(path);
       }
-    }
+      return keep;
+    };
 
-    const skipBetaToAlpha = new Set<string>();
-    if (betaBounceCandidates.length) {
-      const stamps = fetchOpStamps(betaDb, betaBounceCandidates);
-      const recent = getRecentSendSignatures(
-        betaDb,
-        "alpha->beta",
-        betaBounceCandidates,
-      );
-      for (const path of betaBounceCandidates) {
-        const sig = signatureFromStamp(stamps.get(path));
-        const last = recent.get(path);
-        if (sig && last && signatureEquals(sig, last)) {
-          skipBetaToAlpha.add(path);
-        }
-      }
-    }
-
-    const filterBounce = (paths: string[], skip: Set<string>) =>
-      paths.filter((p) => !skip.has(p));
-
-    toBeta = filterBounce(toBeta, skipAlphaToBeta);
-    toBetaDirs = filterBounce(toBetaDirs, skipAlphaToBeta);
-
-    toAlpha = filterBounce(toAlpha, skipBetaToAlpha);
-    toAlphaDirs = filterBounce(toAlphaDirs, skipBetaToAlpha);
+    toBeta = filterBounceByRecent("alpha->beta", toBeta);
+    toBetaDirs = filterBounceByRecent("alpha->beta", toBetaDirs);
+    toAlpha = filterBounceByRecent("beta->alpha", toAlpha);
+    toAlphaDirs = filterBounceByRecent("beta->alpha", toAlphaDirs);
 
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
@@ -1342,6 +1376,8 @@ export async function runMerge({
     }
 
     const tmp = await mkdtemp(path.join(tmpdir(), "sync-plan-"));
+
+    // helper definitions inserted later after alpha/beta constants
     try {
       done = t("files lists");
       const listToBeta = path.join(tmp, "toBeta.list");
@@ -1397,6 +1433,114 @@ export async function runMerge({
 
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
+
+      const handlePartial = async (
+        direction: "alpha->beta" | "beta->alpha",
+        paths: string[],
+      ) => {
+        if (!paths.length) return;
+        const unique = uniq(paths);
+        if (!unique.length) return;
+        if (direction === "alpha->beta") {
+          await markAlphaToBeta?.(unique);
+          throw new PartialTransferError("alpha→beta transfer incomplete", {
+            alphaPaths: unique,
+          });
+        } else {
+          await markBetaToAlpha?.(unique);
+          throw new PartialTransferError("beta→alpha transfer incomplete", {
+            betaPaths: unique,
+          });
+        }
+      };
+
+      const isVanishedWarning = (stderr?: string | null) =>
+        typeof stderr === "string" &&
+        stderr.toLowerCase().includes("vanished");
+
+      const copyFilesWithGuards = async (
+        direction: "alpha->beta" | "beta->alpha",
+        paths: string[],
+        options: Omit<
+          Parameters<typeof rsyncCopyChunked>[5],
+          "onChunkResult"
+        > = {},
+      ): Promise<boolean> => {
+      if (!paths.length) return true;
+      paths = filterBounceByRecent(direction, paths);
+      if (!paths.length) {
+        return true;
+      }
+      const uniquePaths = uniq(paths);
+      const remoteHost =
+        direction === "alpha->beta" ? betaHost : alphaHost;
+        const remoteLock =
+          direction === "alpha->beta" ? betaRemoteLock : alphaRemoteLock;
+        if (remoteLock && uniquePaths.length) {
+          await remoteLock.lock(uniquePaths);
+        }
+        const partialPaths: string[] = [];
+        try {
+          const { ok } = await rsyncCopyChunked(
+            tmp,
+            direction === "alpha->beta" ? alpha : beta,
+            direction === "alpha->beta" ? beta : alpha,
+            paths,
+            direction === "alpha->beta" ? "alpha→beta" : "beta→alpha",
+            {
+              ...rsyncOpts,
+              ...(options ?? {}),
+            onChunkResult: (chunk, result) => {
+              if (result.code === 23 && !isVanishedWarning(result.stderr)) {
+                partialPaths.push(...chunk);
+              }
+            },
+            },
+          );
+        if (partialPaths.length) {
+          if (remoteLock && uniquePaths.length) {
+            await remoteLock.unlock(uniquePaths);
+          }
+          if (remoteHost) {
+            await handlePartial(direction, partialPaths);
+          } else if (debug) {
+            logger.warn("partial transfer ignored (local merge)", {
+              direction,
+              paths: partialPaths.length,
+            });
+          }
+        }
+        const fetchSignatures =
+          direction === "alpha->beta"
+            ? fetchRemoteBetaSignatures
+            : fetchRemoteAlphaSignatures;
+          if (
+            remoteHost &&
+            remoteLock &&
+            uniquePaths.length &&
+            fetchSignatures
+          ) {
+            const signatures =
+              (await fetchSignatures(uniquePaths, { ignore: false })) ?? [];
+            await finalizeRemoteLock(
+              remoteLock,
+              uniquePaths,
+              uniquePaths,
+              signatures,
+            );
+          } else if (remoteLock && uniquePaths.length) {
+            await remoteLock.unlock(uniquePaths);
+          }
+          return ok;
+        } catch (err) {
+          if (remoteLock && uniquePaths.length) {
+            try {
+              await remoteLock.unlock(uniquePaths);
+            } catch {}
+          }
+          throw err;
+        }
+      };
 
       // 1) delete file conflicts first
       done = t("rsync: 1) delete file conflicts");
@@ -1523,42 +1667,30 @@ export async function runMerge({
           }
           done();
           done = t("rsync: 3) copy files -- falling back to rsync");
-          copyAlphaBetaOk = (
-            await rsyncCopyChunked(
-              tmp,
-              alpha,
-              beta,
-              toBetaRelative,
-              "alpha→beta",
-              {
-                ...rsyncOpts,
-                tempDir: betaTempArg,
-                progressScope: "merge.copy.alpha->beta",
-                progressMeta: {
-                  stage: "copy",
-                  direction: "alpha->beta",
-                },
-              },
-            )
-          ).ok;
-          copyBetaAlphaOk = (
-            await rsyncCopyChunked(
-              tmp,
-              beta,
-              alpha,
-              toAlphaRelative,
-              "beta→alpha",
-              {
-                ...rsyncOpts,
-                tempDir: alphaTempArg,
-                progressScope: "merge.copy.beta->alpha",
-                progressMeta: {
-                  stage: "copy",
-                  direction: "beta->alpha",
-                },
-              },
-            )
-          ).ok;
+        copyAlphaBetaOk = await copyFilesWithGuards(
+          "alpha->beta",
+          toBetaRelative,
+          {
+            tempDir: betaTempArg,
+            progressScope: "merge.copy.alpha->beta",
+            progressMeta: {
+              stage: "copy",
+              direction: "alpha->beta",
+            },
+          },
+        );
+        copyBetaAlphaOk = await copyFilesWithGuards(
+          "beta->alpha",
+          toAlphaRelative,
+          {
+            tempDir: alphaTempArg,
+            progressScope: "merge.copy.beta->alpha",
+            progressMeta: {
+              stage: "copy",
+              direction: "beta->alpha",
+            },
+          },
+        );
           if (copyAlphaBetaOk && toBetaRelative.length) {
             await noteBetaChange(toBetaRelative);
           }
@@ -1569,42 +1701,30 @@ export async function runMerge({
       } else {
         // 3) copy files
         done = t("rsync: 3) copy files");
-        copyAlphaBetaOk = (
-          await rsyncCopyChunked(
-            tmp,
-            alpha,
-            beta,
-            toBetaRelative,
-            "alpha→beta",
-            {
-              ...rsyncOpts,
-              tempDir: betaTempArg,
-              progressScope: "merge.copy.alpha->beta",
-              progressMeta: {
-                stage: "copy",
-                direction: "alpha->beta",
-              },
+        copyAlphaBetaOk = await copyFilesWithGuards(
+          "alpha->beta",
+          toBetaRelative,
+          {
+            tempDir: betaTempArg,
+            progressScope: "merge.copy.alpha->beta",
+            progressMeta: {
+              stage: "copy",
+              direction: "alpha->beta",
             },
-          )
-        ).ok;
-        copyBetaAlphaOk = (
-          await rsyncCopyChunked(
-            tmp,
-            beta,
-            alpha,
-            toAlphaRelative,
-            "beta→alpha",
-            {
-              ...rsyncOpts,
-              tempDir: alphaTempArg,
-              progressScope: "merge.copy.beta->alpha",
-              progressMeta: {
-                stage: "copy",
-                direction: "beta->alpha",
-              },
+          },
+        );
+        copyBetaAlphaOk = await copyFilesWithGuards(
+          "beta->alpha",
+          toAlphaRelative,
+          {
+            tempDir: alphaTempArg,
+            progressScope: "merge.copy.beta->alpha",
+            progressMeta: {
+              stage: "copy",
+              direction: "beta->alpha",
             },
-          )
-        ).ok;
+          },
+        );
         if (copyAlphaBetaOk && toBetaRelative.length) {
           await noteBetaChange(toBetaRelative);
         }
