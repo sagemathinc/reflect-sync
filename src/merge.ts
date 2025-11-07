@@ -28,6 +28,7 @@ import {
   getRecentSendSignatures,
   signatureEquals,
   signatureFromStamp,
+  type SendSignature,
 } from "./recent-send.js";
 import { fetchOpStamps } from "./op-stamp.js";
 import { createHash } from "node:crypto";
@@ -268,7 +269,19 @@ export async function runMerge({
   const sortDeepestFirst = (xs: string[]) =>
     xs.slice().sort((a, b) => depth(b) - depth(a));
   const nonRoot = (xs: string[]) => xs.filter((r) => r && r !== ".");
-
+  const buildSignatureMap = (
+    dbPath: string,
+    paths: string[],
+  ): Map<string, SendSignature | null> => {
+    const unique = uniq(paths);
+    if (!unique.length) return new Map();
+    const stamps = fetchOpStamps(dbPath, unique);
+    const map = new Map<string, SendSignature | null>();
+    for (const path of unique) {
+      map.set(path, signatureFromStamp(stamps.get(path)));
+    }
+    return map;
+  };
 
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
@@ -287,19 +300,31 @@ export async function runMerge({
     return true;
   };
 
-  const noteBetaChange = async (paths: string[]) => {
+  const noteBetaChange = async (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => {
     if (!paths.length) return;
     const ignored = await requestRemoteBetaIgnore(paths);
     if (markAlphaToBeta) {
-      await markAlphaToBeta(paths, { remoteIgnoreHandled: ignored });
+      await markAlphaToBeta(paths, {
+        ...opts,
+        remoteIgnoreHandled: ignored,
+      });
     }
   };
 
-  const noteAlphaChange = async (paths: string[]) => {
+  const noteAlphaChange = async (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => {
     if (!paths.length) return;
     const ignored = await requestRemoteAlphaIgnore(paths);
     if (markBetaToAlpha) {
-      await markBetaToAlpha(paths, { remoteIgnoreHandled: ignored });
+      await markBetaToAlpha(paths, {
+        ...opts,
+        remoteIgnoreHandled: ignored,
+      });
     }
   };
 
@@ -1117,6 +1142,13 @@ export async function runMerge({
           }
           continue;
         }
+        if (direction === "alpha->beta" && debug) {
+          logger.debug("merge bounce: plan copy (alpha→beta)", {
+            path,
+            sig,
+            last,
+          });
+        }
         keep.push(path);
       }
       return keep;
@@ -1395,6 +1427,8 @@ export async function runMerge({
 
       const toBetaRelative = makeRelative(toBeta, betaRoot);
       const toAlphaRelative = makeRelative(toAlpha, alphaRoot);
+      const alphaSignatureHints = buildSignatureMap(alphaDb, toBetaRelative);
+      const betaSignatureHints = buildSignatureMap(betaDb, toAlphaRelative);
 
       await writeFile(listToBeta, join0(toBetaRelative));
       await writeFile(listToAlpha, join0(toAlphaRelative));
@@ -1692,10 +1726,14 @@ export async function runMerge({
           },
         );
           if (copyAlphaBetaOk && toBetaRelative.length) {
-            await noteBetaChange(toBetaRelative);
+            await noteBetaChange(toBetaRelative, {
+              signatures: alphaSignatureHints,
+            });
           }
           if (copyBetaAlphaOk && toAlphaRelative.length) {
-            await noteAlphaChange(toAlphaRelative);
+            await noteAlphaChange(toAlphaRelative, {
+              signatures: betaSignatureHints,
+            });
           }
         }
       } else {
@@ -1726,10 +1764,14 @@ export async function runMerge({
           },
         );
         if (copyAlphaBetaOk && toBetaRelative.length) {
-          await noteBetaChange(toBetaRelative);
+          await noteBetaChange(toBetaRelative, {
+            signatures: alphaSignatureHints,
+          });
         }
         if (copyBetaAlphaOk && toAlphaRelative.length) {
-          await noteAlphaChange(toAlphaRelative);
+          await noteAlphaChange(toAlphaRelative, {
+            signatures: betaSignatureHints,
+          });
         }
         done();
       }

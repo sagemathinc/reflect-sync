@@ -95,6 +95,7 @@ export type MicroSyncDeps = {
 
 export type MarkDirectionOptions = {
   remoteIgnoreHandled?: boolean;
+  signatures?: Map<string, SendSignature | null>;
 };
 
 type MicroSyncFn = ((
@@ -230,6 +231,7 @@ export function makeMicroSync({
   const recordDirection = (
     direction: SyncDirection,
     paths: string[],
+    signatureHints?: Map<string, SendSignature | null>,
   ) => {
     if (!paths.length) return;
     const unique = dedupe(paths);
@@ -250,7 +252,10 @@ export function makeMicroSync({
       const destStamp = destStamps.get(path);
       const sourceStamp = sourceStamps.get(path);
 
-      let signature = signatureFromStamp(destStamp);
+      let signature = signatureHints?.get(path) ?? null;
+      if (!signature || signature.kind === "missing") {
+        signature = signatureFromStamp(destStamp);
+      }
       if (!signature && !destIsRemote) {
         signature = buildSignatureFromFs(destRoot, path);
       }
@@ -803,7 +808,7 @@ export function makeMicroSync({
               betaPostSignatures,
             );
           }
-          recordDirection("alpha->beta", toBeta);
+          recordDirection("alpha->beta", toBeta, alphaSigMap);
         } catch (err) {
           if (needBetaLock && betaLockedPaths.length) {
             try {
@@ -910,7 +915,7 @@ export function makeMicroSync({
               alphaPostSignatures,
             );
           }
-          recordDirection("beta->alpha", toAlpha);
+        recordDirection("beta->alpha", toAlpha, betaSigMap);
         } catch (err) {
           if (needAlphaLock && alphaLockedPaths.length) {
             try {
@@ -935,7 +940,7 @@ export function makeMicroSync({
     if (!skipRemoteIgnore && betaIsRemote && fetchRemoteBetaSignatures && paths.length) {
       await fetchRemoteBetaSignatures(paths, { ignore: true });
     }
-    recordDirection("alpha->beta", paths);
+    recordDirection("alpha->beta", paths, opts?.signatures);
   };
 
   microSync.markBetaToAlpha = async (
@@ -948,7 +953,7 @@ export function makeMicroSync({
     if (!skipRemoteIgnore && alphaIsRemote && fetchRemoteAlphaSignatures && paths.length) {
       await fetchRemoteAlphaSignatures(paths, { ignore: true });
     }
-    recordDirection("beta->alpha", paths);
+    recordDirection("beta->alpha", paths, opts?.signatures);
   };
 
   return microSync;

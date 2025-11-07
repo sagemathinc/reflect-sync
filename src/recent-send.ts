@@ -36,6 +36,9 @@ function compactSignature(sig: SendSignature | null): SendSignature | null {
   if (sig.mtime != null) normalized.mtime = sig.mtime;
   if (sig.ctime != null) normalized.ctime = sig.ctime;
   if (sig.hash != null) normalized.hash = sig.hash;
+  if (sig.mode != null) normalized.mode = sig.mode;
+  if (sig.uid != null) normalized.uid = sig.uid;
+  if (sig.gid != null) normalized.gid = sig.gid;
   return normalized;
 }
 
@@ -61,17 +64,21 @@ export function signatureEquals(
   if (a.kind === "missing" && b.kind === "missing") {
     return true;
   }
+  if (a.hash && b.hash) {
+    return a.kind === b.kind && a.hash === b.hash;
+  }
   const same = (x: number | string | null | undefined, y: typeof x) => {
     if (x == null || y == null) return true;
     return x === y;
   };
   return (
     a.kind === b.kind &&
-    same(a.opTs, b.opTs) &&
     same(a.size, b.size) &&
     same(a.mtime, b.mtime) &&
     same(a.ctime, b.ctime) &&
-    same(a.hash, b.hash)
+    same(a.mode, b.mode) &&
+    same(a.uid, b.uid) &&
+    same(a.gid, b.gid)
   );
 }
 
