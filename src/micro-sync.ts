@@ -56,12 +56,22 @@ export type MicroSyncDeps = {
   ) => Promise<void>;
 };
 
+export type MarkDirectionOptions = {
+  remoteIgnoreHandled?: boolean;
+};
+
 type MicroSyncFn = ((
   rpathsAlpha: string[],
   rpathsBeta: string[],
 ) => Promise<void>) & {
-  markAlphaToBeta: (paths: string[]) => Promise<void>;
-  markBetaToAlpha: (paths: string[]) => Promise<void>;
+  markAlphaToBeta: (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => Promise<void>;
+  markBetaToAlpha: (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => Promise<void>;
 };
 
 export function makeMicroSync({
@@ -683,19 +693,27 @@ export function makeMicroSync({
     }
   };
 
-  microSync.markAlphaToBeta = async (paths: string[]) => {
+  microSync.markAlphaToBeta = async (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => {
     //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
-    if (betaIsRemote && fetchRemoteBetaSignatures && paths.length) {
+    const skipRemoteIgnore = !!opts?.remoteIgnoreHandled;
+    if (!skipRemoteIgnore && betaIsRemote && fetchRemoteBetaSignatures && paths.length) {
       await fetchRemoteBetaSignatures(paths, { ignore: true });
     }
     recordDirection("alpha->beta", paths);
   };
 
-  microSync.markBetaToAlpha = async (paths: string[]) => {
+  microSync.markBetaToAlpha = async (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => {
     //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
-    if (alphaIsRemote && fetchRemoteAlphaSignatures && paths.length) {
+    const skipRemoteIgnore = !!opts?.remoteIgnoreHandled;
+    if (!skipRemoteIgnore && alphaIsRemote && fetchRemoteAlphaSignatures && paths.length) {
       await fetchRemoteAlphaSignatures(paths, { ignore: true });
     }
     recordDirection("beta->alpha", paths);

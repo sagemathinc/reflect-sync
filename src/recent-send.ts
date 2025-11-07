@@ -52,6 +52,9 @@ export function signatureEquals(
 ): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
+  if (a.kind === "missing" && b.kind === "missing") {
+    return true;
+  }
   const same = (x: number | string | null | undefined, y: typeof x) => {
     if (x == null || y == null) return true;
     return x === y;

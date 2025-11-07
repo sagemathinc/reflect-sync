@@ -1474,6 +1474,12 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
+        fetchRemoteAlphaSignatures: alphaIsRemote
+          ? fetchAlphaRemoteSignatures
+          : undefined,
+        fetchRemoteBetaSignatures: betaIsRemote
+          ? fetchBetaRemoteSignatures
+          : undefined,
       });
       mergeOk = true;
     } catch (err) {

@@ -21,6 +21,7 @@ import {
   rsyncDeleteChunked,
   ensureTempDir,
 } from "./rsync.js";
+import type { MarkDirectionOptions } from "./micro-sync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
   getRecentSendSignatures,
@@ -120,8 +121,22 @@ type MergeRsyncOptions = {
   logger?: Logger;
   logLevel?: LogLevel | string;
   ignoreRules?: string[];
-  markAlphaToBeta?: (paths: string[]) => Promise<void> | void;
-  markBetaToAlpha?: (paths: string[]) => Promise<void> | void;
+  markAlphaToBeta?: (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => Promise<void> | void;
+  markBetaToAlpha?: (
+    paths: string[],
+    opts?: MarkDirectionOptions,
+  ) => Promise<void> | void;
+  fetchRemoteAlphaSignatures?: (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => Promise<void> | void;
+  fetchRemoteBetaSignatures?: (
+    paths: string[],
+    opts: { ignore: boolean },
+  ) => Promise<void> | void;
 };
 
 // ---------- helpers ----------
@@ -153,6 +168,8 @@ export async function runMerge({
   ignoreRules: rawIgnoreRules = [],
   markAlphaToBeta,
   markBetaToAlpha,
+  fetchRemoteAlphaSignatures,
+  fetchRemoteBetaSignatures,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -204,6 +221,34 @@ export async function runMerge({
   let betaTempDir: string | undefined;
   let alphaTempArg: string | undefined;
   let betaTempArg: string | undefined;
+
+  const requestRemoteBetaIgnore = async (paths: string[]) => {
+    if (!paths.length || !betaHost || !fetchRemoteBetaSignatures) return false;
+    await fetchRemoteBetaSignatures(paths, { ignore: true });
+    return true;
+  };
+
+  const requestRemoteAlphaIgnore = async (paths: string[]) => {
+    if (!paths.length || !alphaHost || !fetchRemoteAlphaSignatures) return false;
+    await fetchRemoteAlphaSignatures(paths, { ignore: true });
+    return true;
+  };
+
+  const noteBetaChange = async (paths: string[]) => {
+    if (!paths.length) return;
+    const ignored = await requestRemoteBetaIgnore(paths);
+    if (markAlphaToBeta) {
+      await markAlphaToBeta(paths, { remoteIgnoreHandled: ignored });
+    }
+  };
+
+  const noteAlphaChange = async (paths: string[]) => {
+    if (!paths.length) return;
+    const ignored = await requestRemoteAlphaIgnore(paths);
+    if (markBetaToAlpha) {
+      await markBetaToAlpha(paths, { remoteIgnoreHandled: ignored });
+    }
+  };
 
   async function main() {
     alphaTempDir = !alphaHost ? await ensureTempDir(alphaRoot) : undefined;
@@ -1367,9 +1412,7 @@ export async function runMerge({
           tempDir: alphaTempArg,
         },
       );
-      if (delInAlpha.length && markBetaToAlpha) {
-        await markBetaToAlpha(delInAlpha);
-      }
+      await noteAlphaChange(delInAlpha);
       await rsyncDeleteChunked(
         tmp,
         alpha,
@@ -1382,9 +1425,7 @@ export async function runMerge({
           tempDir: betaTempArg,
         },
       );
-      if (delInBeta.length && markAlphaToBeta) {
-        await markAlphaToBeta(delInBeta);
-      }
+      await noteBetaChange(delInBeta);
       done();
 
       // 1b) dir→file cleanup
@@ -1402,9 +1443,7 @@ export async function runMerge({
             tempDir: alphaTempArg,
           },
         );
-        if (markBetaToAlpha) {
-          await markBetaToAlpha(preDeleteDirsOnAlphaForBetaFiles);
-        }
+        await noteAlphaChange(preDeleteDirsOnAlphaForBetaFiles);
       }
       if (prefer === "alpha" && preDeleteDirsOnBetaForAlphaFiles.length) {
         await rsyncDeleteChunked(
@@ -1419,9 +1458,7 @@ export async function runMerge({
             tempDir: betaTempArg,
           },
         );
-        if (markAlphaToBeta) {
-          await markAlphaToBeta(preDeleteDirsOnBetaForAlphaFiles);
-        }
+        await noteBetaChange(preDeleteDirsOnBetaForAlphaFiles);
       }
       done();
 
@@ -1451,11 +1488,11 @@ export async function runMerge({
           },
         )
       ).ok;
-      if (copyDirsAlphaBetaOk && toBetaDirs.length && markAlphaToBeta) {
-        await markAlphaToBeta(toBetaDirs);
+      if (copyDirsAlphaBetaOk && toBetaDirs.length) {
+        await noteBetaChange(toBetaDirs);
       }
-      if (copyDirsBetaAlphaOk && toAlphaDirs.length && markBetaToAlpha) {
-        await markBetaToAlpha(toAlphaDirs);
+      if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
+        await noteAlphaChange(toAlphaDirs);
       }
       done();
 
@@ -1468,11 +1505,11 @@ export async function runMerge({
           await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
           copyAlphaBetaOk = toBeta.length === 0 || true;
           copyBetaAlphaOk = toAlpha.length === 0 || true;
-          if (toBetaRelative.length && markAlphaToBeta) {
-            await markAlphaToBeta(toBetaRelative);
+          if (toBetaRelative.length) {
+            await noteBetaChange(toBetaRelative);
           }
-          if (toAlphaRelative.length && markBetaToAlpha) {
-            await markBetaToAlpha(toAlphaRelative);
+          if (toAlphaRelative.length) {
+            await noteAlphaChange(toAlphaRelative);
           }
           done();
         } catch (e) {
@@ -1521,11 +1558,11 @@ export async function runMerge({
               },
             )
           ).ok;
-          if (copyAlphaBetaOk && toBetaRelative.length && markAlphaToBeta) {
-            await markAlphaToBeta(toBetaRelative);
+          if (copyAlphaBetaOk && toBetaRelative.length) {
+            await noteBetaChange(toBetaRelative);
           }
-          if (copyBetaAlphaOk && toAlphaRelative.length && markBetaToAlpha) {
-            await markBetaToAlpha(toAlphaRelative);
+          if (copyBetaAlphaOk && toAlphaRelative.length) {
+            await noteAlphaChange(toAlphaRelative);
           }
         }
       } else {
@@ -1567,11 +1604,11 @@ export async function runMerge({
             },
           )
         ).ok;
-        if (copyAlphaBetaOk && toBetaRelative.length && markAlphaToBeta) {
-          await markAlphaToBeta(toBetaRelative);
+        if (copyAlphaBetaOk && toBetaRelative.length) {
+          await noteBetaChange(toBetaRelative);
         }
-        if (copyBetaAlphaOk && toAlphaRelative.length && markBetaToAlpha) {
-          await markBetaToAlpha(toAlphaRelative);
+        if (copyBetaAlphaOk && toAlphaRelative.length) {
+          await noteAlphaChange(toAlphaRelative);
         }
         done();
       }
@@ -1615,11 +1652,7 @@ export async function runMerge({
           tempDir: betaTempArg,
         },
       );
-      if (delDirsInBeta.length) {
-        if (markAlphaToBeta) {
-          await markAlphaToBeta(delDirsInBeta);
-        }
-      }
+      await noteBetaChange(delDirsInBeta);
       await rsyncDeleteChunked(
         tmp,
         beta,
@@ -1632,9 +1665,7 @@ export async function runMerge({
           tempDir: alphaTempArg,
         },
       );
-      if (delDirsInAlpha.length) {
-        markBetaToAlpha?.(delDirsInAlpha);
-      }
+      await noteAlphaChange(delDirsInAlpha);
       done();
 
       logger.info("rsync complete, updating base database");
