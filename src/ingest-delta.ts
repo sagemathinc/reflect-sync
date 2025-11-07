@@ -84,25 +84,32 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
   logger.info("ingest start", { db: dbPath });
 
   // Files: upsert minimal metadata; only overwrite hash/hashed_ctime when provided
+  const FILE_TAKE_NEWER = `(excluded.op_ts > files.op_ts)
+    OR (
+      excluded.op_ts = files.op_ts AND
+      COALESCE(excluded.hashed_ctime, -9223372036854775808) >=
+      COALESCE(files.hashed_ctime, -9223372036854775808)
+    )`;
+
   const upsertFile = db.prepare(`
 INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
 VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, @deleted, @now, @hashed_ctime)
 ON CONFLICT(path) DO UPDATE SET
   -- apply only if the incoming event is as new or newer:
-  size         = CASE WHEN excluded.op_ts >= files.op_ts
+  size         = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.size, files.size) ELSE files.size END,
-  ctime        = CASE WHEN excluded.op_ts >= files.op_ts
+  ctime        = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.ctime, files.ctime) ELSE files.ctime END,
-  mtime        = CASE WHEN excluded.op_ts >= files.op_ts
+  mtime        = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.mtime, files.mtime) ELSE files.mtime END,
-  op_ts        = CASE WHEN excluded.op_ts >= files.op_ts
+  op_ts        = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN excluded.op_ts ELSE files.op_ts END,
-  hash         = CASE WHEN excluded.op_ts >= files.op_ts
+  hash         = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.hash, files.hash) ELSE files.hash END,
-  hashed_ctime = CASE WHEN excluded.op_ts >= files.op_ts
+  hashed_ctime = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.hashed_ctime, files.hashed_ctime)
                       ELSE files.hashed_ctime END,
-  deleted      = CASE WHEN excluded.op_ts >= files.op_ts
+  deleted      = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN excluded.deleted ELSE files.deleted END,
   -- always keep the freshest sighting time:
   last_seen    = CASE WHEN excluded.last_seen > files.last_seen
