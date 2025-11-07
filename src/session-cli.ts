@@ -678,7 +678,7 @@ export function registerSessionCommands(program: Command) {
         }
         const id = row.id;
         const minLevel = parseLogLevelOption(opts.level);
-        const tail = clampPositive(opts.tail, 200);
+        const tail = clampPositive(opts.tail, 10000);
         const sinceTs =
           opts.since != null && Number.isFinite(Number(opts.since))
             ? Number(opts.since)
