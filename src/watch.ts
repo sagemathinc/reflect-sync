@@ -24,6 +24,7 @@ import {
 } from "./ignore.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
+import { waitForStableFile } from "./stability.js";
 import {
   type SendSignature,
   signatureEquals,
@@ -39,6 +40,23 @@ const IGNORE_TTL_MS = Number(
   process.env.REFLECT_REMOTE_IGNORE_TTL_MS ?? 60_000,
 );
 const LOCK_TTL_MS = Number(process.env.REFLECT_WATCH_LOCK_TTL_MS ?? 120_000);
+const REMOTE_STABILITY_MS = Number(
+  process.env.REFLECT_REMOTE_STABILITY_MS ?? 250,
+);
+const REMOTE_STABILITY_POLL_MS = Number(
+  process.env.REFLECT_REMOTE_STABILITY_POLL_MS ?? 50,
+);
+const REMOTE_STABILITY_OPTIONS = {
+  windowMs: REMOTE_STABILITY_MS,
+  pollMs: REMOTE_STABILITY_POLL_MS,
+  maxWaitMs: Math.max(
+    Number.isFinite(REMOTE_STABILITY_MS) ? REMOTE_STABILITY_MS * 4 : 1000,
+    1000,
+  ),
+};
+const REMOTE_STABILITY_ENABLED =
+  REMOTE_STABILITY_OPTIONS.windowMs > 0 &&
+  Number.isFinite(REMOTE_STABILITY_OPTIONS.windowMs);
 
 // ---------- types ----------
 type WatchOpts = {
@@ -253,6 +271,13 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     string,
     { signature: SendSignature; expiresAt: number }
   >();
+  type StabilityEntry = {
+    ev: HotWatchEvent;
+    abs: string;
+    stats?: Stats;
+    timeout?: NodeJS.Timeout;
+  };
+  const pendingStability = new Map<string, StabilityEntry>();
   const pruneIgnores = () => {
     const now = Date.now();
     for (const [rel, entry] of pendingIgnores) {
@@ -260,6 +285,14 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         pendingIgnores.delete(rel);
       }
     }
+  };
+  const clearStabilityTimers = () => {
+    for (const entry of pendingStability.values()) {
+      if (entry.timeout) {
+        clearTimeout(entry.timeout);
+      }
+    }
+    pendingStability.clear();
   };
   type ForcedEntry = {
     state: "locked" | "released";
@@ -301,10 +334,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         return;
       }
       const rel = relR(rootAbs, abs);
-      if (await shouldSuppress(rel, abs)) {
-        return;
-      }
-      emitEvent(abs, ev, rootAbs);
+      scheduleStableEmit(rel, abs, ev);
     },
     {
       hotDepth,
@@ -418,6 +448,9 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     }> = [];
     for (const rel of unique) {
       try {
+        if (REMOTE_STABILITY_ENABLED) {
+          await ensureStable(path.join(rootAbs, rel));
+        }
         const { signature, target } = await computeSignature(rel);
         entries.push({ path: rel, signature, target });
         if (ignore) {
@@ -453,6 +486,17 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     return (st as any).ctimeMs ?? (st.ctime ? st.ctime.getTime() : null);
   };
 
+  async function ensureStable(abs: string): Promise<boolean> {
+    if (!REMOTE_STABILITY_ENABLED) return true;
+    try {
+      const res = await waitForStableFile(abs, REMOTE_STABILITY_OPTIONS);
+      return res.stable;
+    } catch (err) {
+      console.warn(`watch: stability check failed for '${abs}':`, err);
+      return false;
+    }
+  }
+
   async function currentCtimeMs(abs?: string): Promise<number | null> {
     if (!abs) return null;
     try {
@@ -461,6 +505,42 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     } catch {
       return null;
     }
+  }
+
+  async function emitWithEscalation(
+    rel: string,
+    abs: string,
+    ev: HotWatchEvent,
+    stats?: Stats,
+  ) {
+    emitEvent(abs, ev, rootAbs);
+    if (!(await isRecent(abs, stats))) {
+      return;
+    }
+    const rdir = parentDir(rel);
+    if (rdir && rdir !== ".") {
+      try {
+        await addHotAnchor(rdir);
+      } catch (e: any) {
+        console.error(
+          `watch: hot add failed for '${rdir}': ${String(
+            e?.message || e,
+          )}`,
+        );
+      }
+    }
+  }
+
+  async function emitImmediate(
+    rel: string,
+    abs: string,
+    ev: HotWatchEvent,
+    stats?: Stats,
+  ) {
+    if (await shouldSuppress(rel, abs, stats)) {
+      return;
+    }
+    await emitWithEscalation(rel, abs, ev, stats);
   }
 
   async function shouldSuppress(
@@ -514,6 +594,41 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   }
 
   const dedupe = <T>(items: T[]) => Array.from(new Set(items));
+
+  function scheduleStableEmit(
+    rel: string,
+    abs: string,
+    ev: HotWatchEvent,
+    stats?: Stats,
+  ) {
+    if (!rel) {
+      emitImmediate(rel, abs, ev, stats);
+      return;
+    }
+    if (
+      !REMOTE_STABILITY_ENABLED ||
+      ev === "addDir" ||
+      ev === "unlinkDir"
+    ) {
+      emitImmediate(rel, abs, ev, stats);
+      return;
+    }
+    const key = rel;
+    const existing = pendingStability.get(key);
+    if (existing?.timeout) {
+      clearTimeout(existing.timeout);
+    }
+    const timeout = setTimeout(async () => {
+      pendingStability.delete(key);
+      const stable = await ensureStable(abs);
+      if (!stable) {
+        scheduleStableEmit(rel, abs, ev, stats);
+        return;
+      }
+      await emitImmediate(rel, abs, ev, stats);
+    }, REMOTE_STABILITY_OPTIONS.windowMs);
+    pendingStability.set(key, { ev, abs, stats, timeout });
+  }
 
   async function handleLockControl(
     _requestId: number,
@@ -576,26 +691,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       }
       // Send the event immediately (so microSync can act quickly)
       const r = relR(rootAbs, abs);
-      if (await shouldSuppress(r, abs, stats)) {
-        return;
-      }
-      emitEvent(abs, evt, rootAbs);
-
-      if (!(await isRecent(abs, stats))) {
-        return;
-      }
-
-      // Escalate: add a bounded hot watcher anchored at the parent dir
-      const rdir = parentDir(r);
-      if (rdir && rdir !== ".") {
-        try {
-          await addHotAnchor(rdir);
-        } catch (e) {
-          console.error(
-            `watch: hot add failed for '${rdir}': ${String((e as any)?.message || e)}`,
-          );
-        }
-      }
+      scheduleStableEmit(r, abs, evt, stats);
     };
 
     for (const evt of HOT_EVENTS) {
@@ -620,6 +716,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       try {
         await hotMgr.closeAll();
       } catch {}
+      clearStabilityTimers();
       process.exit(0);
     },
   });
@@ -632,6 +729,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     try {
       await hotMgr.closeAll();
     } catch {}
+    clearStabilityTimers();
     process.exit(0);
   };
   process.on("SIGINT", exit);
