@@ -3,7 +3,7 @@
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
-import { readlink, stat as statAsync } from "node:fs/promises";
+import { readlink, stat as statAsync, lstat as lstatAsync } from "node:fs/promises";
 import { getDb } from "./db.js";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -151,6 +151,27 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     last_seen: number;
     hashed_ctime: number | null;
   };
+
+  type HashMeta = {
+    modeHash?: string;
+    uid?: number;
+    gid?: number;
+  };
+
+  function parseHashMeta(hashValue: string | null | undefined): HashMeta {
+    if (!hashValue) return {};
+    const parts = hashValue.split("|");
+    if (parts.length < 2) return {};
+    const meta: HashMeta = { modeHash: parts[1] || undefined };
+    if (parts.length >= 3) {
+      const [uidStr, gidStr] = parts[2]?.split(":") ?? [];
+      const uid = Number(uidStr);
+      const gid = Number(gidStr);
+      if (Number.isFinite(uid)) meta.uid = uid;
+      if (Number.isFinite(gid)) meta.gid = gid;
+    }
+    return meta;
+  }
 
   const HASH_ALG = normalizeHashAlg(hash);
   logger.info(`scan: using hash=${HASH_ALG}`);
@@ -329,10 +350,7 @@ ON CONFLICT(path) DO UPDATE SET
     }
     const percent =
       hashTotalBytes > 0
-        ? Math.min(
-            100,
-            Math.round((hashCompletedBytes / hashTotalBytes) * 100),
-          )
+        ? Math.min(100, Math.round((hashCompletedBytes / hashTotalBytes) * 100))
         : Math.min(
             100,
             Math.round((hashCompletedFiles / hashTotalFiles) * 100),
@@ -609,7 +627,7 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
-      `SELECT size, ctime, mtime, hashed_ctime FROM files WHERE path = ?`,
+      `SELECT size, ctime, mtime, hashed_ctime, hash FROM files WHERE path = ?`,
     );
 
     // Existing-dir lookup by rpath (to decide whether to emit NDJSON)
@@ -629,7 +647,10 @@ ON CONFLICT(path) DO UPDATE SET
     }>) {
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
-      const st = entry.stats!;
+      const st =
+        !numericIds && entry.stats
+          ? entry.stats
+          : await lstatAsync(abs);
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
       }
@@ -682,6 +703,7 @@ ON CONFLICT(path) DO UPDATE SET
       } else if (entry.dirent.isFile()) {
         const size = st.size;
         const op_ts = mtime;
+        const modeHex = modeHash(st.mode);
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -701,8 +723,29 @@ ON CONFLICT(path) DO UPDATE SET
         }
 
         // Decide if we need to hash: only when ctime changed (or brand new)
-        const row = getExisting.get(rpath);
-        const needsHash = !row || row.hashed_ctime !== ctime;
+        const row = getExisting.get(rpath) as
+          | {
+              hashed_ctime: number | null;
+              hash: string | null;
+              ctime: number | null;
+              mtime: number | null;
+              size: number | null;
+            }
+          | undefined;
+        let needsHash = !row || row.hashed_ctime !== ctime;
+        if (!needsHash && row?.hash) {
+          const meta = parseHashMeta(row.hash);
+          if (meta.modeHash && meta.modeHash !== modeHex) {
+            needsHash = true;
+          } else if (
+            numericIds &&
+            meta.uid !== undefined &&
+            meta.gid !== undefined &&
+            (meta.uid !== st.uid || meta.gid !== st.gid)
+          ) {
+            needsHash = true;
+          }
+        }
 
         if (needsHash) {
           pendingMeta.set(abs, { size, ctime, mtime });
