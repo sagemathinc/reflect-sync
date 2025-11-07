@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // - Commander-based CLI
 // - Exported runScheduler(opts) API for programmatic use
-// - Optional SSH micro-sync: remote watch -> tee to ingest + realtime push
+// - Optional SSH micro-sync: remote watch -> demux remote stdout into ingest +
+//   realtime events
 //
 // Notes:
 // * Local watchers only; remote changes arrive via remote watch stream.
@@ -760,7 +761,7 @@ export async function runScheduler({
   }
 
   // Remote delta stream (watch)
-  // tee stdout to: (a) local ingest, and (b) our line-reader for microSync cues.
+  // Demultiplex stdout lines: NDJSON deltas feed ingest, others drive control events.
   type StreamControl = {
     add: (dirs: string[]) => void;
     stat: (
@@ -822,40 +823,13 @@ export async function runScheduler({
       return null;
     }
 
-    const tee = new PassThrough();
     const ingestStream = new PassThrough();
-    const watchStream = new PassThrough();
-
-    // ensure errors on the source propagate
-    stdout.on("error", (err) => {
-      remoteLog.error("ssh stdout error", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      tee.destroy(err as Error);
-    });
-
-    tee.on("error", (err) => {
-      ingestStream.destroy(err as Error);
-      watchStream.destroy(err as Error);
-    });
 
     ingestStream.on("error", (err) => {
       remoteLog.error("ingest stream error", {
         error: err instanceof Error ? err.message : String(err),
       });
-      watchStream.destroy(err as Error);
     });
-
-    watchStream.on("error", (err) => {
-      remoteLog.error("watch stream error", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      ingestStream.destroy(err as Error);
-    });
-
-    stdout.pipe(tee);
-    tee.pipe(ingestStream);
-    tee.pipe(watchStream);
 
     const ingestAbort = new AbortController();
     runIngestDelta({
@@ -873,7 +847,7 @@ export async function runScheduler({
       });
     });
 
-    const rl = readline.createInterface({ input: watchStream });
+    const rl = readline.createInterface({ input: stdout });
 
     interface PendingStat {
       resolve: (entries: SignatureEntry[]) => void;
@@ -918,12 +892,21 @@ export async function runScheduler({
       statsInFlight = 0;
     };
 
+    const forwardToIngest = (line: string) => {
+      if (ingestStream.destroyed || ingestStream.writableEnded) return;
+      ingestStream.write(`${line}\n`);
+    };
+
     rl.on("line", (line) => {
       if (!line) return;
+      const raw = line;
+      const trimmed = raw.trim();
+      if (!trimmed) return;
       let evt: any;
       try {
-        evt = JSON.parse(line);
+        evt = JSON.parse(trimmed);
       } catch {
+        forwardToIngest(raw);
         return;
       }
       if (evt?.op === "stat") {
@@ -962,11 +945,20 @@ export async function runScheduler({
         flushBuffered();
         return;
       }
-      if (statsInFlight > 0) {
-        bufferedEvents.push(evt);
+      if (evt?.ev && evt?.path) {
+        if (statsInFlight > 0) {
+          bufferedEvents.push(evt);
+          return;
+        }
+        processEvent(evt);
         return;
       }
-      processEvent(evt);
+      if (typeof evt?.kind === "string") {
+        forwardToIngest(raw);
+        return;
+      }
+      // Unknown message: forward to ingest so it can decide (or ignore downstream).
+      forwardToIngest(raw);
     });
 
     const requestStat = (
@@ -999,7 +991,10 @@ export async function runScheduler({
       });
     };
 
+    let killed = false;
     const kill = () => {
+      if (killed) return;
+      killed = true;
       ingestAbort.abort();
       try {
         rl.close();
@@ -1014,19 +1009,27 @@ export async function runScheduler({
         } catch {}
       }, 300);
       try {
-        ingestStream.destroy();
-      } catch {}
-      try {
-        watchStream.destroy();
-      } catch {}
-      try {
-        tee.destroy();
+        ingestStream.end();
       } catch {}
       try {
         stdout.destroy();
       } catch {}
       failPending(new Error("remote watch closed"));
     };
+
+    stdout?.once("close", () => {
+      try {
+        ingestStream.end();
+      } catch {}
+    });
+
+    stdout?.on("error", (err) => {
+      remoteLog.error("watch stdout error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      ingestStream.destroy(err as Error);
+      failPending(err as Error);
+    });
 
     sshP.on("exit", (code) => {
       kill();
