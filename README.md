@@ -36,6 +36,17 @@ Some differences compared to Mutagen, and todos:
 
 See [Design Details](./DESIGN.md).
 
+### Consistency guarantees & tradeoffs
+
+Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re-sampling the destination signature (hash + metadata). This gives a practical guarantee: **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** In other words, corruption can only occur if both sides are actively editing the same path (a true conflict).
+
+Tradeoffs:
+
+- We still rely on rsync’s “copy to temp, rename into place” model. If a file mutates mid-transfer, rsync exits with code 23, we keep the lock, and the scheduler retries once the file settles.
+- When we copy from beta→alpha (or vice versa) we immediately record the hash we actually transferred (`recent_send` table). If the file changes again after the lock is released, the next rsync will pick up the new hash before recording it. This prevents stale hashes from bouncing back during the merge pass.
+- We do **not** try to solve the general case of simultaneous edits on both sides; those devolve to last-write-wins with `--prefer` as the tie breaker. The guarantee above simply ensures that editing only one side cannot regress the other.
+
+
 ---
 
 ## Install
