@@ -7,6 +7,7 @@ import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import readline from "node:readline";
 import { lstat, readlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import {
   HotWatchManager,
   HOT_EVENTS,
@@ -28,6 +29,10 @@ import {
   signatureEquals,
 } from "./recent-send.js";
 import { modeHash, stringDigest, defaultHashAlg } from "./hash.js";
+import {
+  DeviceBoundary,
+  type DeviceCheckOptions,
+} from "./device-boundary.js";
 
 const HASH_ALG = defaultHashAlg();
 const IGNORE_TTL_MS = Number(
@@ -69,7 +74,7 @@ function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
 
 // ---------- JSON control channel on STDIN ----------
 function serveJsonControl(
-  mgr: HotWatchManager,
+  addHotDir: (dir: string) => Promise<void>,
   handleStat: (
     requestId: number,
     paths: string[],
@@ -99,7 +104,7 @@ function serveJsonControl(
         for (const r of dirs) {
           const clean = String(r || "").replace(/^\.\/+/, "");
           if (isPlainRel(clean) && clean !== ".") {
-            await mgr.add(clean);
+            await addHotDir(clean);
           }
         }
       } else if (op === "stat") {
@@ -138,6 +143,26 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   } = opts;
   const rootAbs = path.resolve(root);
   await ensureTempDir(rootAbs);
+  const deviceBoundary = await DeviceBoundary.create(rootAbs);
+  const loggedCrossDevice = new Set<string>();
+
+  const logCrossDevice = (abs: string) => {
+    const rel = relR(rootAbs, abs) || ".";
+    if (loggedCrossDevice.has(rel)) return;
+    loggedCrossDevice.add(rel);
+    console.warn(
+      `watch: ignoring cross-device path '${rel}' under root '${rootAbs}'`,
+    );
+  };
+
+  const allowPath = async (
+    abs: string,
+    opts: DeviceCheckOptions & { isDir: boolean },
+  ): Promise<boolean> => {
+    const ok = await deviceBoundary.isOnRootDevice(abs, opts);
+    if (!ok) logCrossDevice(abs);
+    return ok;
+  };
   const ignoreRaw = Array.isArray(rawIgnoreRules) ? [...rawIgnoreRules] : [];
   ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
@@ -174,6 +199,10 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   const hotMgr = new HotWatchManager(
     rootAbs,
     async (abs, ev: HotWatchEvent) => {
+      const isDirEvent = ev === "addDir" || ev === "unlinkDir";
+      if (!(await allowPath(abs, { isDir: isDirEvent }))) {
+        return;
+      }
       const rel = relR(rootAbs, abs);
       if (await shouldSuppress(rel)) {
         return;
@@ -188,12 +217,30 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     },
   );
 
+  async function addHotAnchor(rdir: string): Promise<void> {
+    if (!rdir || rdir === ".") return;
+    const absAnchor = path.join(rootAbs, rdir);
+    if (!(await allowPath(absAnchor, { isDir: true }))) {
+      return;
+    }
+    await hotMgr.add(rdir);
+  }
+
   async function computeSignature(
     rel: string,
   ): Promise<{ signature: SendSignature; target?: string | null }> {
     const abs = path.join(rootAbs, rel);
     try {
       const st = await lstat(abs);
+      const isDir = st.isDirectory();
+      if (!(await allowPath(abs, { isDir, stats: st }))) {
+        return {
+          signature: {
+            kind: "missing",
+            opTs: Date.now(),
+          },
+        };
+      }
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
       if (st.isSymbolicLink()) {
         const target = await readlink(abs);
@@ -330,7 +377,11 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   });
 
   function wireShallow() {
-    const handle = async (evt: HotWatchEvent, abs: string, stats?) => {
+    const handle = async (evt: HotWatchEvent, abs: string, stats?: Stats) => {
+      const isDirEvent = evt === "addDir" || evt === "unlinkDir";
+      if (!(await allowPath(abs, { isDir: isDirEvent, stats }))) {
+        return;
+      }
       // Send the event immediately (so microSync can act quickly)
       const r = relR(rootAbs, abs);
       if (await shouldSuppress(r)) {
@@ -346,7 +397,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       const rdir = parentDir(r);
       if (rdir && rdir !== ".") {
         try {
-          await hotMgr.add(rdir);
+          await addHotAnchor(rdir);
         } catch (e) {
           console.error(
             `watch: hot add failed for '${rdir}': ${String((e as any)?.message || e)}`,
@@ -364,7 +415,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   wireShallow();
 
   // Control channel
-  serveJsonControl(hotMgr, handleStatRequest, async () => {
+  serveJsonControl(addHotAnchor, handleStatRequest, async () => {
     try {
       await shallow.close();
     } catch {}

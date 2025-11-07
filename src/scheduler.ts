@@ -8,7 +8,7 @@
 // * Full-cycle still uses "reflect merge" (see merge.ts).
 
 import { spawn, ChildProcess } from "node:child_process";
-import chokidar from "chokidar";
+import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import { stat } from "node:fs/promises";
 import { Command, Option } from "commander";
@@ -63,6 +63,7 @@ import {
   collectIgnoreOption,
 } from "./ignore.js";
 import { DiskFullError } from "./rsync.js";
+import { DeviceBoundary } from "./device-boundary.js";
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -430,6 +431,15 @@ export async function runScheduler({
     remoteLogConfig,
     betaPort,
   );
+
+  const alphaDeviceBoundary =
+    !alphaIsRemote && !disableHotWatch
+      ? await DeviceBoundary.create(alphaRoot)
+      : null;
+  const betaDeviceBoundary =
+    !betaIsRemote && !disableHotWatch
+      ? await DeviceBoundary.create(betaRoot)
+      : null;
   const numericIds =
     (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
     (await isRoot(betaHost, remoteLogConfig, betaPort));
@@ -578,6 +588,22 @@ export async function runScheduler({
     if (r === "" || r === ".") return "";
     if (path.sep !== "/") r = r.split(path.sep).join("/");
     return r;
+  }
+
+  const crossDeviceLogged = {
+    alpha: new Set<string>(),
+    beta: new Set<string>(),
+  };
+
+  function noteCrossDevice(side: "alpha" | "beta", abs: string): void {
+    const root = side === "alpha" ? alphaRoot : betaRoot;
+    const relPath = rel(root, abs) || ".";
+    const seen = crossDeviceLogged[side];
+    if (seen.has(relPath)) return;
+    seen.add(relPath);
+    log("info", "watch", `${side} watcher ignoring cross-device path`, {
+      path: relPath,
+    });
   }
 
   // Pipe: ssh scan --emit-delta  →  CLI_NAME ingest --db <local.db>
@@ -1139,7 +1165,16 @@ export async function runScheduler({
   }
 
   // ---------- root watchers (locals only) ----------
-  function onAlphaHot(abs: string, evt: string) {
+  async function onAlphaHot(abs: string, evt: string) {
+    if (
+      alphaDeviceBoundary &&
+      !(await alphaDeviceBoundary.isOnRootDevice(abs, {
+        isDir: evt === "addDir" || evt === "unlinkDir",
+      }))
+    ) {
+      noteCrossDevice("alpha", abs);
+      return;
+    }
     const r = rel(alphaRoot, abs);
     if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
       hotAlpha.add(r);
@@ -1147,7 +1182,16 @@ export async function runScheduler({
       scheduleHotFlush();
     }
   }
-  function onBetaHot(abs: string, evt: string) {
+  async function onBetaHot(abs: string, evt: string) {
+    if (
+      betaDeviceBoundary &&
+      !(await betaDeviceBoundary.isOnRootDevice(abs, {
+        isDir: evt === "addDir" || evt === "unlinkDir",
+      }))
+    ) {
+      noteCrossDevice("beta", abs);
+      return;
+    }
     const r = rel(betaRoot, abs);
     if (r && (evt === "change" || evt === "add" || evt === "unlink")) {
       hotBeta.add(r);
@@ -1203,10 +1247,34 @@ export async function runScheduler({
           alwaysStat: false,
         });
 
-  function enableWatch({ watcher, root, mgr, hot }) {
+  function enableWatch({
+    watcher,
+    root,
+    mgr,
+    hot,
+    boundary,
+    side,
+  }: {
+    watcher: FSWatcher;
+    root: string;
+    mgr: HotWatchManager;
+    hot: Set<string>;
+    boundary?: DeviceBoundary | null;
+    side: "alpha" | "beta";
+  }) {
     handleWatchErrors(watcher);
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
       watcher.on(evt as any, async (p: string, stats) => {
+        if (
+          boundary &&
+          !(await boundary.isOnRootDevice(p, {
+            isDir: (evt as string)?.endsWith("Dir"),
+            stats,
+          }))
+        ) {
+          noteCrossDevice(side, p);
+          return;
+        }
         const r = rel(root, p);
         if (mgr.isIgnored(r, (evt as string)?.endsWith("Dir"))) return;
         if (await isRecent(p, stats)) {
@@ -1229,6 +1297,8 @@ export async function runScheduler({
       root: alphaRoot,
       mgr: hotAlphaMgr,
       hot: hotAlpha,
+      boundary: alphaDeviceBoundary,
+      side: "alpha",
     });
   }
   if (shallowBeta && hotBetaMgr) {
@@ -1237,6 +1307,8 @@ export async function runScheduler({
       root: betaRoot,
       mgr: hotBetaMgr,
       hot: hotBeta,
+      boundary: betaDeviceBoundary,
+      side: "beta",
     });
   }
 
