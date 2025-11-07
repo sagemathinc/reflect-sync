@@ -98,15 +98,15 @@ ON CONFLICT(path) DO UPDATE SET
   -- apply only if the incoming event is as new or newer:
   size         = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN COALESCE(excluded.size, files.size) ELSE files.size END,
-  ctime        = CASE WHEN ${FILE_TAKE_NEWER}
+  ctime        = CASE WHEN ${FILE_TAKE_NEWER} OR files.ctime IS NULL
                       THEN COALESCE(excluded.ctime, files.ctime) ELSE files.ctime END,
-  mtime        = CASE WHEN ${FILE_TAKE_NEWER}
+  mtime        = CASE WHEN ${FILE_TAKE_NEWER} OR files.mtime IS NULL
                       THEN COALESCE(excluded.mtime, files.mtime) ELSE files.mtime END,
   op_ts        = CASE WHEN ${FILE_TAKE_NEWER}
                       THEN excluded.op_ts ELSE files.op_ts END,
-  hash         = CASE WHEN ${FILE_TAKE_NEWER}
+  hash         = CASE WHEN ${FILE_TAKE_NEWER} OR files.hash IS NULL
                       THEN COALESCE(excluded.hash, files.hash) ELSE files.hash END,
-  hashed_ctime = CASE WHEN ${FILE_TAKE_NEWER}
+  hashed_ctime = CASE WHEN ${FILE_TAKE_NEWER} OR files.hash IS NULL
                       THEN COALESCE(excluded.hashed_ctime, files.hashed_ctime)
                       ELSE files.hashed_ctime END,
   deleted      = CASE WHEN ${FILE_TAKE_NEWER}
