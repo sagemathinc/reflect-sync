@@ -38,6 +38,7 @@ import {
   LOG_LEVELS,
   parseLogLevel,
 } from "./logger.js";
+import type { SignatureEntry } from "./signature-store.js";
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -132,11 +133,11 @@ type MergeRsyncOptions = {
   fetchRemoteAlphaSignatures?: (
     paths: string[],
     opts: { ignore: boolean },
-  ) => Promise<void> | void;
+  ) => Promise<SignatureEntry[]> | Promise<void> | void;
   fetchRemoteBetaSignatures?: (
     paths: string[],
     opts: { ignore: boolean },
-  ) => Promise<void> | void;
+  ) => Promise<SignatureEntry[]> | Promise<void> | void;
 };
 
 // ---------- helpers ----------

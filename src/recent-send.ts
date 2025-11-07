@@ -8,6 +8,7 @@ export type SendSignature = {
   opTs: number | null;
   size?: number | null;
   mtime?: number | null;
+  ctime?: number | null;
   hash?: string | null;
   mode?: number | null;
   uid?: number | null;
@@ -33,6 +34,7 @@ function compactSignature(sig: SendSignature | null): SendSignature | null {
   };
   if (sig.size != null) normalized.size = sig.size;
   if (sig.mtime != null) normalized.mtime = sig.mtime;
+  if (sig.ctime != null) normalized.ctime = sig.ctime;
   if (sig.hash != null) normalized.hash = sig.hash;
   return normalized;
 }
@@ -45,6 +47,7 @@ export function signatureFromStamp(stamp?: OpStamp): SendSignature | null {
     opTs: stamp.opTs ?? null,
     size: stamp.size ?? null,
     mtime: stamp.mtime ?? null,
+    ctime: stamp.ctime ?? null,
     hash: stamp.hash ?? null,
   });
 }
@@ -67,6 +70,7 @@ export function signatureEquals(
     same(a.opTs, b.opTs) &&
     same(a.size, b.size) &&
     same(a.mtime, b.mtime) &&
+    same(a.ctime, b.ctime) &&
     same(a.hash, b.hash)
   );
 }

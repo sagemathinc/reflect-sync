@@ -30,6 +30,17 @@ import {
   type SignatureEntry,
 } from "./signature-store.js";
 
+type ReleaseEntry = {
+  path: string;
+  watermark?: number | null;
+};
+
+type RemoteLockHandle = {
+  lock: (paths: string[]) => Promise<void>;
+  release: (entries: ReleaseEntry[]) => Promise<void>;
+  unlock: (paths: string[]) => Promise<void>;
+};
+
 export type MicroSyncDeps = {
   isMergeActive?: () => boolean;
   alphaRoot: string;
@@ -53,12 +64,14 @@ export type MicroSyncDeps = {
   fetchRemoteAlphaSignatures?: (
     paths: string[],
     opts: { ignore: boolean },
-  ) => Promise<void>;
+  ) => Promise<SignatureEntry[]>;
   fetchRemoteBetaSignatures?: (
     paths: string[],
     opts: { ignore: boolean },
-  ) => Promise<void>;
+  ) => Promise<SignatureEntry[]>;
   numericIds?: boolean;
+  alphaRemoteLock?: RemoteLockHandle;
+  betaRemoteLock?: RemoteLockHandle;
 };
 
 export type MarkDirectionOptions = {
@@ -97,6 +110,8 @@ export function makeMicroSync({
   fetchRemoteAlphaSignatures,
   fetchRemoteBetaSignatures,
   numericIds = false,
+  alphaRemoteLock,
+  betaRemoteLock,
 }: MicroSyncDeps) {
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
@@ -262,6 +277,70 @@ export function makeMicroSync({
       return "file";
     } catch {
       return "missing";
+    }
+  }
+
+  const categorizeForRelease = (
+    paths: string[],
+    sigMap: Map<string, SendSignature | null>,
+  ) => {
+    const copies: string[] = [];
+    const deletions: string[] = [];
+    for (const path of paths) {
+      const sig = sigMap.get(path);
+      if (sig && sig.kind === "missing") {
+        deletions.push(path);
+      } else {
+        copies.push(path);
+      }
+    }
+    return { copies, deletions };
+  };
+
+  const buildReleaseEntries = (
+    targets: string[],
+    signatures: SignatureEntry[],
+  ): ReleaseEntry[] => {
+    if (!targets.length || !signatures.length) return [];
+    const sigMap = new Map<string, SendSignature>();
+    for (const entry of signatures) {
+      sigMap.set(entry.path, entry.signature);
+    }
+    const releases: ReleaseEntry[] = [];
+    for (const path of targets) {
+      const sig = sigMap.get(path);
+      if (!sig || sig.kind === "missing") continue;
+      const watermark =
+        sig.ctime ?? sig.mtime ?? sig.opTs ?? Date.now();
+      releases.push({ path, watermark });
+    }
+    return releases;
+  };
+
+  async function finalizeRemoteLock(
+    handle: RemoteLockHandle,
+    lockedPaths: string[],
+    copyTargets: string[],
+    deleteTargets: string[],
+    signatures: SignatureEntry[],
+  ) {
+    if (!lockedPaths.length) return;
+    try {
+      const releaseEntries = buildReleaseEntries(copyTargets, signatures);
+      const released = new Set(releaseEntries.map((e) => e.path));
+      if (releaseEntries.length) {
+        await handle.release(releaseEntries);
+      }
+      const fallbackUnlock = [
+        ...deleteTargets,
+        ...copyTargets.filter((p) => !released.has(p)),
+      ];
+      if (fallbackUnlock.length) {
+        await handle.unlock(fallbackUnlock);
+      }
+    } catch (err) {
+      await handle.unlock(lockedPaths);
+      throw err;
     }
   }
 
@@ -572,151 +651,197 @@ export function makeMicroSync({
       if (toBeta.length) {
         const listAllA2B = path.join(tmp, "alpha2beta.all");
         await writeFile(listAllA2B, join0(toBeta));
-        if (alphaIsRemote || betaIsRemote) {
-          // Remote source or dest: single unified rsync that both copies and deletes.
-          log(
-            "info",
-            "realtime",
-            `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
-          );
-          await rsyncCopyOrDelete("alpha->beta", listAllA2B);
-        } else {
-          // Local → Local: classify so we can keep reflink for files and still
-          // handle deletions + dir/symlink create/remove.
-          const { files, others, missing } = await classifyLocal(
-            alphaRoot,
-            toBeta,
-          );
-
-          // Files: try reflink first (same device), else rsync copy for the file subset.
-          const listFiles = path.join(tmp, "alpha2beta.files");
-          await writeFile(listFiles, join0(files));
-          if (await fileNonEmpty(listFiles)) {
-            log("info", "realtime", `alpha→beta files ${files.length}`);
-            let ok = false;
-            if (!dryRun && (await sameDevice(alphaRoot, betaRoot))) {
-              try {
-                await cpReflinkFromList(alphaRoot, betaRoot, listFiles);
-                ok = true;
-              } catch (e: any) {
-                const meta = { err: String(e?.message || e) };
-                log(
-                  "warn",
-                  "realtime",
-                  "reflink alpha→beta failed; falling back to rsync",
-                  meta,
-                );
-                microLogger.warn(
-                  "reflink alpha→beta failed; falling back to rsync",
-                  meta,
-                );
-              }
-            }
-            if (!ok) {
-              await doRsync("alpha->beta", listFiles);
-            }
-          }
-
-          // Dirs & Symlinks: create/update without recursing trees.
-          const listOther = path.join(tmp, "alpha2beta.other");
-          await writeFile(listOther, join0(others));
-          if (await fileNonEmpty(listOther)) {
+        const betaReleasePlan = categorizeForRelease(
+          toBeta,
+          alphaSigMap,
+        );
+        const needBetaLock = betaIsRemote && !!betaRemoteLock;
+        const betaLockedPaths = needBetaLock ? [...toBeta] : [];
+        if (needBetaLock && betaLockedPaths.length) {
+          await betaRemoteLock!.lock(betaLockedPaths);
+        }
+        let betaPostSignatures: SignatureEntry[] = [];
+        try {
+          if (alphaIsRemote || betaIsRemote) {
             log(
               "info",
               "realtime",
-              `alpha→beta dirs/symlinks ${others.length} (no-recursive)`,
+              `alpha→beta ${toBeta.length} paths (unified copy/delete)`,
             );
-            await rsyncDirsAndLinks("alpha->beta", listOther);
+            await rsyncCopyOrDelete("alpha->beta", listAllA2B);
+          } else {
+            const { files, others, missing } = await classifyLocal(
+              alphaRoot,
+              toBeta,
+            );
+            const listFiles = path.join(tmp, "alpha2beta.files");
+            await writeFile(listFiles, join0(files));
+            if (await fileNonEmpty(listFiles)) {
+              log("info", "realtime", `alpha→beta files ${files.length}`);
+              let ok = false;
+              if (!dryRun && (await sameDevice(alphaRoot, betaRoot))) {
+                try {
+                  await cpReflinkFromList(alphaRoot, betaRoot, listFiles);
+                  ok = true;
+                } catch (e: any) {
+                  const meta = { err: String(e?.message || e) };
+                  log(
+                    "warn",
+                    "realtime",
+                    "reflink alpha→beta failed; falling back to rsync",
+                    meta,
+                  );
+                  microLogger.warn(
+                    "reflink alpha→beta failed; falling back to rsync",
+                    meta,
+                  );
+                }
+              }
+              if (!ok) {
+                await doRsync("alpha->beta", listFiles);
+              }
+            }
+            const listOther = path.join(tmp, "alpha2beta.other");
+            await writeFile(listOther, join0(others));
+            if (await fileNonEmpty(listOther)) {
+              log(
+                "info",
+                "realtime",
+                `alpha→beta dirs/symlinks ${others.length} (no-recursive)`,
+              );
+              await rsyncDirsAndLinks("alpha->beta", listOther);
+            }
+            const listMissing = path.join(tmp, "alpha2beta.missing");
+            await writeFile(listMissing, join0(missing));
+            if (await fileNonEmpty(listMissing)) {
+              log("info", "realtime", `alpha→beta deletes ${missing.length}`);
+              await rsyncCopyOrDelete("alpha->beta", listMissing);
+            }
           }
 
-          // Deletions: anything missing on the source should be removed on dest.
-          const listMissing = path.join(tmp, "alpha2beta.missing");
-          await writeFile(listMissing, join0(missing));
-          if (await fileNonEmpty(listMissing)) {
-            log("info", "realtime", `alpha→beta deletes ${missing.length}`);
-            await rsyncCopyOrDelete("alpha->beta", listMissing);
+          if (betaIsRemote && fetchRemoteBetaSignatures) {
+            betaPostSignatures = await fetchRemoteBetaSignatures(toBeta, {
+              ignore: false,
+            });
           }
+          if (needBetaLock && betaLockedPaths.length) {
+            await finalizeRemoteLock(
+              betaRemoteLock!,
+              betaLockedPaths,
+              betaReleasePlan.copies,
+              betaReleasePlan.deletions,
+              betaPostSignatures,
+            );
+          }
+          recordDirection("alpha->beta", toBeta);
+        } catch (err) {
+          if (needBetaLock && betaLockedPaths.length) {
+            try {
+              await betaRemoteLock!.unlock(betaLockedPaths);
+            } catch {}
+          }
+          throw err;
         }
-
-        if (betaIsRemote && fetchRemoteBetaSignatures) {
-          await fetchRemoteBetaSignatures(toBeta, { ignore: true });
-        }
-        recordDirection("alpha->beta", toBeta);
       }
 
       // ===== β → α =====
       if (toAlpha.length) {
         const listAllB2A = path.join(tmp, "beta2alpha.all");
         await writeFile(listAllB2A, join0(toAlpha));
-        if (alphaIsRemote || betaIsRemote) {
-          // Remote: single unified rsync that both copies and deletes.
-          log(
-            "info",
-            "realtime",
-            `beta→alpha ${toAlpha.length} paths (unified copy/delete)`,
-          );
-          await rsyncCopyOrDelete("beta->alpha", listAllB2A);
-        } else {
-          // Local → Local classification + fast path
-          const { files, others, missing } = await classifyLocal(
-            betaRoot,
-            toAlpha,
-          );
-
-          // Files: reflink fast-path if same device, else rsync copy
-          const listFiles = path.join(tmp, "beta2alpha.files");
-          await writeFile(listFiles, join0(files));
-          if (await fileNonEmpty(listFiles)) {
-            log("info", "realtime", `beta→alpha files ${files.length}`);
-            let ok = false;
-            if (!dryRun && (await sameDevice(alphaRoot, betaRoot))) {
-              try {
-                await cpReflinkFromList(betaRoot, alphaRoot, listFiles);
-                ok = true;
-              } catch (e: any) {
-                const meta = { err: String(e?.message || e) };
-                log(
-                  "warn",
-                  "realtime",
-                  "reflink beta→alpha failed; falling back to rsync",
-                  meta,
-                );
-                microLogger.warn(
-                  "reflink beta→alpha failed; falling back to rsync",
-                  meta,
-                );
-              }
-            }
-            if (!ok) {
-              await doRsync("beta->alpha", listFiles);
-            }
-          }
-
-          // Dirs & Symlinks: create/update without recursing trees
-          const listOther = path.join(tmp, "beta2alpha.other");
-          await writeFile(listOther, join0(others));
-          if (await fileNonEmpty(listOther)) {
+        const alphaReleasePlan = categorizeForRelease(
+          toAlpha,
+          betaSigMap,
+        );
+        const needAlphaLock = alphaIsRemote && !!alphaRemoteLock;
+        const alphaLockedPaths = needAlphaLock ? [...toAlpha] : [];
+        if (needAlphaLock && alphaLockedPaths.length) {
+          await alphaRemoteLock!.lock(alphaLockedPaths);
+        }
+        let alphaPostSignatures: SignatureEntry[] = [];
+        try {
+          if (alphaIsRemote || betaIsRemote) {
             log(
               "info",
               "realtime",
-              `beta→alpha dirs/symlinks ${others.length} (no-recursive)`,
+              `beta→alpha ${toAlpha.length} paths (unified copy/delete)`,
             );
-            await rsyncDirsAndLinks("beta->alpha", listOther);
+            await rsyncCopyOrDelete("beta->alpha", listAllB2A);
+          } else {
+            const { files, others, missing } = await classifyLocal(
+              betaRoot,
+              toAlpha,
+            );
+            const listFiles = path.join(tmp, "beta2alpha.files");
+            await writeFile(listFiles, join0(files));
+            if (await fileNonEmpty(listFiles)) {
+              log("info", "realtime", `beta→alpha files ${files.length}`);
+              let ok = false;
+              if (!dryRun && (await sameDevice(alphaRoot, betaRoot))) {
+                try {
+                  await cpReflinkFromList(betaRoot, alphaRoot, listFiles);
+                  ok = true;
+                } catch (e: any) {
+                  const meta = { err: String(e?.message || e) };
+                  log(
+                    "warn",
+                    "realtime",
+                    "reflink beta→alpha failed; falling back to rsync",
+                    meta,
+                  );
+                  microLogger.warn(
+                    "reflink beta→alpha failed; falling back to rsync",
+                    meta,
+                  );
+                }
+              }
+              if (!ok) {
+                await doRsync("beta->alpha", listFiles);
+              }
+            }
+            const listOther = path.join(tmp, "beta2alpha.other");
+            await writeFile(listOther, join0(others));
+            if (await fileNonEmpty(listOther)) {
+              log(
+                "info",
+                "realtime",
+                `beta→alpha dirs/symlinks ${others.length} (no-recursive)`,
+              );
+              await rsyncDirsAndLinks("beta->alpha", listOther);
+            }
+            const listMissing = path.join(tmp, "beta2alpha.missing");
+            await writeFile(listMissing, join0(missing));
+            if (await fileNonEmpty(listMissing)) {
+              log("info", "realtime", `beta→alpha deletes ${missing.length}`);
+              await rsyncCopyOrDelete("beta->alpha", listMissing);
+            }
           }
 
-          // Deletions
-          const listMissing = path.join(tmp, "beta2alpha.missing");
-          await writeFile(listMissing, join0(missing));
-          if (await fileNonEmpty(listMissing)) {
-            log("info", "realtime", `beta→alpha deletes ${missing.length}`);
-            await rsyncCopyOrDelete("beta->alpha", listMissing);
+          if (alphaIsRemote && fetchRemoteAlphaSignatures) {
+            alphaPostSignatures = await fetchRemoteAlphaSignatures(toAlpha, {
+              ignore: false,
+            });
           }
+          if (betaIsRemote && fetchRemoteBetaSignatures) {
+            await fetchRemoteBetaSignatures(toAlpha, { ignore: false });
+          }
+          if (needAlphaLock && alphaLockedPaths.length) {
+            await finalizeRemoteLock(
+              alphaRemoteLock!,
+              alphaLockedPaths,
+              alphaReleasePlan.copies,
+              alphaReleasePlan.deletions,
+              alphaPostSignatures,
+            );
+          }
+          recordDirection("beta->alpha", toAlpha);
+        } catch (err) {
+          if (needAlphaLock && alphaLockedPaths.length) {
+            try {
+              await alphaRemoteLock!.unlock(alphaLockedPaths);
+            } catch {}
+          }
+          throw err;
         }
-
-        if (alphaIsRemote && fetchRemoteAlphaSignatures) {
-          await fetchRemoteAlphaSignatures(toAlpha, { ignore: true });
-        }
-        recordDirection("beta->alpha", toAlpha);
       }
     } finally {
       await rm(tmp, { recursive: true, force: true });

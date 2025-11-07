@@ -38,6 +38,7 @@ const HASH_ALG = defaultHashAlg();
 const IGNORE_TTL_MS = Number(
   process.env.REFLECT_REMOTE_IGNORE_TTL_MS ?? 60_000,
 );
+const LOCK_TTL_MS = Number(process.env.REFLECT_WATCH_LOCK_TTL_MS ?? 120_000);
 
 // ---------- types ----------
 type WatchOpts = {
@@ -74,16 +75,58 @@ function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
 }
 
 // ---------- JSON control channel on STDIN ----------
-function serveJsonControl(
-  addHotDir: (dir: string) => Promise<void>,
+type ReleaseControlEntry = {
+  path: string;
+  watermark?: number | null;
+  ttlMs?: number;
+};
+
+type ControlHandlers = {
+  addHotDir: (dir: string) => Promise<void>;
   handleStat: (
     requestId: number,
     paths: string[],
     ignore: boolean,
-  ) => Promise<void>,
-  onClose: () => Promise<void>,
-) {
+  ) => Promise<void>;
+  handleLock?: (requestId: number, paths: string[]) => Promise<void>;
+  handleRelease?: (
+    requestId: number,
+    entries: ReleaseControlEntry[],
+  ) => Promise<void>;
+  handleUnlock?: (requestId: number, paths: string[]) => Promise<void>;
+  onClose: () => Promise<void>;
+};
+
+function serveJsonControl(handlers: ControlHandlers) {
   const rl = readline.createInterface({ input: process.stdin });
+
+  const sendAck = (op: string, requestId: number, payload?: any) => {
+    const body = { op, requestId, ...(payload ?? {}) };
+    process.stdout.write(JSON.stringify(body) + "\n");
+  };
+
+  const respond = async (
+    ackOp: string,
+    requestId: number,
+    fn: () => Promise<void>,
+  ) => {
+    try {
+      await fn();
+      sendAck(ackOp, requestId);
+    } catch (err: any) {
+      sendAck(ackOp, requestId, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const normalizeRel = (value: any) => {
+    const clean = String(value || "").replace(/^\.\/+/, "");
+    if (!isPlainRel(clean) || clean === ".") {
+      return "";
+    }
+    return clean;
+  };
 
   rl.on("line", async (line) => {
     // vlog(true, { line });
@@ -103,22 +146,59 @@ function serveJsonControl(
       if (op === "add") {
         const dirs: string[] = Array.isArray(msg.dirs) ? msg.dirs : [];
         for (const r of dirs) {
-          const clean = String(r || "").replace(/^\.\/+/, "");
-          if (isPlainRel(clean) && clean !== ".") {
-            await addHotDir(clean);
+          const clean = normalizeRel(r);
+          if (clean) {
+            await handlers.addHotDir(clean);
           }
         }
       } else if (op === "stat") {
         const requestId = Number(msg.requestId ?? 0);
         const ignore = Boolean(msg.ignore);
         const paths: string[] = Array.isArray(msg.paths)
-          ? msg.paths.map((p) =>
-              norm(String(p || "").replace(/^\.\/+/, "")),
-            )
+          ? msg.paths
+              .map((p) => norm(String(p || "").replace(/^\.\/+/, "")))
           : [];
-        await handleStat(requestId, paths, ignore);
+        await handlers.handleStat(requestId, paths, ignore);
+      } else if (op === "lock" && handlers.handleLock) {
+        const requestId = Number(msg.requestId ?? 0);
+        const paths: string[] = Array.isArray(msg.paths)
+          ? msg.paths
+              .map((p) => norm(normalizeRel(p)))
+              .filter((p) => !!p)
+          : [];
+        await respond("lockAck", requestId, () =>
+          handlers.handleLock!(requestId, paths),
+        );
+      } else if (op === "release" && handlers.handleRelease) {
+        const requestId = Number(msg.requestId ?? 0);
+        const entries: ReleaseControlEntry[] = Array.isArray(msg.entries)
+          ? msg.entries
+              .map((entry: any) => ({
+                path: norm(normalizeRel(entry?.path)),
+                watermark:
+                  entry?.watermark == null
+                    ? null
+                    : Number(entry.watermark),
+                ttlMs:
+                  entry?.ttlMs == null ? undefined : Number(entry.ttlMs),
+              }))
+              .filter((e) => !!e.path)
+          : [];
+        await respond("releaseAck", requestId, () =>
+          handlers.handleRelease!(requestId, entries),
+        );
+      } else if (op === "unlock" && handlers.handleUnlock) {
+        const requestId = Number(msg.requestId ?? 0);
+        const paths: string[] = Array.isArray(msg.paths)
+          ? msg.paths
+              .map((p) => norm(normalizeRel(p)))
+              .filter((p) => !!p)
+          : [];
+        await respond("unlockAck", requestId, () =>
+          handlers.handleUnlock!(requestId, paths),
+        );
       } else if (op === "close") {
-        await onClose();
+        await handlers.onClose();
       } else {
         console.error(`watch: unknown op: ${op}`);
       }
@@ -181,6 +261,21 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       }
     }
   };
+  type ForcedEntry = {
+    state: "locked" | "released";
+    watermark?: number | null;
+    expiresAt: number;
+  };
+  const forcedLocks = new Map<string, ForcedEntry>();
+  const pruneForcedLocks = () => {
+    if (!forcedLocks.size) return;
+    const now = Date.now();
+    for (const [rel, entry] of forcedLocks) {
+      if (entry.expiresAt <= now) {
+        forcedLocks.delete(rel);
+      }
+    }
+  };
 
   // Ensure process terminate when stdin closes (so this also closes when
   // used via ssh)
@@ -206,7 +301,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         return;
       }
       const rel = relR(rootAbs, abs);
-      if (await shouldSuppress(rel)) {
+      if (await shouldSuppress(rel, abs)) {
         return;
       }
       emitEvent(abs, ev, rootAbs);
@@ -244,6 +339,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         };
       }
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       if (st.isSymbolicLink()) {
         const target = await readlink(abs);
         return {
@@ -251,6 +347,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
             kind: "link",
             opTs: mtime,
             mtime,
+            ctime,
             hash: stringDigest(HASH_ALG, target),
           },
           target,
@@ -262,6 +359,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
             kind: "dir",
             opTs: mtime,
             mtime,
+            ctime,
             hash: modeHash(st.mode),
           },
         };
@@ -271,6 +369,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
           kind: "file",
           opTs: mtime,
           mtime,
+          ctime,
           size: st.size,
           mode: st.mode,
         };
@@ -287,6 +386,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
           kind: "file",
           opTs: mtime,
           mtime,
+          ctime,
           size: st.size,
         },
       };
@@ -348,8 +448,46 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     process.stdout.write(JSON.stringify(response) + "\n");
   }
 
-  async function shouldSuppress(rel: string): Promise<boolean> {
+  const statsCtimeMs = (st?: Stats): number | null => {
+    if (!st) return null;
+    return (st as any).ctimeMs ?? (st.ctime ? st.ctime.getTime() : null);
+  };
+
+  async function currentCtimeMs(abs?: string): Promise<number | null> {
+    if (!abs) return null;
+    try {
+      const st = await lstat(abs);
+      return statsCtimeMs(st);
+    } catch {
+      return null;
+    }
+  }
+
+  async function shouldSuppress(
+    rel: string,
+    abs?: string,
+    stats?: Stats,
+  ): Promise<boolean> {
     if (!rel) return false;
+    pruneForcedLocks();
+    const forced = forcedLocks.get(rel);
+    if (forced) {
+      const expired = forced.expiresAt <= Date.now();
+      if (expired) {
+        forcedLocks.delete(rel);
+      } else if (forced.state === "locked") {
+        return true;
+      } else if (forced.watermark != null) {
+        const ctime =
+          statsCtimeMs(stats) ?? (await currentCtimeMs(abs ?? path.join(rootAbs, rel)));
+        if (ctime != null && ctime <= forced.watermark) {
+          return true;
+        }
+        forcedLocks.delete(rel);
+      } else {
+        forcedLocks.delete(rel);
+      }
+    }
     const entry = pendingIgnores.get(rel);
     if (!entry) return false;
     if (Date.now() > entry.expiresAt) {
@@ -375,6 +513,52 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     }
   }
 
+  const dedupe = <T>(items: T[]) => Array.from(new Set(items));
+
+  async function handleLockControl(
+    _requestId: number,
+    paths: string[],
+  ): Promise<void> {
+    if (!paths.length) return;
+    pruneForcedLocks();
+    const now = Date.now();
+    for (const rel of dedupe(paths)) {
+      if (!rel) continue;
+      forcedLocks.set(rel, {
+        state: "locked",
+        expiresAt: now + LOCK_TTL_MS,
+      });
+    }
+  }
+
+  async function handleReleaseControl(
+    _requestId: number,
+    entries: ReleaseControlEntry[],
+  ): Promise<void> {
+    if (!entries.length) return;
+    pruneForcedLocks();
+    const now = Date.now();
+    for (const entry of entries) {
+      const rel = entry.path;
+      if (!rel) continue;
+      forcedLocks.set(rel, {
+        state: "released",
+        watermark: entry.watermark ?? null,
+        expiresAt: now + (entry.ttlMs && entry.ttlMs > 0 ? entry.ttlMs : LOCK_TTL_MS),
+      });
+    }
+  }
+
+  async function handleUnlockControl(
+    _requestId: number,
+    paths: string[],
+  ): Promise<void> {
+    if (!paths.length) return;
+    for (const rel of dedupe(paths)) {
+      forcedLocks.delete(rel);
+    }
+  }
+
   const shallow: FSWatcher = chokidar.watch(rootAbs, {
     persistent: true,
     ignoreInitial: true,
@@ -392,7 +576,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       }
       // Send the event immediately (so microSync can act quickly)
       const r = relR(rootAbs, abs);
-      if (await shouldSuppress(r)) {
+      if (await shouldSuppress(r, abs, stats)) {
         return;
       }
       emitEvent(abs, evt, rootAbs);
@@ -423,14 +607,21 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   wireShallow();
 
   // Control channel
-  serveJsonControl(addHotAnchor, handleStatRequest, async () => {
-    try {
-      await shallow.close();
-    } catch {}
-    try {
-      await hotMgr.closeAll();
-    } catch {}
-    process.exit(0);
+  serveJsonControl({
+    addHotDir: addHotAnchor,
+    handleStat: handleStatRequest,
+    handleLock: handleLockControl,
+    handleRelease: handleReleaseControl,
+    handleUnlock: handleUnlockControl,
+    onClose: async () => {
+      try {
+        await shallow.close();
+      } catch {}
+      try {
+        await hotMgr.closeAll();
+      } catch {}
+      process.exit(0);
+    },
   });
 
   // Clean shutdown on signals

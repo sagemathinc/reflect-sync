@@ -771,12 +771,20 @@ export async function runScheduler({
 
   // Remote delta stream (watch)
   // Demultiplex stdout lines: NDJSON deltas feed ingest, others drive control events.
+  type ReleaseAckEntry = {
+    path: string;
+    watermark?: number | null;
+  };
+
   type StreamControl = {
     add: (dirs: string[]) => void;
     stat: (
       paths: string[],
       opts: { ignore: boolean },
     ) => Promise<SignatureEntry[]>;
+    lock?: (paths: string[]) => Promise<void>;
+    release?: (entries: ReleaseAckEntry[]) => Promise<void>;
+    unlock?: (paths: string[]) => Promise<void>;
     kill: () => void;
   };
 
@@ -862,9 +870,14 @@ export async function runScheduler({
       resolve: (entries: SignatureEntry[]) => void;
       reject: (err: Error) => void;
     }
+    interface PendingControl {
+      resolve: (payload?: any) => void;
+      reject: (err: Error) => void;
+    }
 
     let nextRequestId = 1;
     const pendingStats = new Map<number, PendingStat>();
+    const pendingControls = new Map<number, PendingControl>();
     let statsInFlight = 0;
     let bufferedEvents: any[] = [];
 
@@ -897,6 +910,10 @@ export async function runScheduler({
         pending.reject(err);
       }
       pendingStats.clear();
+      for (const pending of pendingControls.values()) {
+        pending.reject(err);
+      }
+      pendingControls.clear();
       bufferedEvents = [];
       statsInFlight = 0;
     };
@@ -904,6 +921,23 @@ export async function runScheduler({
     const forwardToIngest = (line: string) => {
       if (ingestStream.destroyed || ingestStream.writableEnded) return;
       ingestStream.write(`${line}\n`);
+    };
+
+    const handleControlAck = (evt: any) => {
+      const requestId = Number(evt?.requestId ?? 0);
+      if (!requestId) return;
+      const pending = pendingControls.get(requestId);
+      if (!pending) return;
+      pendingControls.delete(requestId);
+      if (evt?.error) {
+        const message =
+          typeof evt.error === "string"
+            ? evt.error
+            : String(evt.error ?? "unknown error");
+        pending.reject(new Error(message));
+      } else {
+        pending.resolve(evt);
+      }
     };
 
     rl.on("line", (line) => {
@@ -954,6 +988,14 @@ export async function runScheduler({
         flushBuffered();
         return;
       }
+      if (
+        evt?.op === "lockAck" ||
+        evt?.op === "releaseAck" ||
+        evt?.op === "unlockAck"
+      ) {
+        handleControlAck(evt);
+        return;
+      }
       if (evt?.ev && evt?.path) {
         if (statsInFlight > 0) {
           bufferedEvents.push(evt);
@@ -998,6 +1040,43 @@ export async function runScheduler({
           flushBuffered();
         }
       });
+    };
+
+    const sendControl = (
+      op: "lock" | "release" | "unlock",
+      payload: Record<string, unknown>,
+    ): Promise<any> => {
+      const requestId = nextRequestId++;
+      return new Promise((resolve, reject) => {
+        pendingControls.set(requestId, { resolve, reject });
+        try {
+          sshP.stdin?.write(
+            JSON.stringify({
+              op,
+              requestId,
+              ...payload,
+            }) + "\n",
+          );
+        } catch (err) {
+          pendingControls.delete(requestId);
+          reject(err as Error);
+        }
+      });
+    };
+
+    const requestLock = (paths: string[]) => {
+      if (!paths.length) return Promise.resolve();
+      return sendControl("lock", { paths });
+    };
+
+    const requestRelease = (entries: ReleaseAckEntry[]) => {
+      if (!entries.length) return Promise.resolve();
+      return sendControl("release", { entries });
+    };
+
+    const requestUnlock = (paths: string[]) => {
+      if (!paths.length) return Promise.resolve();
+      return sendControl("unlock", { paths });
     };
 
     let killed = false;
@@ -1054,7 +1133,14 @@ export async function runScheduler({
       } catch {}
     };
 
-    return { add, stat: requestStat, kill };
+    return {
+      add,
+      stat: requestStat,
+      lock: requestLock,
+      release: requestRelease,
+      unlock: requestUnlock,
+      kill,
+    };
   }
 
   function requestSoon(reason: string) {
@@ -1089,12 +1175,12 @@ export async function runScheduler({
   const fetchAlphaRemoteSignatures = async (
     paths: string[],
     opts: { ignore: boolean },
-  ) => {
-    if (!paths.length) return;
+  ): Promise<SignatureEntry[]> => {
+    if (!paths.length) return [];
     if (!alphaStream?.stat) {
       await ensureRemoteStreams();
     }
-    if (!alphaStream?.stat) return;
+    if (!alphaStream?.stat) return [];
     const unique = Array.from(new Set(paths.filter(Boolean)));
     const collected: SignatureEntry[] = [];
     for (const batch of chunkArray(unique, 1000)) {
@@ -1104,17 +1190,18 @@ export async function runScheduler({
     if (collected.length) {
       applySignaturesToDb(alphaDb, collected, { numericIds });
     }
+    return collected;
   };
 
   const fetchBetaRemoteSignatures = async (
     paths: string[],
     opts: { ignore: boolean },
-  ) => {
-    if (!paths.length) return;
+  ): Promise<SignatureEntry[]> => {
+    if (!paths.length) return [];
     if (!betaStream?.stat) {
       await ensureRemoteStreams();
     }
-    if (!betaStream?.stat) return;
+    if (!betaStream?.stat) return [];
     const unique = Array.from(new Set(paths.filter(Boolean)));
     const collected: SignatureEntry[] = [];
     for (const batch of chunkArray(unique, 1000)) {
@@ -1123,6 +1210,77 @@ export async function runScheduler({
     }
     if (collected.length) {
       applySignaturesToDb(betaDb, collected, { numericIds });
+    }
+    return collected;
+  };
+
+  const lockRemoteAlphaPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    if (!alphaStream?.lock) {
+      await ensureRemoteStreams();
+    }
+    if (!alphaStream?.lock) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    for (const batch of chunkArray(unique, 1000)) {
+      await alphaStream.lock!(batch);
+    }
+  };
+
+  const releaseRemoteAlphaPaths = async (entries: ReleaseAckEntry[]) => {
+    if (!entries.length) return;
+    if (!alphaStream?.release) {
+      await ensureRemoteStreams();
+    }
+    if (!alphaStream?.release) return;
+    for (const batch of chunkArray(entries, 500)) {
+      await alphaStream.release!(batch);
+    }
+  };
+
+  const unlockRemoteAlphaPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    if (!alphaStream?.unlock) {
+      await ensureRemoteStreams();
+    }
+    if (!alphaStream?.unlock) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    for (const batch of chunkArray(unique, 1000)) {
+      await alphaStream.unlock!(batch);
+    }
+  };
+
+  const lockRemoteBetaPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    if (!betaStream?.lock) {
+      await ensureRemoteStreams();
+    }
+    if (!betaStream?.lock) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    for (const batch of chunkArray(unique, 1000)) {
+      await betaStream.lock!(batch);
+    }
+  };
+
+  const releaseRemoteBetaPaths = async (entries: ReleaseAckEntry[]) => {
+    if (!entries.length) return;
+    if (!betaStream?.release) {
+      await ensureRemoteStreams();
+    }
+    if (!betaStream?.release) return;
+    for (const batch of chunkArray(entries, 500)) {
+      await betaStream.release!(batch);
+    }
+  };
+
+  const unlockRemoteBetaPaths = async (paths: string[]) => {
+    if (!paths.length) return;
+    if (!betaStream?.unlock) {
+      await ensureRemoteStreams();
+    }
+    if (!betaStream?.unlock) return;
+    const unique = Array.from(new Set(paths.filter(Boolean)));
+    for (const batch of chunkArray(unique, 1000)) {
+      await betaStream.unlock!(batch);
     }
   };
 
@@ -1147,6 +1305,20 @@ export async function runScheduler({
       : undefined,
     fetchRemoteBetaSignatures: betaIsRemote
       ? fetchBetaRemoteSignatures
+      : undefined,
+    alphaRemoteLock: alphaIsRemote
+      ? {
+          lock: lockRemoteAlphaPaths,
+          release: releaseRemoteAlphaPaths,
+          unlock: unlockRemoteAlphaPaths,
+        }
+      : undefined,
+    betaRemoteLock: betaIsRemote
+      ? {
+          lock: lockRemoteBetaPaths,
+          release: releaseRemoteBetaPaths,
+          unlock: unlockRemoteBetaPaths,
+        }
       : undefined,
     numericIds,
   });

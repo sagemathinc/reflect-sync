@@ -8,6 +8,7 @@ import {
   getRecentSendSignatures,
   type SendSignature,
 } from "../recent-send";
+import type { SignatureEntry } from "../signature-store";
 
 jest.mock("../rsync.js", () => {
   const run = jest.fn().mockResolvedValue({ zero: false });
@@ -98,7 +99,9 @@ describe("micro-sync remote signature coordination", () => {
     });
 
     const fetchAlpha = jest.fn(
-      async (_paths: string[], _opts: { ignore: boolean }) => {},
+      async (_paths: string[], _opts: { ignore: boolean }) => {
+        return [] as SignatureEntry[];
+      },
     );
 
     const micro = makeMicroSync({
@@ -148,7 +151,9 @@ describe("micro-sync remote signature coordination", () => {
     });
 
     const fetchBeta = jest.fn(
-      async (_paths: string[], _opts: { ignore: boolean }) => {},
+      async (_paths: string[], _opts: { ignore: boolean }) => {
+        return [] as SignatureEntry[];
+      },
     );
 
     const micro = makeMicroSync({
@@ -166,9 +171,11 @@ describe("micro-sync remote signature coordination", () => {
 
     await micro([], [relPath]);
 
-    expect(fetchBeta).toHaveBeenCalledTimes(1);
+    expect(fetchBeta).toHaveBeenCalledTimes(2);
     expect(fetchBeta.mock.calls[0]?.[0]).toEqual([relPath]);
     expect(fetchBeta.mock.calls[0]?.[1]).toEqual({ ignore: true });
+    expect(fetchBeta.mock.calls[1]?.[0]).toEqual([relPath]);
+    expect(fetchBeta.mock.calls[1]?.[1]).toEqual({ ignore: false });
 
     expect(mockedRsync.run).toHaveBeenCalled();
 
