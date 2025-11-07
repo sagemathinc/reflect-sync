@@ -114,6 +114,7 @@ export async function waitFor<T>(
 export function countSchedulerCycles(baseDb: string): number {
   const db = new Database(baseDb);
   try {
+    db.pragma("busy_timeout = 1000");
     db.exec(`
       CREATE TABLE IF NOT EXISTS events(
         id INTEGER PRIMARY KEY,

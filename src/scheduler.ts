@@ -65,6 +65,10 @@ import {
 } from "./ignore.js";
 import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
+import {
+  waitForStableFile,
+  DEFAULT_STABILITY_OPTIONS,
+} from "./stability.js";
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -402,6 +406,11 @@ export async function runScheduler({
 
   const alphaIsRemote = !!alphaHost;
   const betaIsRemote = !!betaHost;
+
+  const stabilityOptions = { ...DEFAULT_STABILITY_OPTIONS };
+  const stabilityEnabled =
+    Number.isFinite(stabilityOptions.windowMs) &&
+    stabilityOptions.windowMs > 0;
 
   const remotePort = alphaHost ? alphaPort : betaPort;
   compress = await resolveCompression(
@@ -1142,6 +1151,47 @@ export async function runScheduler({
     numericIds,
   });
 
+  async function partitionStablePaths(
+    side: "alpha" | "beta",
+    paths: string[],
+  ) {
+    if (!stabilityEnabled || !paths.length) {
+      return { ready: paths, pending: [] as string[] };
+    }
+    const isRemote = side === "alpha" ? alphaIsRemote : betaIsRemote;
+    if (isRemote) {
+      return { ready: paths, pending: [] as string[] };
+    }
+    const root = side === "alpha" ? alphaRoot : betaRoot;
+    const ready: string[] = [];
+    const pending: string[] = [];
+    for (const rel of paths) {
+      if (!rel) continue;
+      const abs = path.join(root, rel);
+      try {
+        const res = await waitForStableFile(abs, stabilityOptions);
+        if (res.stable) {
+          ready.push(rel);
+        } else {
+          pending.push(rel);
+          logger.debug("deferring unstable path", {
+            side,
+            path: rel,
+            reason: res.reason ?? "unstable",
+          });
+        }
+      } catch (err: any) {
+        log("warn", "realtime", "stability check failed; proceeding", {
+          side,
+          path: rel,
+          error: String(err?.message || err),
+        });
+        ready.push(rel);
+      }
+    }
+    return { ready, pending };
+  }
+
   function scheduleHotFlush() {
     if (hotTimer) return;
     hotTimer = setTimeout(async () => {
@@ -1153,7 +1203,24 @@ export async function runScheduler({
       hotAlpha.clear();
       hotBeta.clear();
       try {
-        await microSync(rpathsAlpha, rpathsBeta);
+        const [alphaPartition, betaPartition] = await Promise.all([
+          partitionStablePaths("alpha", rpathsAlpha),
+          partitionStablePaths("beta", rpathsBeta),
+        ]);
+        for (const p of alphaPartition.pending) {
+          hotAlpha.add(p);
+        }
+        for (const p of betaPartition.pending) {
+          hotBeta.add(p);
+        }
+        if (!alphaPartition.ready.length && !betaPartition.ready.length) {
+          logger.debug("waiting for files to settle", {
+            pendingAlpha: alphaPartition.pending.length,
+            pendingBeta: betaPartition.pending.length,
+          });
+        } else {
+          await microSync(alphaPartition.ready, betaPartition.ready);
+        }
       } catch (e: any) {
         if (isDiskFullCause(e)) {
           pauseForDiskFull("disk full during realtime sync", e);

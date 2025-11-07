@@ -23,6 +23,7 @@ import {
   withTempSshKey,
   spawnSshLocal,
   shQuote,
+  SshTestSetupError,
 } from "./ssh-util";
 
 const dist = (...p: string[]) =>
@@ -90,6 +91,7 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
     let tmp: string, aRoot: string, aDbLocal: string, aDbRemote: string;
     let keyCleanup: (() => Promise<void>) | null = null;
     let keyPath: string;
+    let sshSetupError: Error | null = null;
 
     beforeAll(async () => {
       if (!(await canSshLocalhost())) {
@@ -105,9 +107,17 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
       aDbLocal = path.join(tmp, "alpha.local.db");
       aDbRemote = path.join(tmp, "alpha.remote.db");
 
-      const { keyPath: kp, cleanup } = await withTempSshKey();
-      keyPath = kp;
-      keyCleanup = cleanup;
+      try {
+        const { keyPath: kp, cleanup } = await withTempSshKey();
+        keyPath = kp;
+        keyCleanup = cleanup;
+      } catch (err) {
+        if (err instanceof SshTestSetupError) {
+          sshSetupError = err;
+          return;
+        }
+        throw err;
+      }
     });
 
     afterAll(async () => {
@@ -116,6 +126,13 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
     });
 
     test("delta from remote scan shows up in local DB", async () => {
+      if (sshSetupError) {
+        console.warn(
+          `skipping ssh integration test: ${sshSetupError.message}`,
+        );
+        return;
+      }
+
       // create a file remotely-visible (same FS, but path is “remote root”)
       const f = path.join(aRoot, "hello.txt");
       await fs.writeFile(f, "hello ssh\n");

@@ -8,6 +8,13 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
+export class SshTestSetupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SshTestSetupError";
+  }
+}
+
 // Ensure sshd reachable on localhost. Returns true/false (does not throw).
 export async function canSshLocalhost(): Promise<boolean> {
   return new Promise((resolve) => {
@@ -67,7 +74,20 @@ export async function withTempSshKey() {
   // Append block
   await fs.appendFile(auth, block, { mode: 0o600 }).catch(async (e) => {
     if ((e as any).code === "ENOENT") {
-      await fs.writeFile(auth, block, { mode: 0o600 });
+      try {
+        await fs.writeFile(auth, block, { mode: 0o600 });
+      } catch (writeErr: any) {
+        if (writeErr?.code === "EACCES") {
+          throw new SshTestSetupError(
+            `unable to write ${auth}: ${writeErr.message}`,
+          );
+        }
+        throw writeErr;
+      }
+    } else if ((e as any).code === "EACCES") {
+      throw new SshTestSetupError(
+        `unable to append ${auth}: ${(e as any).message}`,
+      );
     } else {
       throw e;
     }
