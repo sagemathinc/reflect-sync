@@ -156,30 +156,36 @@ export function makeMicroSync({
     fallback?: SendSignature | null,
   ): SendSignature | null => {
     if (!primary && !fallback) return null;
-    if (!primary) return fallback ?? null;
-    if (!fallback) return primary;
-    const merged: SendSignature = {
-      kind: primary.kind ?? fallback.kind,
-      opTs: primary.opTs ?? fallback.opTs ?? null,
-    };
-    const fields: Array<keyof SendSignature> = [
-      "size",
-      "mtime",
-      "ctime",
-      "hash",
-      "mode",
-      "uid",
-      "gid",
-    ];
-    for (const field of fields) {
-      const value = primary[field];
-      if (value != null) {
-        (merged as any)[field] = value;
-      } else if (fallback[field] != null) {
-        (merged as any)[field] = fallback[field];
+    if (primary) {
+      const merged: SendSignature = {
+        kind: primary.kind ?? fallback?.kind ?? "file",
+        opTs: primary.opTs ?? fallback?.opTs ?? null,
+      };
+      const preferFields: Array<keyof SendSignature> = [
+        "size",
+        "mtime",
+        "ctime",
+        "hash",
+        "mode",
+        "uid",
+        "gid",
+      ];
+      for (const field of preferFields) {
+        const value = primary[field];
+        if (value != null) {
+          (merged as any)[field] = value;
+        }
       }
+      if (fallback) {
+        for (const field of preferFields) {
+          if (merged[field] == null && fallback[field] != null) {
+            (merged as any)[field] = fallback[field];
+          }
+        }
+      }
+      return merged;
     }
-    return merged;
+    return fallback ?? null;
   };
 
   const mergeSignatureHints = (
