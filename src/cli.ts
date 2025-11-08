@@ -252,7 +252,8 @@ program
   )
   .option("--session-id <id>", "optional session id to enable heartbeats")
   .option("--session-db <path>", "path to session database")
-  .option("--disable-hot-watch", "only sync during the full sync cycle", false)
+  .option("--disable-micro-sync", "disable realtime micro-sync watchers")
+  .option("--disable-full-cycle", "disable automatic periodic full sync cycles")
   .option(
     "-i, --ignore <pattern>",
     "gitignore-style ignore rule (repeat or comma-separated)",

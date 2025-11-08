@@ -90,7 +90,7 @@ async function superviseSessions(sessionDb: string, logger: Logger) {
         if (row.scheduler_pid) {
           updateSession(sessionDb, row.id, { scheduler_pid: null });
         }
-        const pid = spawnSchedulerForSession(sessionDb, row);
+        const pid = spawnSchedulerForSession(sessionDb, row, logger);
         if (pid) {
           updateSession(sessionDb, row.id, { scheduler_pid: pid });
           setActualState(sessionDb, row.id, "running");
@@ -421,7 +421,7 @@ export function registerSessionDaemon(program: Command) {
         try {
           await runDaemonForeground(sessionDb, {
             stopExisting: false,
-            logger: new ConsoleLogger("info"),
+            logger: new ConsoleLogger("debug"),
           });
         } catch (err) {
           console.error(err instanceof Error ? err.message : String(err));

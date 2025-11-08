@@ -708,7 +708,7 @@ export async function editSession(options: SessionEditOptions) {
   const shouldRestart = wasRunning && (resetRequested || needRestart);
   const updatedRow = loadSessionById(sessionDb, id);
   if (shouldRestart && updatedRow) {
-    const pid = spawnSchedulerForSession(sessionDb, updatedRow);
+    const pid = spawnSchedulerForSession(sessionDb, updatedRow, logger);
     setDesiredState(sessionDb, id, "running");
     setActualState(sessionDb, id, pid ? "running" : "error");
     if (pid) {

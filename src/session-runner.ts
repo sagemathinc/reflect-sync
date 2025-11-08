@@ -7,10 +7,13 @@ import {
 } from "./session-db.js";
 import { deserializeIgnoreRules } from "./ignore.js";
 import { resolveSelfLaunch } from "./self-launch.js";
+import { type Logger } from "./logger.js";
+import { argsJoin } from "./remote.js";
 
 export function spawnSchedulerForSession(
   sessionDb: string,
   row: SessionRow,
+  logger?: Logger,
 ): number {
   const home = getReflectSyncHome();
   const sessionPaths = deriveSessionPaths(row.id, home);
@@ -72,7 +75,7 @@ export function spawnSchedulerForSession(
   args.push("--session-db", sessionDb);
 
   // Debug output suppressed to avoid polluting CLI stdout contracts.
-  // console.log(`${process.execPath} ${argsJoin(args)}`);
+  logger?.debug(`start session: '${process.execPath} ${argsJoin(args)}'`);
   const child = spawn(launcher.command, args, {
     stdio: "ignore",
     detached: true,
