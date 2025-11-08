@@ -43,6 +43,8 @@ import {
 } from "./logger.js";
 import type { SignatureEntry } from "./signature-store.js";
 
+const VERY_VERBOSE = false;
+
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
 
@@ -1275,7 +1277,7 @@ export async function runMerge({
         const sig = signatureFromStamp(stamps.get(path));
         const last = recent.get(path);
         if (sig && last && signatureEquals(sig, last)) {
-          if (debug) {
+          if (VERY_VERBOSE && debug) {
             logger.debug("merge bounce: skipping redundant copy", {
               direction,
               path,
@@ -1283,7 +1285,7 @@ export async function runMerge({
           }
           continue;
         }
-        if (direction === "alpha->beta" && debug) {
+        if (VERY_VERBOSE && direction === "alpha->beta" && debug) {
           logger.debug("merge bounce: plan copy (alpha→beta)", {
             path,
             sig,

@@ -33,6 +33,8 @@ import type { Logger } from "./logger.js";
 import { fetchOpStamps } from "./op-stamp.js";
 import { applySignaturesToDb, type SignatureEntry } from "./signature-store.js";
 
+const VERY_VERBOSE = false;
+
 export class PartialTransferError extends Error {
   alphaPaths?: string[];
   betaPaths?: string[];
@@ -377,13 +379,15 @@ export function makeMicroSync({
         applyEntries.push({ path, signature, target });
       }
 
-      microLogger.debug("record recent send", {
-        direction,
-        path,
-        signature,
-        destDb,
-        sourceDb,
-      });
+      if (VERY_VERBOSE) {
+        microLogger.debug("record recent send", {
+          direction,
+          path,
+          signature,
+          destDb,
+          sourceDb,
+        });
+      }
       return { path, signature };
     });
     recordRecentSend(destDb, direction, recentEntries);
