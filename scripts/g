@@ -1,0 +1,7 @@
+set -ev
+cd ..
+pnpm build
+pnpm bundle
+chmod +x dist/bundle.mjs
+cp dist/bundle.mjs ~/build/cocalc-lite/src/packages/backend/node_modules/.bin/reflect-sync
+~/build/cocalc-lite/src/packages/backend/node_modules/.bin/reflect-sync -V
