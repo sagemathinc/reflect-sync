@@ -45,6 +45,13 @@ import type { SignatureEntry } from "./signature-store.js";
 
 const VERY_VERBOSE = false;
 
+// [ ] TODO: trying and fallback to rsync leads to corruption.
+// This should instead by a property of session and a hard error if it fails.
+const DISABLE_REFLINK = true;
+
+// if true immediately freeze if there is a plan to modify anything on alpha.
+const TERMINATE_ON_CHANGE_ALPHA = false;
+
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
 
@@ -574,12 +581,12 @@ export async function runMerge({
       -- =========================
       CREATE TEMP VIEW alpha_entries AS
       WITH unioned AS (
-        SELECT path, hash, deleted, op_ts FROM alpha.files
+        SELECT path, hash, deleted, op_ts, mtime FROM alpha.files
         UNION ALL
-        SELECT path, hash, deleted, op_ts FROM alpha.links
+        SELECT path, hash, deleted, op_ts, mtime FROM alpha.links
       ),
       ranked AS (
-        SELECT path, hash, deleted, op_ts,
+        SELECT path, hash, deleted, op_ts, mtime,
                ROW_NUMBER() OVER (
                  PARTITION BY path
                  ORDER BY
@@ -588,7 +595,7 @@ export async function runMerge({
                ) AS rn
         FROM unioned
       )
-      SELECT path, hash, deleted, op_ts
+      SELECT path, hash, deleted, op_ts, mtime
       FROM ranked
       WHERE rn = 1;
 
@@ -597,12 +604,12 @@ export async function runMerge({
       -- =========================
       CREATE TEMP VIEW beta_entries AS
       WITH unioned AS (
-        SELECT path, hash, deleted, op_ts FROM beta.files
+        SELECT path, hash, deleted, op_ts, mtime FROM beta.files
         UNION ALL
-        SELECT path, hash, deleted, op_ts FROM beta.links
+        SELECT path, hash, deleted, op_ts, mtime FROM beta.links
       ),
       ranked AS (
-        SELECT path, hash, deleted, op_ts,
+        SELECT path, hash, deleted, op_ts, mtime,
                ROW_NUMBER() OVER (
                  PARTITION BY path
                  ORDER BY
@@ -611,7 +618,7 @@ export async function runMerge({
                ) AS rn
         FROM unioned
       )
-      SELECT path, hash, deleted, op_ts
+      SELECT path, hash, deleted, op_ts, mtime
       FROM ranked
       WHERE rn = 1;
 
@@ -635,30 +642,33 @@ export async function runMerge({
         rpath   TEXT PRIMARY KEY,
         hash    TEXT,
         deleted INTEGER,
-        op_ts   INTEGER
+        op_ts   INTEGER,
+        mtime   INTEGER
       ) WITHOUT ROWID;
 
       CREATE TEMP TABLE beta_rel(
         rpath   TEXT PRIMARY KEY,
         hash    TEXT,
         deleted INTEGER,
-        op_ts   INTEGER
+        op_ts   INTEGER,
+        mtime   INTEGER
       ) WITHOUT ROWID;
 
       CREATE TEMP TABLE base_rel(
         rpath   TEXT PRIMARY KEY,
         hash    TEXT,
         deleted INTEGER,
-        op_ts   INTEGER
+        op_ts   INTEGER,
+        mtime   INTEGER
       ) WITHOUT ROWID;
     `);
 
     db.exec(`
-      INSERT INTO alpha_rel(rpath,hash,deleted,op_ts)
-      SELECT path, hash, deleted, op_ts FROM alpha_entries;
+      INSERT INTO alpha_rel(rpath,hash,deleted,op_ts, mtime)
+      SELECT path, hash, deleted, op_ts, mtime FROM alpha_entries;
 
-      INSERT INTO beta_rel(rpath,hash,deleted,op_ts)
-      SELECT path, hash, deleted, op_ts FROM beta_entries;
+      INSERT INTO beta_rel(rpath,hash,deleted,op_ts, mtime)
+      SELECT path, hash, deleted, op_ts, mtime FROM beta_entries;
 
       INSERT INTO base_rel(rpath,hash,deleted,op_ts)
       SELECT path, hash, deleted, op_ts FROM base;
@@ -672,6 +682,7 @@ export async function runMerge({
         rpath   TEXT PRIMARY KEY,
         deleted INTEGER,
         op_ts   INTEGER,
+        mtime   INTEGER,
         hash    TEXT
       ) WITHOUT ROWID;
 
@@ -679,6 +690,7 @@ export async function runMerge({
         rpath   TEXT PRIMARY KEY,
         deleted INTEGER,
         op_ts   INTEGER,
+        mtime   INTEGER,
         hash    TEXT
       ) WITHOUT ROWID;
 
@@ -686,14 +698,15 @@ export async function runMerge({
         rpath   TEXT PRIMARY KEY,
         deleted INTEGER,
         op_ts   INTEGER,
+        mtime   INTEGER,
         hash    TEXT
       ) WITHOUT ROWID;
 
-      INSERT INTO alpha_dirs_rel(rpath,deleted,op_ts,hash)
-      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM alpha.dirs;
+      INSERT INTO alpha_dirs_rel(rpath,deleted,op_ts,mtime,hash)
+      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'') FROM alpha.dirs;
 
-      INSERT INTO beta_dirs_rel(rpath,deleted,op_ts,hash)
-      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM beta.dirs;
+      INSERT INTO beta_dirs_rel(rpath,deleted,op_ts,mtime,hash)
+      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'') FROM beta.dirs;
 
       INSERT INTO base_dirs_rel(rpath,deleted,op_ts,hash)
       SELECT path, deleted, op_ts, COALESCE(hash,'') FROM base_dirs;
@@ -836,7 +849,7 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE a.op_ts > b.op_ts
+        WHERE a.mtime > b.mtime
       `,
       )
       .all()
@@ -850,7 +863,7 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE b.op_ts > a.op_ts
+        WHERE b.mtime > a.mtime
       `,
       )
       .all()
@@ -864,7 +877,7 @@ export async function runMerge({
         JOIN tmp_changedB cB USING (rpath)
         JOIN alpha_rel a USING (rpath)
         JOIN beta_rel  b USING (rpath)
-        WHERE a.op_ts = b.op_ts
+        WHERE a.mtime = b.mtime
       `,
       )
       .all()
@@ -1638,6 +1651,11 @@ export async function runMerge({
         //         delInAlpha,
       });
 
+      if (TERMINATE_ON_CHANGE_ALPHA && (toAlpha.length || delInAlpha.length)) {
+        logger.info("invalid - pausing forever", { toAlpha, delInAlpha });
+        await new Promise(() => {});
+      }
+
       // ---------- rsync ----------
       let copyAlphaBetaOk = false;
       let copyBetaAlphaOk = false;
@@ -1852,7 +1870,10 @@ export async function runMerge({
       done();
 
       const canReflink =
-        !alphaHost && !betaHost && (await sameDevice(alphaRoot, betaRoot));
+        !DISABLE_REFLINK &&
+        !alphaHost &&
+        !betaHost &&
+        (await sameDevice(alphaRoot, betaRoot));
       if (canReflink) {
         done = t("cp: 3) copy files -- using copy on write, if possible");
         try {
