@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, stat as fsStat, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync } from "node:fs";
 import { finished } from "node:stream/promises";
 import {
   isCompressing,
@@ -13,9 +13,8 @@ import {
 import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
-// extremely verbose -- showing all output of rsync, which
-// can be massive, of course.
-const verbose2 = !!process.env.REFLECT_VERBOSE2;
+// if true, logs every file sent over rsync
+const REFLECT_RSYNC_VERY_VERBOSE = true;
 
 const REFLECT_COPY_CHUNK = Number(process.env.REFLECT_COPY_CHUNK ?? 10_000);
 const REFLECT_COPY_CONCURRENCY = Number(
@@ -108,7 +107,10 @@ function toBoolVerbose(v?: boolean | string): boolean {
 function resolveLogContext(opts: RsyncLogOptions) {
   const level = opts.logLevel ?? "info";
   const logger = opts.logger ?? new ConsoleLogger(level);
-  const debug = toBoolVerbose(opts.verbose) || level === "debug";
+  const debug =
+    REFLECT_RSYNC_VERY_VERBOSE ||
+    toBoolVerbose(opts.verbose) ||
+    level === "debug";
   return { logger, debug, level };
 }
 
@@ -395,8 +397,7 @@ export function rsyncArgsBase(opts: RsyncRunOptions, from: string, to: string) {
     // don't use the rsync delta algorithm
     a.push("--whole-file");
   }
-  if (verbose2) a.push("-v");
-  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
+  if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
   // NOTE: -I disables rsync's quick-check so listed files always copy.
 }
@@ -405,8 +406,7 @@ export function rsyncArgsDirs(opts: RsyncRunOptions) {
   // -d: transfer directories themselves (no recursion) — needed for empty dirs
   const a = ["-a", "-d", "--relative", "--from0", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
-  if (verbose2) a.push("-v");
-  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
+  if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
 }
 
@@ -423,8 +423,7 @@ export function rsyncArgsDelete(opts: RsyncRunOptions) {
   if (opts.dryRun) {
     a.unshift("-n");
   }
-  if (verbose2) a.push("-v");
-  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
+  if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
 }
 
@@ -433,8 +432,7 @@ export function rsyncArgsFixMeta(opts: RsyncRunOptions) {
   // -a includes -pgo (perms, owner, group); --no-times prevents touching mtimes
   const a = ["-a", "--no-times", "--relative", "--from0", ...numericIdsFlag()];
   if (opts.dryRun) a.unshift("-n");
-  if (verbose2) a.push("-v");
-  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
+  if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
 }
 export function rsyncArgsFixMetaDirs(opts: RsyncRunOptions) {
@@ -447,8 +445,7 @@ export function rsyncArgsFixMetaDirs(opts: RsyncRunOptions) {
     ...numericIdsFlag(),
   ];
   if (opts.dryRun) a.unshift("-n");
-  if (verbose2) a.push("-v");
-  if (!isDebugEnabled(opts) && !verbose2) a.push("--quiet");
+  if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
 }
 
@@ -498,16 +495,17 @@ export function run(
   const wantProgress = typeof opts.onProgress === "function";
   const finalArgs = wantProgress ? [...PROGRESS_ARGS, ...args] : [...args];
   const tempDirArg =
-    opts.tempDir && opts.tempDir.trim()
-      ? opts.tempDir.trim()
-      : undefined;
-  if (
-    tempDirArg &&
-    !finalArgs.some((arg) => arg.startsWith("--temp-dir="))
-  ) {
-    const filesFromIndex = finalArgs.findIndex((arg) =>
-      arg.startsWith("--files-from="),
-    );
+    opts.tempDir && opts.tempDir.trim() ? opts.tempDir.trim() : undefined;
+  const filesFromIndex = finalArgs.findIndex((arg) =>
+    arg.startsWith("--files-from="),
+  );
+  let files;
+  if (REFLECT_RSYNC_VERY_VERBOSE && filesFromIndex >= 0) {
+    files = logFiles(finalArgs[filesFromIndex]);
+  } else {
+    files = "";
+  }
+  if (tempDirArg && !finalArgs.some((arg) => arg.startsWith("--temp-dir="))) {
     const insertIndex =
       filesFromIndex >= 0 ? filesFromIndex : Math.max(finalArgs.length - 2, 0);
     finalArgs.splice(insertIndex, 0, `--temp-dir=${tempDirArg}`);
@@ -520,6 +518,7 @@ export function run(
     logger.debug("rsync exec", {
       cmd,
       args: argsJoin(finalArgs),
+      files,
     });
 
   const throttleMs =
@@ -530,9 +529,7 @@ export function run(
   return new Promise((resolve) => {
     const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
       ? ["ignore", "pipe", "pipe"]
-      : verbose2
-        ? "inherit"
-        : ["ignore", "ignore", "ignore"];
+      : ["ignore", "ignore", "ignore"];
 
     const child = spawn(cmd, finalArgs, {
       stdio,
@@ -710,14 +707,21 @@ export async function rsyncCopy(
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
   } = {},
-): Promise<{ ok: boolean; zero: boolean; code: number | null; stderr?: string }> {
+): Promise<{
+  ok: boolean;
+  zero: boolean;
+  code: number | null;
+  stderr?: string;
+}> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync ${label}: nothing to do`);
     return { ok: true, zero: false, code: 0 };
   }
   if (debug) {
-    logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
+    logger.debug(
+      `>>> rsync ${label} (${fromRoot} -> ${toRoot}) ${logFiles(listFile)}`,
+    );
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -782,7 +786,9 @@ export async function rsyncCopyDirs(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
+    logger.debug(
+      `>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})  ${logFiles(listFile)}`,
+    );
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -838,7 +844,9 @@ export async function rsyncFixMeta(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
+    logger.debug(
+      `>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})  ${logFiles(listFile)}`,
+    );
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -879,7 +887,9 @@ export async function rsyncFixMetaDirs(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
+    logger.debug(
+      `>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot}) ${logFiles(listFile)}`,
+    );
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -933,7 +943,7 @@ export async function rsyncDelete(
 
     if (debug) {
       logger.debug(
-        `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
+        `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})  ${logFiles(listFile)}`,
       );
     }
     const to = ensureTrailingSlash(toRoot);
@@ -1007,5 +1017,17 @@ export async function rsyncDeleteChunked(
         tempDir: opts.tempDir,
       },
     );
+  }
+}
+
+function logFiles(listFile: string) {
+  if (!REFLECT_RSYNC_VERY_VERBOSE || !listFile) {
+    return "";
+  }
+  try {
+    const path = listFile.split("=").slice(-1)[0];
+    return readFileSync(path, "utf8").split("\0");
+  } catch (err) {
+    return `${err}`;
   }
 }
