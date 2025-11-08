@@ -64,6 +64,8 @@ import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 
+const DISABLE_SIGNATURES = true;
+
 class FatalSchedulerError extends Error {
   constructor(message: string) {
     super(message);
@@ -1157,7 +1159,7 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T>(arr: T[], size: number): T[][] => {
+  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
     if (arr.length === 0) return [];
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {
@@ -1309,12 +1311,14 @@ export async function runScheduler({
     log,
     logger,
     isMergeActive: () => mergeActive,
-    fetchRemoteAlphaSignatures: alphaIsRemote
-      ? fetchAlphaRemoteSignatures
-      : undefined,
-    fetchRemoteBetaSignatures: betaIsRemote
-      ? fetchBetaRemoteSignatures
-      : undefined,
+    fetchRemoteAlphaSignatures:
+      alphaIsRemote && !DISABLE_SIGNATURES
+        ? fetchAlphaRemoteSignatures
+        : undefined,
+    fetchRemoteBetaSignatures:
+      !betaIsRemote && !DISABLE_SIGNATURES
+        ? fetchBetaRemoteSignatures
+        : undefined,
     alphaRemoteLock: alphaLockHandle,
     betaRemoteLock: betaLockHandle,
     numericIds,
@@ -1842,12 +1846,14 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
-        fetchRemoteAlphaSignatures: alphaIsRemote
-          ? fetchAlphaRemoteSignatures
-          : undefined,
-        fetchRemoteBetaSignatures: betaIsRemote
-          ? fetchBetaRemoteSignatures
-          : undefined,
+        fetchRemoteAlphaSignatures:
+          alphaIsRemote && !DISABLE_SIGNATURES
+            ? fetchAlphaRemoteSignatures
+            : undefined,
+        fetchRemoteBetaSignatures:
+          betaIsRemote && !DISABLE_SIGNATURES
+            ? fetchBetaRemoteSignatures
+            : undefined,
         alphaRemoteLock: alphaLockHandle,
         betaRemoteLock: betaLockHandle,
       });
