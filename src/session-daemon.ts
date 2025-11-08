@@ -254,6 +254,59 @@ async function stopDaemonProcess(pid: number, logger: Logger) {
   } catch {}
 }
 
+type ForegroundOptions = {
+  stopExisting?: boolean;
+  logger?: ConsoleLogger;
+};
+
+async function runDaemonForeground(
+  sessionDb: string,
+  options: ForegroundOptions = {},
+) {
+  const baseLogger = options.logger ?? new ConsoleLogger("info");
+  const daemonLogger = baseLogger.child("daemon");
+  const existing = readPidSync();
+  if (isPidAlive(existing)) {
+    if (options.stopExisting) {
+      daemonLogger.info("stopping existing daemon before foreground start", {
+        pid: existing,
+      });
+      if (existing) await stopDaemonProcess(existing, daemonLogger);
+    } else {
+      throw new Error(`daemon already running (pid ${existing})`);
+    }
+  }
+  if (existing) {
+    removePidSync();
+  }
+  writePidSync(process.pid);
+  const stopSignal = { stopped: false };
+  const handleSignal = (sig: string) => {
+    if (!stopSignal.stopped) {
+      daemonLogger.info(`received ${sig}, stopping daemon`);
+      stopSignal.stopped = true;
+    }
+  };
+  process.on("SIGINT", () => handleSignal("SIGINT"));
+  process.on("SIGTERM", () => handleSignal("SIGTERM"));
+  const cleanUp = () => {
+    removePidSync();
+  };
+  process.on("exit", cleanUp);
+  process.on("uncaughtException", (err) => {
+    daemonLogger.error("uncaught exception", {
+      error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+    });
+    stopSignal.stopped = true;
+    cleanUp();
+    process.exit(1);
+  });
+  daemonLogger.info("daemon started", { sessionDb, mode: "foreground" });
+  await runSupervisorLoop(sessionDb, 3000, daemonLogger, stopSignal);
+  cleanUp();
+  daemonLogger.info("daemon stopped");
+}
+
 function formatStatus(pid: number | null, running: boolean) {
   if (!pid) return "stopped";
   return running ? `running (pid ${pid})` : `stale (pid ${pid})`;
@@ -307,6 +360,8 @@ export function registerSessionDaemon(program: Command) {
     .command("daemon")
     .description("manage the reflect-sync background daemon");
 
+  addSessionDbOption(daemon);
+
   addSessionDbOption(
     daemon
       .command("start")
@@ -358,46 +413,20 @@ export function registerSessionDaemon(program: Command) {
   addSessionDbOption(
     daemon
       .command("run")
-      .description("run the daemon supervisor loop (internal)")
+      .description(
+        "run the daemon in the foreground (if not already running)",
+      )
       .action(async (opts: { sessionDb?: string }, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
-        const existing = readPidSync();
-        if (isPidAlive(existing)) {
-          console.error(`daemon already running (pid ${existing})`);
-          process.exit(1);
-        }
-        if (existing) {
-          removePidSync();
-        }
-        writePidSync(process.pid);
-        const baseLogger = new ConsoleLogger("info");
-        const logger = baseLogger.child("daemon");
-        const stopSignal = { stopped: false };
-        const handleSignal = (sig: string) => {
-          if (!stopSignal.stopped) {
-            logger.info(`received ${sig}, stopping daemon`);
-            stopSignal.stopped = true;
-          }
-        };
-        process.on("SIGINT", () => handleSignal("SIGINT"));
-        process.on("SIGTERM", () => handleSignal("SIGTERM"));
-        const cleanUp = () => {
-          removePidSync();
-        };
-        process.on("exit", cleanUp);
-        process.on("uncaughtException", (err) => {
-          logger.error("uncaught exception", {
-            error:
-              err instanceof Error ? (err.stack ?? err.message) : String(err),
+        try {
+          await runDaemonForeground(sessionDb, {
+            stopExisting: false,
+            logger: new ConsoleLogger("info"),
           });
-          stopSignal.stopped = true;
-          cleanUp();
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
           process.exit(1);
-        });
-        logger.info("daemon started", { sessionDb });
-        await runSupervisorLoop(sessionDb, 3000, logger, stopSignal);
-        removePidSync();
-        logger.info("daemon stopped");
+        }
       }),
   );
 
