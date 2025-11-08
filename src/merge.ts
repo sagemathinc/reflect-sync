@@ -1565,10 +1565,46 @@ export async function runMerge({
       delDirsInBeta = sortDeepestFirst(nonRoot(delDirsInBeta));
       delDirsInAlpha = sortDeepestFirst(nonRoot(delDirsInAlpha));
 
-      const toBetaRelative = makeRelative(toBeta, betaRoot);
-      const toAlphaRelative = makeRelative(toAlpha, alphaRoot);
-      const alphaSignatureHints = buildSignatureMap(alphaDb, toBetaRelative);
-      const betaSignatureHints = buildSignatureMap(betaDb, toAlphaRelative);
+      const toBetaRelativeAll = makeRelative(toBeta, betaRoot);
+      const toAlphaRelativeAll = makeRelative(toAlpha, alphaRoot);
+
+      const alphaSignatureHintsFull = buildSignatureMap(
+        alphaDb,
+        toBetaRelativeAll,
+      );
+      const betaSignatureHintsFull = buildSignatureMap(
+        betaDb,
+        toAlphaRelativeAll,
+      );
+
+      const toBetaRelative: string[] = [];
+      const alphaSignatureHints = new Map<string, SendSignature | null>();
+      const extraBetaDirs: string[] = [];
+      for (const rel of toBetaRelativeAll) {
+        const sig = alphaSignatureHintsFull.get(rel);
+        if (sig?.kind === "dir") {
+          extraBetaDirs.push(rel);
+          continue;
+        }
+        toBetaRelative.push(rel);
+        alphaSignatureHints.set(rel, sig ?? null);
+      }
+
+      const toAlphaRelative: string[] = [];
+      const betaSignatureHints = new Map<string, SendSignature | null>();
+      const extraAlphaDirs: string[] = [];
+      for (const rel of toAlphaRelativeAll) {
+        const sig = betaSignatureHintsFull.get(rel);
+        if (sig?.kind === "dir") {
+          extraAlphaDirs.push(rel);
+          continue;
+        }
+        toAlphaRelative.push(rel);
+        betaSignatureHints.set(rel, sig ?? null);
+      }
+
+      toBetaDirs = uniq([...toBetaDirs, ...extraBetaDirs]);
+      toAlphaDirs = uniq([...toAlphaDirs, ...extraAlphaDirs]);
 
       await writeFile(listToBeta, join0(toBetaRelative));
       await writeFile(listToAlpha, join0(toAlphaRelative));
