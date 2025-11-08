@@ -10,7 +10,7 @@ echo "sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,wor
 
 sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,workdir=$workdir,xino=off,metacopy=off,redirect_dir=off $root
 
-cp run.sh $root/run.sh
+cp -v run.sh stress.sh $root/
 
 reflect terminate overlay
 reflect create --name=overlay $upperdir localhost:$upperdir2

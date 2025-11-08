@@ -4,11 +4,7 @@ set -x  # or: set -v
 for ((run=1; ; run++)); do
   echo "=== Run #$run ==="
 
-  if apt-get update \
-    && apt-get install -y latexmk \
-    && apt-get remove -y latexmk \
-    && apt-get autoremove -y \
-    && sync
+  if ./stress.sh
   then
     :  # success; loop again
   else
