@@ -1025,6 +1025,7 @@ export async function rsyncDeleteChunked(
       listFile,
       `${label} [${i + 1}/${batches.length}]`,
       {
+        direction: opts.direction,
         forceEmptySource: opts.forceEmptySource,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
