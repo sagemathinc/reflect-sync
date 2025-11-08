@@ -404,7 +404,17 @@ export function rsyncArgsBase(opts: RsyncRunOptions, from: string, to: string) {
 
 export function rsyncArgsDirs(opts: RsyncRunOptions) {
   // -d: transfer directories themselves (no recursion) — needed for empty dirs
-  const a = ["-a", "-d", "--relative", "--from0", ...numericIdsFlag()];
+  const a = [
+    "-d",
+    "--relative",
+    "--from0",
+    "--perms",
+    "--times",
+    "--group",
+    "--owner",
+    "--devices",
+    ...numericIdsFlag(),
+  ];
   if (opts.dryRun) a.unshift("-n");
   if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
