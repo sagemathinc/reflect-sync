@@ -13,7 +13,7 @@ sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,workdir=$
 cp -v run.sh stress.sh $root/
 
 reflect terminate overlay
-reflect create  --disable-micro-sync  --name=overlay $upperdir localhost:$upperdir2
+reflect create  --disable-micro-sync  --name=o $upperdir $upperdir2
 
 echo "manually run /run.sh to start the stress test"
 podman run -it --rm --rootfs "$root" bash

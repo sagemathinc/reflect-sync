@@ -14,8 +14,10 @@ import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // if true, logs every file sent over rsync
-const REFLECT_RSYNC_VERY_VERBOSE = false;
-const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = 250;
+const REFLECT_RSYNC_VERY_VERBOSE = !!process.env.REFLECT_VERY_VERBOSE;
+const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = Number(
+  process.env.REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES ?? 1000,
+);
 
 const REFLECT_COPY_CHUNK = Number(process.env.REFLECT_COPY_CHUNK ?? 10_000);
 const REFLECT_COPY_CONCURRENCY = Number(
@@ -520,7 +522,7 @@ export function run(
   if (REFLECT_RSYNC_VERY_VERBOSE && filesFromIndex >= 0) {
     files = logFiles(finalArgs[filesFromIndex]);
   } else {
-    files = "";
+    files = "...";
   }
   if (tempDirArg && !finalArgs.some((arg) => arg.startsWith("--temp-dir="))) {
     const insertIndex =
@@ -534,7 +536,7 @@ export function run(
   if (debug)
     logger.debug(
       `rsync.run ${opts.direction ?? ""}: '${cmd} ${argsJoin(finalArgs)}'`,
-      files ? { files } : {},
+      { files },
     );
 
   const throttleMs =
@@ -1046,6 +1048,7 @@ function logFiles(listFile: string) {
       v = v.slice(0, REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES);
       v.push("TRUNCATED");
     }
+    return v;
   } catch (err) {
     return `${err}`;
   }

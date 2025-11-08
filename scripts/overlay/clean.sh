@@ -5,4 +5,4 @@ set -ev
 sudo umount "$root" || true
 sudo rm -rf "$root" "$upperdir" "$upperdir2" "$workdir"
 
-reflect terminate overlay
+reflect terminate o
