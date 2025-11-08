@@ -1159,6 +1159,8 @@ export async function runScheduler({
   const hotAlpha = new Set<string>();
   const hotBeta = new Set<string>();
   let hotTimer: NodeJS.Timeout | null = null;
+  let microFlushPromise: Promise<void> | null = null;
+  let flushQueuedWhileRunning = false;
 
   let mergeActive = false;
   let alphaStream: StreamControl | null = null;
@@ -1369,71 +1371,105 @@ export async function runScheduler({
   }
 
   function scheduleHotFlush() {
+    if (microFlushPromise) {
+      flushQueuedWhileRunning = true;
+      return;
+    }
     if (hotTimer) return;
-    hotTimer = setTimeout(async () => {
+    hotTimer = setTimeout(() => {
       hotTimer = null;
-      if (fatalTriggered) return;
-      if (hotAlpha.size === 0 && hotBeta.size === 0) return;
-      const rpathsAlpha = Array.from(hotAlpha);
-      const rpathsBeta = Array.from(hotBeta);
-      hotAlpha.clear();
-      hotBeta.clear();
-      try {
-        const [alphaPartition, betaPartition] = await Promise.all([
-          partitionStablePaths("alpha", rpathsAlpha),
-          partitionStablePaths("beta", rpathsBeta),
-        ]);
-        for (const p of alphaPartition.pending) {
-          hotAlpha.add(p);
-        }
-        for (const p of betaPartition.pending) {
-          hotBeta.add(p);
-        }
-        if (!alphaPartition.ready.length && !betaPartition.ready.length) {
-          logger.debug("waiting for files to settle", {
-            pendingAlpha: alphaPartition.pending.length,
-            pendingBeta: betaPartition.pending.length,
-          });
-        } else {
-          await microSync(alphaPartition.ready, betaPartition.ready);
-        }
-      } catch (e: any) {
-        if (e instanceof PartialTransferError) {
-          const retryAlpha = e.alphaPaths ?? [];
-          const retryBeta = e.betaPaths ?? [];
-          if (retryAlpha.length) {
-            for (const relPath of retryAlpha) {
-              if (!relPath) continue;
-              hotAlpha.add(relPath);
-              recordHotEvent(alphaDb, "alpha", relPath, "partial-retry");
-            }
-          }
-          if (retryBeta.length) {
-            for (const relPath of retryBeta) {
-              if (!relPath) continue;
-              hotBeta.add(relPath);
-              recordHotEvent(betaDb, "beta", relPath, "partial-retry");
-            }
-          }
-          log("warn", "realtime", "partial transfer detected; retry scheduled", {
-            retryAlpha: retryAlpha.length,
-            retryBeta: retryBeta.length,
-          });
-        } else if (isDiskFullCause(e)) {
-          pauseForDiskFull("disk full during realtime sync", e);
-          return;
-        } else {
-          log("warn", "realtime", "microSync failed", {
-            err: String(e?.message || e),
-          });
-        }
-      } finally {
-        if (fatalTriggered) return;
-        // run another micro pass if more landed
-        if (hotAlpha.size || hotBeta.size) scheduleHotFlush();
-        requestSoon("micro-sync complete");
-      }
+      startHotFlush();
     }, MICRO_DEBOUNCE_MS);
+  }
+
+  function startHotFlush() {
+    if (microFlushPromise) {
+      flushQueuedWhileRunning = true;
+      return;
+    }
+    microFlushPromise = (async () => {
+      await flushHotOnce();
+    })();
+    microFlushPromise
+      ?.then(() => {
+        finalizeHotFlush();
+      })
+      .catch((err) => {
+        log("warn", "realtime", "micro flush failed", {
+          err: String(err?.message || err),
+        });
+        finalizeHotFlush();
+      });
+  }
+
+  function finalizeHotFlush() {
+    microFlushPromise = null;
+    if (fatalTriggered) return;
+    requestSoon("micro-sync complete");
+    const needsAnother =
+      flushQueuedWhileRunning || hotAlpha.size > 0 || hotBeta.size > 0;
+    flushQueuedWhileRunning = false;
+    if (needsAnother) {
+      scheduleHotFlush();
+    }
+  }
+
+  async function flushHotOnce(): Promise<void> {
+    if (fatalTriggered) return;
+    if (hotAlpha.size === 0 && hotBeta.size === 0) return;
+    const rpathsAlpha = Array.from(hotAlpha);
+    const rpathsBeta = Array.from(hotBeta);
+    hotAlpha.clear();
+    hotBeta.clear();
+    try {
+      const [alphaPartition, betaPartition] = await Promise.all([
+        partitionStablePaths("alpha", rpathsAlpha),
+        partitionStablePaths("beta", rpathsBeta),
+      ]);
+      for (const p of alphaPartition.pending) {
+        hotAlpha.add(p);
+      }
+      for (const p of betaPartition.pending) {
+        hotBeta.add(p);
+      }
+      if (!alphaPartition.ready.length && !betaPartition.ready.length) {
+        logger.debug("waiting for files to settle", {
+          pendingAlpha: alphaPartition.pending.length,
+          pendingBeta: betaPartition.pending.length,
+        });
+        return;
+      }
+      await microSync(alphaPartition.ready, betaPartition.ready);
+    } catch (e: any) {
+      if (e instanceof PartialTransferError) {
+        const retryAlpha = e.alphaPaths ?? [];
+        const retryBeta = e.betaPaths ?? [];
+        if (retryAlpha.length) {
+          for (const relPath of retryAlpha) {
+            if (!relPath) continue;
+            hotAlpha.add(relPath);
+            recordHotEvent(alphaDb, "alpha", relPath, "partial-retry");
+          }
+        }
+        if (retryBeta.length) {
+          for (const relPath of retryBeta) {
+            if (!relPath) continue;
+            hotBeta.add(relPath);
+            recordHotEvent(betaDb, "beta", relPath, "partial-retry");
+          }
+        }
+        log("warn", "realtime", "partial transfer detected; retry scheduled", {
+          retryAlpha: retryAlpha.length,
+          retryBeta: retryBeta.length,
+        });
+      } else if (isDiskFullCause(e)) {
+        pauseForDiskFull("disk full during realtime sync", e);
+      } else {
+        log("warn", "realtime", "microSync failed", {
+          err: String(e?.message || e),
+        });
+      }
+    }
   }
 
   // ---------- root watchers (locals only) ----------
