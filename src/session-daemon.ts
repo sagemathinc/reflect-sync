@@ -182,7 +182,11 @@ async function runSupervisorLoop(
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    for (let elapsed = 0; elapsed < intervalMs && !abortSignal.stopped; elapsed += 250) {
+    for (
+      let elapsed = 0;
+      elapsed < intervalMs && !abortSignal.stopped;
+      elapsed += 250
+    ) {
       await wait(250);
     }
   }
@@ -273,7 +277,9 @@ function writeLaunchAgent(execArgs: string[]) {
   const agentDir = join(os.homedir(), "Library", "LaunchAgents");
   fs.mkdirSync(agentDir, { recursive: true });
   const plistPath = join(agentDir, "com.reflect.sync.plist");
-  const programArguments = execArgs.map((arg) => `        <string>${arg}</string>`).join("\n");
+  const programArguments = execArgs
+    .map((arg) => `        <string>${arg}</string>`)
+    .join("\n");
   const content = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n  <dict>\n    <key>Label</key>\n    <string>com.reflect.sync</string>\n    <key>ProgramArguments</key>\n    <array>\n${programArguments}\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>EnvironmentVariables</key>\n    <dict>\n      <key>REFLECT_DISABLE_LOG_ECHO</key>\n      <string>1</string>\n    </dict>\n  </dict>\n</plist>\n`;
   fs.writeFileSync(plistPath, content);
   return plistPath;
@@ -381,7 +387,8 @@ export function registerSessionDaemon(program: Command) {
         process.on("exit", cleanUp);
         process.on("uncaughtException", (err) => {
           logger.error("uncaught exception", {
-            error: err instanceof Error ? err.stack ?? err.message : String(err),
+            error:
+              err instanceof Error ? (err.stack ?? err.message) : String(err),
           });
           stopSignal.stopped = true;
           cleanUp();
@@ -410,7 +417,9 @@ export function registerSessionDaemon(program: Command) {
               const child = spawn("systemctl", ["--user", "daemon-reload"], {
                 stdio: "inherit",
               });
-              child.on("exit", (code) => (code === 0 ? resolve() : reject(code)));
+              child.on("exit", (code) =>
+                code === 0 ? resolve() : reject(code),
+              );
               child.on("error", reject);
             });
             await new Promise<void>((resolve, reject) => {
@@ -419,7 +428,9 @@ export function registerSessionDaemon(program: Command) {
                 ["--user", "enable", "--now", `${SERVICE_NAME}.service`],
                 { stdio: "inherit" },
               );
-              child.on("exit", (code) => (code === 0 ? resolve() : reject(code)));
+              child.on("exit", (code) =>
+                code === 0 ? resolve() : reject(code),
+              );
               child.on("error", reject);
             });
             console.log("systemd user service enabled (reflect-sync)");
@@ -437,7 +448,9 @@ export function registerSessionDaemon(program: Command) {
               const child = spawn("launchctl", ["load", "-w", plistPath], {
                 stdio: "inherit",
               });
-              child.on("exit", (code) => (code === 0 ? resolve() : reject(code)));
+              child.on("exit", (code) =>
+                code === 0 ? resolve() : reject(code),
+              );
               child.on("error", reject);
             });
             console.log("launchctl agent loaded");

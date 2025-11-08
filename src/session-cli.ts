@@ -1024,10 +1024,10 @@ async function runWatchCommand(
 
   try {
     let lastAlphaScanOpTs = watchAlpha
-      ? sinceOpTs ?? getMaxOpTs(alphaDbPath)
+      ? (sinceOpTs ?? getMaxOpTs(alphaDbPath))
       : 0;
     let lastBetaScanOpTs = watchBeta
-      ? sinceOpTs ?? getMaxOpTs(betaDbPath)
+      ? (sinceOpTs ?? getMaxOpTs(betaDbPath))
       : 0;
     let lastAlphaHotOpTs = sinceOpTs ?? 0;
     let lastBetaHotOpTs = sinceOpTs ?? 0;
@@ -1209,7 +1209,14 @@ function lookupLatestMeta(
        LIMIT 1`,
     )
     .get(path, path, path) as
-    | { kind: string; size: number | null; mtime: number | null; hash: string | null; target: string | null; deleted: number }
+    | {
+        kind: string;
+        size: number | null;
+        mtime: number | null;
+        hash: string | null;
+        target: string | null;
+        deleted: number;
+      }
     | undefined;
   if (!row) return null;
   return {

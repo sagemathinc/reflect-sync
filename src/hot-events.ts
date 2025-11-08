@@ -34,11 +34,9 @@ export function recordHotEvent(
   if (!path) return;
   const db = getHandle(dbPath);
   const now = Date.now();
-  db
-    .prepare(
-      `INSERT INTO hot_events(path, side, op_ts, source) VALUES(?, ?, ?, ?);`,
-    )
-    .run(path, side, now, source);
+  db.prepare(
+    `INSERT INTO hot_events(path, side, op_ts, source) VALUES(?, ?, ?, ?);`,
+  ).run(path, side, now, source);
   const last = lastCleanup.get(dbPath) ?? 0;
   if (now - last > HOT_EVENT_TTL_MS) {
     db.prepare(`DELETE FROM hot_events WHERE op_ts < ?`).run(
@@ -62,9 +60,7 @@ export function fetchHotEvents(
        ORDER BY op_ts ASC
        LIMIT ?`,
   );
-  const params = opts.side
-    ? [sinceOpTs, opts.side, limit]
-    : [sinceOpTs, limit];
+  const params = opts.side ? [sinceOpTs, opts.side, limit] : [sinceOpTs, limit];
   const rows = stmt.all(...params) as HotEvent[];
   if (rows.length) {
     const ids = rows.map((row) => row.id);

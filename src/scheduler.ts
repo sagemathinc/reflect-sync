@@ -42,10 +42,7 @@ import {
   RemoteConnectionError,
 } from "./remote.js";
 import type { SendSignature } from "./recent-send.js";
-import {
-  applySignaturesToDb,
-  type SignatureEntry,
-} from "./signature-store.js";
+import { applySignaturesToDb, type SignatureEntry } from "./signature-store.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
@@ -65,10 +62,7 @@ import {
 } from "./ignore.js";
 import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
-import {
-  waitForStableFile,
-  DEFAULT_STABILITY_OPTIONS,
-} from "./stability.js";
+import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -409,8 +403,7 @@ export async function runScheduler({
 
   const stabilityOptions = { ...DEFAULT_STABILITY_OPTIONS };
   const stabilityEnabled =
-    Number.isFinite(stabilityOptions.windowMs) &&
-    stabilityOptions.windowMs > 0;
+    Number.isFinite(stabilityOptions.windowMs) && stabilityOptions.windowMs > 0;
 
   const remotePort = alphaHost ? alphaPort : betaPort;
   compress = await resolveCompression(
@@ -961,9 +954,7 @@ export async function runScheduler({
           if (evt.error) {
             pending.reject(
               new Error(
-                typeof evt.error === "string"
-                  ? evt.error
-                  : String(evt.error),
+                typeof evt.error === "string" ? evt.error : String(evt.error),
               ),
             );
             flushBuffered();
@@ -979,7 +970,7 @@ export async function runScheduler({
                 target:
                   entry.target === undefined
                     ? undefined
-                    : entry.target ?? null,
+                    : (entry.target ?? null),
               });
             }
           }
@@ -1329,10 +1320,7 @@ export async function runScheduler({
     numericIds,
   });
 
-  async function partitionStablePaths(
-    side: "alpha" | "beta",
-    paths: string[],
-  ) {
+  async function partitionStablePaths(side: "alpha" | "beta", paths: string[]) {
     if (!stabilityEnabled || !paths.length) {
       return { ready: paths, pending: [] as string[] };
     }
@@ -1854,15 +1842,15 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         markAlphaToBeta: microSync.markAlphaToBeta,
         markBetaToAlpha: microSync.markBetaToAlpha,
-      fetchRemoteAlphaSignatures: alphaIsRemote
-        ? fetchAlphaRemoteSignatures
-        : undefined,
-      fetchRemoteBetaSignatures: betaIsRemote
-        ? fetchBetaRemoteSignatures
-        : undefined,
-      alphaRemoteLock: alphaLockHandle,
-      betaRemoteLock: betaLockHandle,
-    });
+        fetchRemoteAlphaSignatures: alphaIsRemote
+          ? fetchAlphaRemoteSignatures
+          : undefined,
+        fetchRemoteBetaSignatures: betaIsRemote
+          ? fetchBetaRemoteSignatures
+          : undefined,
+        alphaRemoteLock: alphaLockHandle,
+        betaRemoteLock: betaLockHandle,
+      });
       mergeOk = true;
     } catch (err) {
       mergeError = err;

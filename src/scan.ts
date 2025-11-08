@@ -3,7 +3,11 @@
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
-import { readlink, stat as statAsync, lstat as lstatAsync } from "node:fs/promises";
+import {
+  readlink,
+  stat as statAsync,
+  lstat as lstatAsync,
+} from "node:fs/promises";
 import { getDb } from "./db.js";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -648,9 +652,7 @@ ON CONFLICT(path) DO UPDATE SET
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
       const st =
-        !numericIds && entry.stats
-          ? entry.stats
-          : await lstatAsync(abs);
+        !numericIds && entry.stats ? entry.stats : await lstatAsync(abs);
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
       }

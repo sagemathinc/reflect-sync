@@ -175,5 +175,4 @@ describe("rfsync: future capabilities", () => {
     expect(st.size).toBe(200 * 1024 * 1024);
     // FUTURE: check allocated blocks on Linux via `stat -c %b` or fs.statfs, then compare ratio.
   });
-
 });

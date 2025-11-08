@@ -121,7 +121,9 @@ async function buildContext(
 
   const host = side === "alpha" ? session.alpha_host : session.beta_host;
   const port =
-    side === "alpha" ? session.alpha_port ?? undefined : session.beta_port ?? undefined;
+    side === "alpha"
+      ? (session.alpha_port ?? undefined)
+      : (session.beta_port ?? undefined);
 
   const { rootPosix, rootDisplay, rootLocalAbs, displayPrefix } =
     await resolveRootInfo(rootRaw, host ?? undefined, port);
@@ -129,21 +131,17 @@ async function buildContext(
   const pathProvided = !!(requestedPath && requestedPath.trim());
   const relPath =
     pathProvided || requestedPath === ""
-      ? await resolveRelativePath(
-          requestedPath ?? "",
-          {
-            rootPosix,
-            rootLocalAbs,
-            host: host ?? undefined,
-            port,
-            displayPrefix,
-            rootDisplay,
-          },
-        )
+      ? await resolveRelativePath(requestedPath ?? "", {
+          rootPosix,
+          rootLocalAbs,
+          host: host ?? undefined,
+          port,
+          displayPrefix,
+          rootDisplay,
+        })
       : null;
 
-  const absPosix =
-    relPath === null ? rootPosix : toAbs(relPath, rootPosix);
+  const absPosix = relPath === null ? rootPosix : toAbs(relPath, rootPosix);
   const absDisplay = host
     ? `${displayPrefix}${absPosix}`
     : relPath === null
@@ -213,7 +211,12 @@ async function resolveRelativePath(
       ctx.host,
       ctx.port ?? undefined,
     );
-    ensureWithin(ctx.rootPosix, abs, `${ctx.displayPrefix}${abs}`, ctx.rootDisplay);
+    ensureWithin(
+      ctx.rootPosix,
+      abs,
+      `${ctx.displayPrefix}${abs}`,
+      ctx.rootDisplay,
+    );
     return toRel(abs, ctx.rootPosix);
   }
 
@@ -224,7 +227,10 @@ async function resolveRelativePath(
   return toRel(absPosix, ctx.rootPosix);
 }
 
-async function resolveLocalAbsolute(pathInput: string, rootAbs: string): Promise<string> {
+async function resolveLocalAbsolute(
+  pathInput: string,
+  rootAbs: string,
+): Promise<string> {
   const trimmed = pathInput.trim();
   if (!trimmed) return rootAbs;
   if (trimmed === "~" || trimmed.startsWith("~/")) {
@@ -267,17 +273,21 @@ function ensureWithin(
 ) {
   if (rootPosix === "/") {
     if (!targetPosix.startsWith("/")) {
-      throw new Error(`Path '${displayPath}' is outside session root '${rootDisplay}'`);
+      throw new Error(
+        `Path '${displayPath}' is outside session root '${rootDisplay}'`,
+      );
     }
     return;
   }
   if (
     targetPosix !== rootPosix &&
-    !targetPosix.startsWith(rootPosix.endsWith("/")
-      ? rootPosix
-      : `${rootPosix}/`)
+    !targetPosix.startsWith(
+      rootPosix.endsWith("/") ? rootPosix : `${rootPosix}/`,
+    )
   ) {
-    throw new Error(`Path '${displayPath}' is outside session root '${rootDisplay}'`);
+    throw new Error(
+      `Path '${displayPath}' is outside session root '${rootDisplay}'`,
+    );
   }
 }
 
@@ -402,7 +412,9 @@ function directoryExists(db: ReturnType<typeof getDb>, rel: string): boolean {
 
 function ensureDirectoryExists(db: ReturnType<typeof getDb>, rel: string) {
   if (directoryExists(db, rel)) return;
-  throw new Error(`Path '${rel}' is not tracked by this session (possible ignore or out of scope)`);
+  throw new Error(
+    `Path '${rel}' is not tracked by this session (possible ignore or out of scope)`,
+  );
 }
 
 function fetchRecentFiles(

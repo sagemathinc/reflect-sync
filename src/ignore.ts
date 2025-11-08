@@ -81,10 +81,7 @@ export function createIgnorer(patterns: string[] = []): Ignorer {
   };
 }
 
-export function autoIgnoreForRoot(
-  root: string,
-  syncHome: string,
-): string[] {
+export function autoIgnoreForRoot(root: string, syncHome: string): string[] {
   if (!root) return [];
   const patterns: string[] = [];
   const resolveTilde = (p: string) => {

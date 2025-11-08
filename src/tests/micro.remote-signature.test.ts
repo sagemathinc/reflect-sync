@@ -4,10 +4,7 @@ import fs from "node:fs/promises";
 
 import { makeMicroSync } from "../micro-sync";
 import { getDb } from "../db";
-import {
-  getRecentSendSignatures,
-  type SendSignature,
-} from "../recent-send";
+import { getRecentSendSignatures, type SendSignature } from "../recent-send";
 import type { SignatureEntry } from "../signature-store";
 
 jest.mock("../rsync.js", () => {
@@ -200,4 +197,4 @@ describe("micro-sync remote signature coordination", () => {
     expect(alphaRecent.get(relPath)).not.toBeUndefined();
   });
 });
-``
+``;

@@ -75,14 +75,7 @@ describe("reflect forward CLI", () => {
 
     const listProgram = buildProgram();
     await listProgram.parseAsync(
-      [
-        "node",
-        "reflect",
-        "--session-db",
-        sessionDbPath,
-        "forward",
-        "list",
-      ],
+      ["node", "reflect", "--session-db", sessionDbPath, "forward", "list"],
       { from: "node" },
     );
 

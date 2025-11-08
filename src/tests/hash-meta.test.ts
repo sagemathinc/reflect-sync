@@ -5,7 +5,7 @@ const fakeStats = (mode: number, uid = 0, gid = 0) =>
     mode,
     uid,
     gid,
-  } as any);
+  }) as any;
 
 describe("withUpdatedMetadataHash", () => {
   test("updates mode hash while preserving digest", () => {

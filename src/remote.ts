@@ -34,7 +34,11 @@ async function ssh(
   log: RemoteLogOptions | undefined,
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
-  log?.logger?.debug("ssh exec", { host, command: argsJoin(args), label: what });
+  log?.logger?.debug("ssh exec", {
+    host,
+    command: argsJoin(args),
+    label: what,
+  });
   if (log?.verbose) console.log("$ ssh", argsJoin(args));
   let stdout = "",
     stderr = "";
@@ -87,7 +91,8 @@ export async function remoteWhich(
     args.push("-p", String(port));
   }
   args.push(host, `sh -lc 'which ${cmd}'`);
-  const logCfg: RemoteLogOptions | undefined = logger || verbose ? { logger, verbose } : undefined;
+  const logCfg: RemoteLogOptions | undefined =
+    logger || verbose ? { logger, verbose } : undefined;
   let { stdout: out } = await ssh(host, args, logCfg, `which ${cmd}`);
   out = out.trim();
   remoteWhichCache.set(key, out);
@@ -236,12 +241,7 @@ export async function remoteDirExists({
   const logCfg: RemoteLogOptions | undefined =
     logger || verbose ? { logger, verbose } : undefined;
   try {
-    const { stdout } = await ssh(
-      host,
-      args,
-      logCfg,
-      `test -d ${path}`,
-    );
+    const { stdout } = await ssh(host, args, logCfg, `test -d ${path}`);
     const out = stdout.trim();
     return out === "yes";
   } catch (err) {

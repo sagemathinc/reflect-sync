@@ -1,11 +1,13 @@
 import type { Stats } from "node:fs";
 import { modeHash } from "./hash.js";
 
-type MetaSource = Pick<Stats, "mode" | "uid" | "gid"> | {
-  mode: number;
-  uid?: number | null;
-  gid?: number | null;
-};
+type MetaSource =
+  | Pick<Stats, "mode" | "uid" | "gid">
+  | {
+      mode: number;
+      uid?: number | null;
+      gid?: number | null;
+    };
 
 function stringifyIds(uid?: number | null, gid?: number | null): string {
   const u = Number.isFinite(uid ?? NaN) ? Number(uid) : 0;

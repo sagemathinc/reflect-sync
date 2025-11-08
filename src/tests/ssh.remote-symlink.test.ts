@@ -46,63 +46,59 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
     }
   });
 
-  it(
-    "create directory that is target of symlink, sync, move directory, sync",
-    async () => {
-      const child = startSchedulerRemote({
-        alphaRoot,
-        betaRootRemote,
-        alphaDb,
-        betaDb,
-        baseDb,
-        prefer: "alpha",
-      });
+  it("create directory that is target of symlink, sync, move directory, sync", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
 
-      try {
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 1,
-          15_000,
-          10,
-        );
-        await fsp.mkdir(join(alphaRoot, "x"));
-        await fsp.symlink("x", join(alphaRoot, "x.link"));
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        15_000,
+        10,
+      );
+      await fsp.mkdir(join(alphaRoot, "x"));
+      await fsp.symlink("x", join(alphaRoot, "x.link"));
 
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 2,
-          15_000,
-          10,
-        );
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 2,
+        15_000,
+        10,
+      );
 
-        await expect(linkExists(join(betaRootRemote, "x.link")));
-        await expect(dirExists(join(betaRootRemote, "x")));
+      await expect(linkExists(join(betaRootRemote, "x.link")));
+      await expect(dirExists(join(betaRootRemote, "x")));
 
-        await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
+      await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
 
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 3,
-          15_000,
-          10,
-        );
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 3,
+        15_000,
+        10,
+      );
 
-        expect(await fsp.readdir(alphaRoot)).toEqual([
-          ".reflect-rsync-tmp",
-          "x.link",
-          "x2",
-        ]);
-        expect(await fsp.readdir(betaRootRemote)).toEqual([
-          ".reflect-rsync-tmp",
-          "x.link",
-          "x2",
-        ]);
-        await expect(linkExists(join(alphaRoot, "x.link")));
-        await expect(linkExists(join(betaRootRemote, "x.link")));
-      } finally {
-        await stopScheduler(child);
-      }
-    },
-    20_000,
-  );
+      expect(await fsp.readdir(alphaRoot)).toEqual([
+        ".reflect-rsync-tmp",
+        "x.link",
+        "x2",
+      ]);
+      expect(await fsp.readdir(betaRootRemote)).toEqual([
+        ".reflect-rsync-tmp",
+        "x.link",
+        "x2",
+      ]);
+      await expect(linkExists(join(alphaRoot, "x.link")));
+      await expect(linkExists(join(betaRootRemote, "x.link")));
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 20_000);
 });

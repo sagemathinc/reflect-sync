@@ -67,9 +67,7 @@ describe("ingest metadata tie-breaker", () => {
     const db = getDb(roots.aDb);
     try {
       const row = db
-        .prepare(
-          `SELECT hash, hashed_ctime, op_ts FROM files WHERE path = ?`,
-        )
+        .prepare(`SELECT hash, hashed_ctime, op_ts FROM files WHERE path = ?`)
         .get(relPath) as {
         hash?: string;
         hashed_ctime?: number;

@@ -64,6 +64,9 @@ export function signatureEquals(
   if (a.kind === "missing" && b.kind === "missing") {
     return true;
   }
+  if (a.ctime && b.ctime) {
+    return a.kind === b.kind && a.ctime === b.ctime;
+  }
   if (a.hash && b.hash) {
     return a.kind === b.kind && a.hash === b.hash;
   }

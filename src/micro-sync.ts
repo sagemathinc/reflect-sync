@@ -1,7 +1,13 @@
 // src/micro-sync.ts
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, writeFile, lstat as fsLstat, stat as fsStat } from "node:fs/promises";
+import {
+  mkdtemp,
+  rm,
+  writeFile,
+  lstat as fsLstat,
+  stat as fsStat,
+} from "node:fs/promises";
 import { lstatSync } from "node:fs";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
@@ -25,10 +31,7 @@ import {
 } from "./rsync-compression.js";
 import type { Logger } from "./logger.js";
 import { fetchOpStamps } from "./op-stamp.js";
-import {
-  applySignaturesToDb,
-  type SignatureEntry,
-} from "./signature-store.js";
+import { applySignaturesToDb, type SignatureEntry } from "./signature-store.js";
 
 export class PartialTransferError extends Error {
   alphaPaths?: string[];
@@ -259,8 +262,7 @@ export function makeMicroSync({
   };
 
   const isVanishedWarning = (stderr?: string | null) =>
-    typeof stderr === "string" &&
-    stderr.toLowerCase().includes("vanished");
+    typeof stderr === "string" && stderr.toLowerCase().includes("vanished");
 
   const ensureNoPartial = (
     direction: "alpha->beta" | "beta->alpha",
@@ -337,14 +339,11 @@ export function makeMicroSync({
   ) => {
     if (!paths.length) return;
     const unique = dedupe(paths);
-    const destDb =
-      direction === "alpha->beta" ? betaDbPath : alphaDbPath;
-    const destRoot =
-      direction === "alpha->beta" ? betaRoot : alphaRoot;
+    const destDb = direction === "alpha->beta" ? betaDbPath : alphaDbPath;
+    const destRoot = direction === "alpha->beta" ? betaRoot : alphaRoot;
     const destIsRemote =
       direction === "alpha->beta" ? betaIsRemote : alphaIsRemote;
-    const sourceDb =
-      direction === "alpha->beta" ? alphaDbPath : betaDbPath;
+    const sourceDb = direction === "alpha->beta" ? alphaDbPath : betaDbPath;
 
     const destStamps = fetchOpStamps(destDb, unique);
     const sourceStamps = fetchOpStamps(sourceDb, unique);
@@ -372,10 +371,7 @@ export function makeMicroSync({
         };
       }
 
-      const target =
-        sourceStamp?.target ??
-        destStamp?.target ??
-        undefined;
+      const target = sourceStamp?.target ?? destStamp?.target ?? undefined;
 
       if (destIsRemote && signature.kind === "file") {
         applyEntries.push({ path, signature, target });
@@ -473,8 +469,7 @@ export function makeMicroSync({
     for (const path of targets) {
       const sig = sigMap.get(path);
       if (!sig || sig.kind === "missing") continue;
-      const watermark =
-        sig.ctime ?? sig.mtime ?? sig.opTs ?? Date.now();
+      const watermark = sig.ctime ?? sig.mtime ?? sig.opTs ?? Date.now();
       releases.push({ path, watermark });
     }
     return releases;
@@ -580,6 +575,7 @@ export function makeMicroSync({
         ],
         [0, 23, 24],
         {
+          direction,
           logger: microLogger,
           logLevel: "debug",
           tempDir: tempDirArg,
@@ -627,6 +623,7 @@ export function makeMicroSync({
         ],
         [0, 23, 24],
         {
+          direction,
           logger: microLogger,
           logLevel: "debug",
           tempDir: tempDirArg,
@@ -821,10 +818,7 @@ export function makeMicroSync({
       if (toBeta.length) {
         const listAllA2B = path.join(tmp, "alpha2beta.all");
         await writeFile(listAllA2B, join0(toBeta));
-        const betaReleasePlan = categorizeForRelease(
-          toBeta,
-          alphaSigMap,
-        );
+        const betaReleasePlan = categorizeForRelease(toBeta, alphaSigMap);
         const needBetaLock = betaIsRemote && !!betaRemoteLock;
         const betaLockedPaths = needBetaLock ? [...toBeta] : [];
         if (needBetaLock && betaLockedPaths.length) {
@@ -900,10 +894,9 @@ export function makeMicroSync({
             toBeta,
           );
           if (!betaPostSignatures.length && toBeta.length) {
-            throw new PartialTransferError(
-              "alpha→beta transfer unverifiable",
-              { alphaPaths: toBeta },
-            );
+            throw new PartialTransferError("alpha→beta transfer unverifiable", {
+              alphaPaths: toBeta,
+            });
           }
           const betaSuccessPaths = dedupe(
             betaPostSignatures.map((entry) => entry.path),
@@ -939,10 +932,7 @@ export function makeMicroSync({
       if (toAlpha.length) {
         const listAllB2A = path.join(tmp, "beta2alpha.all");
         await writeFile(listAllB2A, join0(toAlpha));
-        const alphaReleasePlan = categorizeForRelease(
-          toAlpha,
-          betaSigMap,
-        );
+        const alphaReleasePlan = categorizeForRelease(toAlpha, betaSigMap);
         const needAlphaLock = alphaIsRemote && !!alphaRemoteLock;
         const alphaLockedPaths = needAlphaLock ? [...toAlpha] : [];
         if (needAlphaLock && alphaLockedPaths.length) {
@@ -1018,10 +1008,9 @@ export function makeMicroSync({
             toAlpha,
           );
           if (!alphaPostSignatures.length && toAlpha.length) {
-            throw new PartialTransferError(
-              "beta→alpha transfer unverifiable",
-              { betaPaths: toAlpha },
-            );
+            throw new PartialTransferError("beta→alpha transfer unverifiable", {
+              betaPaths: toAlpha,
+            });
           }
           const alphaSuccessPaths = dedupe(
             alphaPostSignatures.map((entry) => entry.path),
@@ -1067,7 +1056,12 @@ export function makeMicroSync({
     //log("info", "realtime", `markAlphaToBeta: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markAlphaToBeta: ${paths.length} paths`);
     const skipRemoteIgnore = !!opts?.remoteIgnoreHandled;
-    if (!skipRemoteIgnore && betaIsRemote && fetchRemoteBetaSignatures && paths.length) {
+    if (
+      !skipRemoteIgnore &&
+      betaIsRemote &&
+      fetchRemoteBetaSignatures &&
+      paths.length
+    ) {
       await fetchRemoteBetaSignatures(paths, { ignore: true });
     }
     recordDirection("alpha->beta", paths, opts?.signatures);
@@ -1080,7 +1074,12 @@ export function makeMicroSync({
     //log("info", "realtime", `markBetaToAlpha: ${JSON.stringify(paths)}`);
     log("info", "realtime", `markBetaToAlpha: ${paths.length} paths`);
     const skipRemoteIgnore = !!opts?.remoteIgnoreHandled;
-    if (!skipRemoteIgnore && alphaIsRemote && fetchRemoteAlphaSignatures && paths.length) {
+    if (
+      !skipRemoteIgnore &&
+      alphaIsRemote &&
+      fetchRemoteAlphaSignatures &&
+      paths.length
+    ) {
       await fetchRemoteAlphaSignatures(paths, { ignore: true });
     }
     recordDirection("beta->alpha", paths, opts?.signatures);

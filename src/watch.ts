@@ -25,15 +25,9 @@ import {
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
 import { waitForStableFile } from "./stability.js";
-import {
-  type SendSignature,
-  signatureEquals,
-} from "./recent-send.js";
+import { type SendSignature, signatureEquals } from "./recent-send.js";
 import { stringDigest, defaultHashAlg, modeHash } from "./hash.js";
-import {
-  DeviceBoundary,
-  type DeviceCheckOptions,
-} from "./device-boundary.js";
+import { DeviceBoundary, type DeviceCheckOptions } from "./device-boundary.js";
 
 const HASH_ALG = defaultHashAlg();
 const IGNORE_TTL_MS = Number(
@@ -174,16 +168,13 @@ function serveJsonControl(handlers: ControlHandlers) {
         const ignore = Boolean(msg.ignore);
         const stable = msg.stable === false ? false : true;
         const paths: string[] = Array.isArray(msg.paths)
-          ? msg.paths
-              .map((p) => norm(String(p || "").replace(/^\.\/+/, "")))
+          ? msg.paths.map((p) => norm(String(p || "").replace(/^\.\/+/, "")))
           : [];
         await handlers.handleStat(requestId, paths, { ignore, stable });
       } else if (op === "lock" && handlers.handleLock) {
         const requestId = Number(msg.requestId ?? 0);
         const paths: string[] = Array.isArray(msg.paths)
-          ? msg.paths
-              .map((p) => norm(normalizeRel(p)))
-              .filter((p) => !!p)
+          ? msg.paths.map((p) => norm(normalizeRel(p))).filter((p) => !!p)
           : [];
         await respond("lockAck", requestId, () =>
           handlers.handleLock!(requestId, paths),
@@ -195,11 +186,8 @@ function serveJsonControl(handlers: ControlHandlers) {
               .map((entry: any) => ({
                 path: norm(normalizeRel(entry?.path)),
                 watermark:
-                  entry?.watermark == null
-                    ? null
-                    : Number(entry.watermark),
-                ttlMs:
-                  entry?.ttlMs == null ? undefined : Number(entry.ttlMs),
+                  entry?.watermark == null ? null : Number(entry.watermark),
+                ttlMs: entry?.ttlMs == null ? undefined : Number(entry.ttlMs),
               }))
               .filter((e) => !!e.path)
           : [];
@@ -209,9 +197,7 @@ function serveJsonControl(handlers: ControlHandlers) {
       } else if (op === "unlock" && handlers.handleUnlock) {
         const requestId = Number(msg.requestId ?? 0);
         const paths: string[] = Array.isArray(msg.paths)
-          ? msg.paths
-              .map((p) => norm(normalizeRel(p)))
-              .filter((p) => !!p)
+          ? msg.paths.map((p) => norm(normalizeRel(p))).filter((p) => !!p)
           : [];
         await respond("unlockAck", requestId, () =>
           handlers.handleUnlock!(requestId, paths),
@@ -526,9 +512,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         await addHotAnchor(rdir);
       } catch (e: any) {
         console.error(
-          `watch: hot add failed for '${rdir}': ${String(
-            e?.message || e,
-          )}`,
+          `watch: hot add failed for '${rdir}': ${String(e?.message || e)}`,
         );
       }
     }
@@ -562,7 +546,8 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         return true;
       } else if (forced.watermark != null) {
         const ctime =
-          statsCtimeMs(stats) ?? (await currentCtimeMs(abs ?? path.join(rootAbs, rel)));
+          statsCtimeMs(stats) ??
+          (await currentCtimeMs(abs ?? path.join(rootAbs, rel)));
         if (ctime != null && ctime <= forced.watermark) {
           return true;
         }
@@ -608,11 +593,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       emitImmediate(rel, abs, ev, stats);
       return;
     }
-    if (
-      !REMOTE_STABILITY_ENABLED ||
-      ev === "addDir" ||
-      ev === "unlinkDir"
-    ) {
+    if (!REMOTE_STABILITY_ENABLED || ev === "addDir" || ev === "unlinkDir") {
       emitImmediate(rel, abs, ev, stats);
       return;
     }
@@ -662,7 +643,8 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       forcedLocks.set(rel, {
         state: "released",
         watermark: entry.watermark ?? null,
-        expiresAt: now + (entry.ttlMs && entry.ttlMs > 0 ? entry.ttlMs : LOCK_TTL_MS),
+        expiresAt:
+          now + (entry.ttlMs && entry.ttlMs > 0 ? entry.ttlMs : LOCK_TTL_MS),
       });
     }
   }

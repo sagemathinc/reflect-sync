@@ -532,7 +532,9 @@ export async function editSession(options: SessionEditOptions) {
       if (nextName) {
         const existing = loadSessionByName(sessionDb, nextName);
         if (existing && existing.id !== id) {
-          throw new Error(`Session name '${nextName}' is already in use (id=${existing.id}).`);
+          throw new Error(
+            `Session name '${nextName}' is already in use (id=${existing.id}).`,
+          );
         }
       }
       updates.name = nextName;
@@ -543,7 +545,11 @@ export async function editSession(options: SessionEditOptions) {
   // Compress update
   if (compress !== undefined || compressLevel !== undefined) {
     const currentCompress = row.compress ?? "auto";
-    const nextCompress = combineCompress(row.compress ?? null, compress, compressLevel);
+    const nextCompress = combineCompress(
+      row.compress ?? null,
+      compress,
+      compressLevel,
+    );
     if (nextCompress !== currentCompress) {
       updates.compress = nextCompress;
       changes.push(`compress=${nextCompress}`);
@@ -556,15 +562,15 @@ export async function editSession(options: SessionEditOptions) {
   if (resetIgnore || ignoreAdds.length) {
     let patterns = deserializeIgnoreRules(row.ignore_rules);
     if (resetIgnore) patterns = [];
-  if (ignoreAdds.length) patterns.push(...ignoreAdds);
-  const merged = normalizeIgnorePatterns(patterns);
-  const nextBlob = serializeIgnoreRules(merged);
-  if (nextBlob !== row.ignore_rules) {
-    updates.ignore_rules = nextBlob;
-    changes.push("ignore");
-    needRestart = true;
+    if (ignoreAdds.length) patterns.push(...ignoreAdds);
+    const merged = normalizeIgnorePatterns(patterns);
+    const nextBlob = serializeIgnoreRules(merged);
+    if (nextBlob !== row.ignore_rules) {
+      updates.ignore_rules = nextBlob;
+      changes.push("ignore");
+      needRestart = true;
+    }
   }
-}
 
   if (disableMicroSync !== undefined) {
     const desired = !!disableMicroSync;
@@ -628,7 +634,9 @@ export async function editSession(options: SessionEditOptions) {
   }
 
   if (alphaEndpoint.host && betaEndpoint.host) {
-    throw new Error("Both sides remote is not supported yet (rsync two-remote).");
+    throw new Error(
+      "Both sides remote is not supported yet (rsync two-remote).",
+    );
   }
 
   if (alphaSpec !== undefined) {

@@ -127,9 +127,7 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
 
     test("delta from remote scan shows up in local DB", async () => {
       if (sshSetupError) {
-        console.warn(
-          `skipping ssh integration test: ${sshSetupError.message}`,
-        );
+        console.warn(`skipping ssh integration test: ${sshSetupError.message}`);
         return;
       }
 

@@ -63,20 +63,8 @@ export async function sync(
   args?: string[],
   args2?: string[],
 ) {
-  await runDist("scan.js", [
-    "--root",
-    r.aRoot,
-    "--db",
-    r.aDb,
-    ...(args ?? []),
-  ]);
-  await runDist("scan.js", [
-    "--root",
-    r.bRoot,
-    "--db",
-    r.bDb,
-    ...(args ?? []),
-  ]);
+  await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...(args ?? [])]);
+  await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...(args ?? [])]);
   const mergeArgs = args2 ?? args ?? [];
   await runDist("merge.js", [
     "--alpha-root",

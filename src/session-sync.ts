@@ -1,7 +1,11 @@
 // src/session-sync.ts
 
 import { Command } from "commander";
-import { ensureSessionDb, getSessionDbPath, resolveSessionRow } from "./session-db.js";
+import {
+  ensureSessionDb,
+  getSessionDbPath,
+  resolveSessionRow,
+} from "./session-db.js";
 import type { Database } from "./db.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 
@@ -26,7 +30,10 @@ interface ProgressState {
   lastLogId: number;
 }
 
-function parsePositiveInt(raw: string | number | undefined, fallback: number): number {
+function parsePositiveInt(
+  raw: string | number | undefined,
+  fallback: number,
+): number {
   if (raw === undefined) return fallback;
   const value =
     typeof raw === "number"
@@ -129,7 +136,11 @@ function drainProgressLogs(state: ProgressState): void {
   }
 }
 
-function enqueueSyncCommand(db: Database, sessionId: number, attempt: number): number {
+function enqueueSyncCommand(
+  db: Database,
+  sessionId: number,
+  attempt: number,
+): number {
   const ts = Date.now();
   const payload = JSON.stringify({ requested_at: ts, attempt });
   const info = db
@@ -199,7 +210,9 @@ async function runSyncForSession(
 
   const running = checkSessionRunning(db, sessionRow.id);
   if (!running.ok) {
-    throw new Error(`session ${label} is not running (${running.reason ?? "unknown"})`);
+    throw new Error(
+      `session ${label} is not running (${running.reason ?? "unknown"})`,
+    );
   }
 
   let previousDigests: DigestSnapshot | null = null;
@@ -269,9 +282,7 @@ async function runSyncForSession(
 export function registerSessionSync(sessionCmd: Command) {
   sessionCmd
     .command("sync")
-    .description(
-      "trigger immediate sync cycle(s) and verify digests converge",
-    )
+    .description("trigger immediate sync cycle(s) and verify digests converge")
     .argument("<id-or-name...>", "session id(s) or name(s)")
     .option(
       "--session-db <file>",
@@ -324,7 +335,9 @@ export function registerSessionSync(sessionCmd: Command) {
               );
             } catch (err) {
               const message =
-                err instanceof Error ? err.message : String(err ?? "unknown error");
+                err instanceof Error
+                  ? err.message
+                  : String(err ?? "unknown error");
               console.error(message);
               process.exitCode = 1;
               return;

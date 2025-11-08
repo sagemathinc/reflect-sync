@@ -20,9 +20,9 @@ describe("DeviceBoundary", () => {
   test("children under the root share its device id", async () => {
     const child = path.join(rootDir, "child.txt");
     await writeFile(child, "alpha");
-    await expect(
-      guard.isOnRootDevice(child, { isDir: false }),
-    ).resolves.toBe(true);
+    await expect(guard.isOnRootDevice(child, { isDir: false })).resolves.toBe(
+      true,
+    );
   });
 
   test("explicit stats with a different dev flag cross-device entries", async () => {

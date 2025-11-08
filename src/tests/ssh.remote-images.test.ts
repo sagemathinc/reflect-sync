@@ -50,84 +50,80 @@ describeIfSsh("SSH remote sync – bulk image dataset", () => {
     }
   });
 
-  it(
-    "bulk image dataset sync maintains parity without echo",
-    async () => {
-      const child = startSchedulerRemote({
-        alphaRoot,
-        betaRootRemote,
-        alphaDb,
-        betaDb,
-        baseDb,
-        prefer: "alpha",
-      });
+  it("bulk image dataset sync maintains parity without echo", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
 
-      const datasetDir = "dataset";
-      const alphaDataset = join(alphaRoot, datasetDir);
-      const betaDataset = join(betaRootRemote, datasetDir);
+    const datasetDir = "dataset";
+    const alphaDataset = join(alphaRoot, datasetDir);
+    const betaDataset = join(betaRootRemote, datasetDir);
 
-      try {
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 1,
-          20_000,
-          20,
-        );
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        20_000,
+        20,
+      );
 
-        await fsp.mkdir(alphaDataset, { recursive: true });
-        const groups = 8;
-        const imagesPerGroup = 150;
-        const size = 2 * 1024;
-        for (let g = 0; g < groups; g++) {
-          const groupDir = join(alphaDataset, `group-${g}`);
-          await fsp.mkdir(groupDir, { recursive: true });
-          for (let i = 0; i < imagesPerGroup; i++) {
-            const file = join(groupDir, `image-${i}.bin`);
-            await fsp.writeFile(file, randomBytes(size));
-          }
+      await fsp.mkdir(alphaDataset, { recursive: true });
+      const groups = 8;
+      const imagesPerGroup = 150;
+      const size = 2 * 1024;
+      for (let g = 0; g < groups; g++) {
+        const groupDir = join(alphaDataset, `group-${g}`);
+        await fsp.mkdir(groupDir, { recursive: true });
+        for (let i = 0; i < imagesPerGroup; i++) {
+          const file = join(groupDir, `image-${i}.bin`);
+          await fsp.writeFile(file, randomBytes(size));
         }
-
-        await waitFor(
-          async () => {
-            try {
-              const [filesAlpha, filesBeta] = await Promise.all([
-                listDatasetFiles(alphaDataset),
-                listDatasetFiles(betaDataset),
-              ]);
-              return (
-                filesAlpha.length === groups * imagesPerGroup &&
-                filesAlpha.length === filesBeta.length
-              );
-            } catch {
-              return false;
-            }
-          },
-          (ok) => ok,
-          60_000,
-          100,
-        );
-
-        const [hashAlpha, hashBeta] = await Promise.all([
-          hashDirectory(alphaDataset),
-          hashDirectory(betaDataset),
-        ]);
-        expect(hashBeta).toBe(hashAlpha);
-
-        const meta = getDb(alphaDb);
-        try {
-          const row = meta
-            .prepare(
-              `SELECT COUNT(*) AS n FROM recent_send WHERE direction='beta->alpha' AND path LIKE ?`,
-            )
-            .get(`${datasetDir}%`) as { n: number };
-          expect(row.n).toBe(0);
-        } finally {
-          meta.close();
-        }
-      } finally {
-        await stopScheduler(child);
       }
-    },
-    60_000,
-  );
+
+      await waitFor(
+        async () => {
+          try {
+            const [filesAlpha, filesBeta] = await Promise.all([
+              listDatasetFiles(alphaDataset),
+              listDatasetFiles(betaDataset),
+            ]);
+            return (
+              filesAlpha.length === groups * imagesPerGroup &&
+              filesAlpha.length === filesBeta.length
+            );
+          } catch {
+            return false;
+          }
+        },
+        (ok) => ok,
+        60_000,
+        100,
+      );
+
+      const [hashAlpha, hashBeta] = await Promise.all([
+        hashDirectory(alphaDataset),
+        hashDirectory(betaDataset),
+      ]);
+      expect(hashBeta).toBe(hashAlpha);
+
+      const meta = getDb(alphaDb);
+      try {
+        const row = meta
+          .prepare(
+            `SELECT COUNT(*) AS n FROM recent_send WHERE direction='beta->alpha' AND path LIKE ?`,
+          )
+          .get(`${datasetDir}%`) as { n: number };
+        expect(row.n).toBe(0);
+      } finally {
+        meta.close();
+      }
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 60_000);
 });

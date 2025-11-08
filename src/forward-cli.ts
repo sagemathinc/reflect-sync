@@ -7,11 +7,18 @@ import {
   resolveForwardRow,
   type ForwardRow,
 } from "./session-db.js";
-import { createForward, listForwards, terminateForward } from "./forward-manage.js";
+import {
+  createForward,
+  listForwards,
+  terminateForward,
+} from "./forward-manage.js";
 import { ConsoleLogger } from "./logger.js";
 import { ensureDaemonRunning } from "./session-daemon.js";
 
-function resolveSessionDb(command: Command, opts: { sessionDb?: string }): string {
+function resolveSessionDb(
+  command: Command,
+  opts: { sessionDb?: string },
+): string {
   const ensure = (path: string) => {
     const db = ensureSessionDb(path);
     db.close();
@@ -32,37 +39,52 @@ export function registerForwardCommands(program: Command) {
     .command("create")
     .description("Create an SSH port forward")
     .argument("<left>", "left endpoint (host:port or :port)")
-    .argument("<right>", "right endpoint (user@host[:sshPort]:port or host:port)")
+    .argument(
+      "<right>",
+      "right endpoint (user@host[:sshPort]:port or host:port)",
+    )
     .option("-n, --name <name>", "friendly name")
     .option("--compress", "enable SSH compression", false)
-    .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
-    .action(async (left: string, right: string, opts: any, command: Command) => {
-      const sessionDb = resolveSessionDb(command, opts);
-      const root = command.parent?.parent ?? command.parent ?? command;
-      const level = (root.optsWithGlobals?.() as any)?.logLevel ?? "info";
-      const logger = new ConsoleLogger(level);
-      try {
-        const id = await createForward({
-          sessionDb,
-          name: opts.name,
-          left,
-          right,
-          compress: !!opts.compress,
-          logger,
-        });
-        ensureDaemonRunning(sessionDb, logger.child("daemon"));
-        console.log(`created forward ${id}${opts.name ? ` (${opts.name})` : ""}`);
-      } catch (err) {
-        console.error(`failed to create forward: ${(err as Error).message}`);
-        process.exitCode = 1;
-      }
-    });
+    .option(
+      "--session-db <file>",
+      "override path to sessions.db",
+      getSessionDbPath(),
+    )
+    .action(
+      async (left: string, right: string, opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(command, opts);
+        const root = command.parent?.parent ?? command.parent ?? command;
+        const level = (root.optsWithGlobals?.() as any)?.logLevel ?? "info";
+        const logger = new ConsoleLogger(level);
+        try {
+          const id = await createForward({
+            sessionDb,
+            name: opts.name,
+            left,
+            right,
+            compress: !!opts.compress,
+            logger,
+          });
+          ensureDaemonRunning(sessionDb, logger.child("daemon"));
+          console.log(
+            `created forward ${id}${opts.name ? ` (${opts.name})` : ""}`,
+          );
+        } catch (err) {
+          console.error(`failed to create forward: ${(err as Error).message}`);
+          process.exitCode = 1;
+        }
+      },
+    );
 
   forward
     .command("list")
     .description("List SSH port forwards")
     .argument("[id-or-name...]", "forward id(s) or name(s) to list")
-    .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
+    .option(
+      "--session-db <file>",
+      "override path to sessions.db",
+      getSessionDbPath(),
+    )
     .option("--json", "emit JSON instead of a table", false)
     .action((refs: string[], opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
@@ -117,7 +139,17 @@ export function registerForwardCommands(program: Command) {
         return;
       }
       const table = new AsciiTable3("Forwards")
-        .setHeading("ID", "Name", "Direction", "Local", "Remote", "SSH", "PID", "State", "Command")
+        .setHeading(
+          "ID",
+          "Name",
+          "Direction",
+          "Local",
+          "Remote",
+          "SSH",
+          "PID",
+          "State",
+          "Command",
+        )
         .setStyle("unicode-round");
       [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach((idx) =>
         table.setAlign(idx, AlignmentEnum.LEFT),
@@ -132,7 +164,9 @@ export function registerForwardCommands(program: Command) {
         table.addRow(
           String(row.id),
           row.name ?? "-",
-          row.direction === "local_to_remote" ? "local->remote" : "remote->local",
+          row.direction === "local_to_remote"
+            ? "local->remote"
+            : "remote->local",
           local,
           remote,
           ssh,
@@ -148,7 +182,11 @@ export function registerForwardCommands(program: Command) {
     .command("terminate")
     .description("Terminate a forward")
     .argument("<id-or-name...>", "forward id(s) or name(s)")
-    .option("--session-db <file>", "override path to sessions.db", getSessionDbPath())
+    .option(
+      "--session-db <file>",
+      "override path to sessions.db",
+      getSessionDbPath(),
+    )
     .action((refs: string[], opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
       const targets = refs.map((r) => r.trim()).filter(Boolean);

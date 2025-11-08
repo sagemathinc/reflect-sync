@@ -392,16 +392,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "alpha_port", "INTEGER");
   ensureColumn("sessions", "beta_port", "INTEGER");
   ensureColumn("sessions", "ignore_rules", "TEXT");
-  ensureColumn(
-    "sessions",
-    "disable_micro_sync",
-    "INTEGER NOT NULL DEFAULT 0",
-  );
-  ensureColumn(
-    "sessions",
-    "disable_full_cycle",
-    "INTEGER NOT NULL DEFAULT 0",
-  );
+  ensureColumn("sessions", "disable_micro_sync", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("sessions", "disable_full_cycle", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("ssh_sessions", "ssh_args", "TEXT");
 
   return db;
@@ -411,6 +403,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
 
 function open(sessionDbPath = getSessionDbPath()): Database {
   const db = new Database(sessionDbPath);
+  db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
   return db;
 }
@@ -555,9 +548,7 @@ export function loadForwardByName(
   }
 }
 
-export function selectForwardSessions(
-  sessionDbPath: string,
-): ForwardRow[] {
+export function selectForwardSessions(sessionDbPath: string): ForwardRow[] {
   const db = open(sessionDbPath);
   try {
     const rows = db
@@ -598,10 +589,7 @@ export function updateForwardSession(
   }
 }
 
-export function deleteForwardSession(
-  sessionDbPath: string,
-  id: number,
-): void {
+export function deleteForwardSession(sessionDbPath: string, id: number): void {
   const db = open(sessionDbPath);
   try {
     db.prepare(`DELETE FROM ssh_sessions WHERE id = ?`).run(id);

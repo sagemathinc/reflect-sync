@@ -9,7 +9,10 @@ import {
 import { ensureSessionDb, openSessionDb } from "./session-db.js";
 import type { Database } from "./db.js";
 
-const DEFAULT_KEEP_MS = envNumber("SESSION_LOG_KEEP_MS", 7 * 24 * 60 * 60 * 1000);
+const DEFAULT_KEEP_MS = envNumber(
+  "SESSION_LOG_KEEP_MS",
+  7 * 24 * 60 * 60 * 1000,
+);
 const DEFAULT_KEEP_ROWS = envNumber("SESSION_LOG_KEEP_ROWS", 100_000);
 
 function envNumber(key: string, fallback: number): number {
@@ -87,7 +90,11 @@ export class SessionLogStore {
     sessionId: number,
     options?: SessionLogStoreOptions,
   ): SessionLogStore {
-    return new SessionLogStore(ensureSessionDb(sessionDbPath), sessionId, options);
+    return new SessionLogStore(
+      ensureSessionDb(sessionDbPath),
+      sessionId,
+      options,
+    );
   }
 
   append(entry: LogEntry): void {

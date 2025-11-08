@@ -72,9 +72,9 @@ describe("rfsync: ignore rules", () => {
     await expect(fileExists(join(r.bRoot, "dist", "a.txt"))).resolves.toBe(
       false,
     );
-    await expect(fileExists(join(r.bRoot, "dist", "sub", "b.txt"))).resolves.toBe(
-      false,
-    );
+    await expect(
+      fileExists(join(r.bRoot, "dist", "sub", "b.txt")),
+    ).resolves.toBe(false);
   });
 
   test("symlink path ignored under links/**", async () => {
@@ -87,9 +87,9 @@ describe("rfsync: ignore rules", () => {
     await sync(r, "alpha", undefined, ["--ignore", "links/"]);
 
     await expect(dirExists(join(r.bRoot, "links"))).resolves.toBe(false);
-    await expect(fileExists(join(r.bRoot, "links", "target.txt"))).resolves.toBe(
-      false,
-    );
+    await expect(
+      fileExists(join(r.bRoot, "links", "target.txt")),
+    ).resolves.toBe(false);
     await expect(linkExists(join(r.bRoot, "links", "a.lnk"))).resolves.toBe(
       false,
     );

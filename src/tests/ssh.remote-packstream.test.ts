@@ -49,81 +49,77 @@ describeIfSsh("SSH remote sync – sustained pack stream", () => {
     }
   });
 
-  it(
-    "sustained writes on alpha mirror to remote beta without bounce",
-    async () => {
-      const child = startSchedulerRemote({
-        alphaRoot,
-        betaRootRemote,
-        alphaDb,
-        betaDb,
-        baseDb,
-        prefer: "alpha",
+  it("sustained writes on alpha mirror to remote beta without bounce", async () => {
+    const child = startSchedulerRemote({
+      alphaRoot,
+      betaRootRemote,
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
+
+    const relPath = "packs/stream.pack";
+    const alphaFile = join(alphaRoot, relPath);
+    const betaFile = join(betaRootRemote, relPath);
+
+    try {
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 1,
+        20_000,
+        20,
+      );
+
+      await writeLongPack(alphaFile, {
+        iterations: 96,
+        chunkSize: 256 * 1024,
+        delayMs: 15,
       });
 
-      const relPath = "packs/stream.pack";
-      const alphaFile = join(alphaRoot, relPath);
-      const betaFile = join(betaRootRemote, relPath);
+      await waitFor(
+        async () => {
+          try {
+            const [statAlpha, statBeta] = await Promise.all([
+              fsp.stat(alphaFile),
+              fsp.stat(betaFile),
+            ]);
+            return statAlpha.size > 0 && statBeta.size === statAlpha.size;
+          } catch {
+            return false;
+          }
+        },
+        (ok) => ok,
+        30_000,
+        50,
+      );
 
+      await waitFor(
+        () => countSchedulerCycles(baseDb),
+        (n) => n >= 3,
+        20_000,
+        20,
+      );
+
+      const [alphaHash, betaHash] = await Promise.all([
+        hashFile(alphaFile),
+        hashFile(betaFile),
+      ]);
+      expect(betaHash).toBe(alphaHash);
+
+      const db = getDb(alphaDb);
       try {
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 1,
-          20_000,
-          20,
-        );
-
-        await writeLongPack(alphaFile, {
-          iterations: 96,
-          chunkSize: 256 * 1024,
-          delayMs: 15,
-        });
-
-        await waitFor(
-          async () => {
-            try {
-              const [statAlpha, statBeta] = await Promise.all([
-                fsp.stat(alphaFile),
-                fsp.stat(betaFile),
-              ]);
-              return statAlpha.size > 0 && statBeta.size === statAlpha.size;
-            } catch {
-              return false;
-            }
-          },
-          (ok) => ok,
-          30_000,
-          50,
-        );
-
-        await waitFor(
-          () => countSchedulerCycles(baseDb),
-          (n) => n >= 3,
-          20_000,
-          20,
-        );
-
-        const [alphaHash, betaHash] = await Promise.all([
-          hashFile(alphaFile),
-          hashFile(betaFile),
-        ]);
-        expect(betaHash).toBe(alphaHash);
-
-        const db = getDb(alphaDb);
-        try {
-          const row = db
-            .prepare(
-              `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
-            )
-            .get(relPath);
-          expect(row).toBeUndefined();
-        } finally {
-          db.close();
-        }
+        const row = db
+          .prepare(
+            `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
+          )
+          .get(relPath);
+        expect(row).toBeUndefined();
       } finally {
-        await stopScheduler(child);
+        db.close();
       }
-    },
-    25_000,
-  );
+    } finally {
+      await stopScheduler(child);
+    }
+  }, 25_000);
 });

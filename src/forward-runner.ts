@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 import { argsJoin } from "./remote.js";
-import {
-  updateForwardSession,
-  type ForwardRow,
-} from "./session-db.js";
+import { updateForwardSession, type ForwardRow } from "./session-db.js";
 
 function buildSshArgs(row: ForwardRow): string[] {
   const args: string[] = ["-N"]; // no shell, just forward

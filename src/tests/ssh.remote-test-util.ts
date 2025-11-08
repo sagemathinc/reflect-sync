@@ -24,7 +24,9 @@ export const SSH_ENABLED =
     }
   })() === true;
 
-export const describeIfSsh: typeof describe = SSH_ENABLED ? describe : describe.skip;
+export const describeIfSsh: typeof describe = SSH_ENABLED
+  ? describe
+  : describe.skip;
 
 type SchedulerOpts = {
   alphaRoot: string;
@@ -149,9 +151,9 @@ export async function listDatasetFiles(root: string): Promise<string[]> {
 
 export async function hashDirectory(root: string): Promise<string> {
   const hash = createHash("sha256");
-  const entries = await fsp.readdir(root, { withFileTypes: true }).catch(
-    () => [],
-  );
+  const entries = await fsp
+    .readdir(root, { withFileTypes: true })
+    .catch(() => []);
   const sorted = entries.map((e) => e.name).sort();
   for (const name of sorted) {
     const entry = entries.find((e) => e.name === name)!;

@@ -14,7 +14,8 @@ import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // if true, logs every file sent over rsync
-const REFLECT_RSYNC_VERY_VERBOSE = true;
+const REFLECT_RSYNC_VERY_VERBOSE = false;
+const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = 250;
 
 const REFLECT_COPY_CHUNK = Number(process.env.REFLECT_COPY_CHUNK ?? 10_000);
 const REFLECT_COPY_CONCURRENCY = Number(
@@ -82,6 +83,7 @@ type RsyncRunOptions = RsyncLogOptions & {
   dryRun?: boolean | string;
   onProgress?: (event: RsyncProgressEvent) => void;
   tempDir?: string;
+  direction?: "alpha->beta" | "beta->alpha" | "alpha->alpha" | "beta->beta";
 };
 
 export type RsyncProgressEvent = {
@@ -155,6 +157,7 @@ export async function rsyncCopyDirsChunked(
   dirRpaths: string[],
   label: string,
   opts: {
+    direction?;
     chunkSize?: number;
     concurrency?: number; // dirs usually OK at 2–4 as well
     dryRun?: boolean | string;
@@ -204,6 +207,7 @@ export async function rsyncCopyDirsChunked(
       lf,
       `${label} (dirs chunk ${idx + 1})`,
       {
+        direction: opts.direction,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
         logger,
@@ -229,6 +233,7 @@ export async function rsyncCopyChunked(
   fileRpaths: string[],
   label: string,
   opts: {
+    direction?;
     chunkSize?: number;
     concurrency?: number;
     precreateDirs?: boolean; // precreate parent dirs with -d
@@ -275,6 +280,7 @@ export async function rsyncCopyChunked(
     const dirs = parentDirsOf(sorted);
     if (dirs.length) {
       await rsyncCopyDirsChunked(workDir, fromRoot, toRoot, dirs, `${label}`, {
+        direction: opts.direction,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
         logger,
@@ -320,6 +326,7 @@ export async function rsyncCopyChunked(
       lf,
       `${label} (chunk ${idx + 1})`,
       {
+        direction: opts.direction,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
         compress: opts.compress,
@@ -525,11 +532,10 @@ export function run(
     finalArgs.push(`--bwlimit=${process.env.REFLECT_RSYNC_BWLIMIT}`);
   }
   if (debug)
-    logger.debug("rsync exec", {
-      cmd,
-      args: argsJoin(finalArgs),
-      files,
-    });
+    logger.debug(
+      `rsync.run ${opts.direction ?? ""}: '${cmd} ${argsJoin(finalArgs)}'`,
+      files ? { files } : {},
+    );
 
   const throttleMs =
     wantProgress && MAX_PROGRESS_UPDATES_PER_SEC > 0
@@ -716,6 +722,7 @@ export async function rsyncCopy(
     tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
+    direction?;
   } = {},
 ): Promise<{
   ok: boolean;
@@ -729,9 +736,7 @@ export async function rsyncCopy(
     return { ok: true, zero: false, code: 0 };
   }
   if (debug) {
-    logger.debug(
-      `>>> rsync ${label} (${fromRoot} -> ${toRoot}) ${logFiles(listFile)}`,
-    );
+    logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -780,6 +785,7 @@ export async function rsyncCopyDirs(
   listFile: string,
   label: string,
   opts: {
+    direction?;
     dryRun?: boolean | string;
     verbose?: boolean | string;
     logger?: Logger;
@@ -796,9 +802,7 @@ export async function rsyncCopyDirs(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(
-      `>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})  ${logFiles(listFile)}`,
-    );
+    logger.debug(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -824,6 +828,7 @@ export async function rsyncCopyDirs(
     ...runOpts,
     onProgress: progressHandler,
     tempDir: opts.tempDir,
+    direction: opts.direction,
   });
   assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
@@ -846,6 +851,7 @@ export async function rsyncFixMeta(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    direction?;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -854,9 +860,7 @@ export async function rsyncFixMeta(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(
-      `>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})  ${logFiles(listFile)}`,
-    );
+    logger.debug(`>>> rsync ${label} (meta) (${fromRoot} -> ${toRoot})`);
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -889,6 +893,7 @@ export async function rsyncFixMetaDirs(
     logger?: Logger;
     logLevel?: LogLevel;
     sshPort?: number;
+    direction?;
   } = {},
 ): Promise<{ ok: boolean; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -897,9 +902,7 @@ export async function rsyncFixMetaDirs(
     return { ok: true, zero: false };
   }
   if (debug) {
-    logger.debug(
-      `>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot}) ${logFiles(listFile)}`,
-    );
+    logger.debug(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
   }
   const from = ensureTrailingSlash(fromRoot);
   const to = ensureTrailingSlash(toRoot);
@@ -934,6 +937,7 @@ export async function rsyncDelete(
     logLevel?: LogLevel;
     sshPort?: number;
     tempDir?: string;
+    direction?;
   } = {},
 ): Promise<void> {
   const { logger, debug } = resolveLogContext(opts);
@@ -953,7 +957,7 @@ export async function rsyncDelete(
 
     if (debug) {
       logger.debug(
-        `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})  ${logFiles(listFile)}`,
+        `>>> rsync delete ${label} (missing in ${sourceRoot} => delete in ${toRoot})`,
       );
     }
     const to = ensureTrailingSlash(toRoot);
@@ -983,6 +987,7 @@ export async function rsyncDeleteChunked(
   rpaths: string[],
   label: string,
   opts: {
+    direction?;
     forceEmptySource?: boolean;
     chunkSize?: number;
     dryRun?: boolean | string;
@@ -1036,7 +1041,11 @@ function logFiles(listFile: string) {
   }
   try {
     const path = listFile.split("=").slice(-1)[0];
-    return readFileSync(path, "utf8").split("\0");
+    let v = readFileSync(path, "utf8").split("\0");
+    if (v.length >= REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES) {
+      v = v.slice(0, REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES);
+      v.push("TRUNCATED");
+    }
   } catch (err) {
     return `${err}`;
   }

@@ -12,9 +12,7 @@ export type StabilityResult = {
   reason?: string;
 };
 
-const defaultWindow = Number(
-  process.env.REFLECT_STABILITY_WINDOW_MS ?? 250,
-);
+const defaultWindow = Number(process.env.REFLECT_STABILITY_WINDOW_MS ?? 250);
 const defaultPoll = Number(process.env.REFLECT_STABILITY_POLL_MS ?? 50);
 const defaultMaxWait = Number(
   process.env.REFLECT_STABILITY_MAX_WAIT_MS ??
@@ -36,7 +34,9 @@ type Snapshot = {
 };
 
 const sleep = (ms: number) =>
-  ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+  ms > 0
+    ? new Promise((resolve) => setTimeout(resolve, ms))
+    : Promise.resolve();
 
 async function sample(abs: string): Promise<Snapshot> {
   try {
@@ -65,18 +65,18 @@ async function sample(abs: string): Promise<Snapshot> {
 }
 
 function snapshotChanged(a: Snapshot, b: Snapshot) {
-  return a.size !== b.size || a.mtimeMs !== b.mtimeMs || a.ctimeMs !== b.ctimeMs;
+  return (
+    a.size !== b.size || a.mtimeMs !== b.mtimeMs || a.ctimeMs !== b.ctimeMs
+  );
 }
 
 export async function waitForStableFile(
   abs: string,
   opts: StabilityOptions = {},
 ): Promise<StabilityResult> {
-  const windowMs =
-    opts.windowMs ?? DEFAULT_STABILITY_OPTIONS.windowMs;
+  const windowMs = opts.windowMs ?? DEFAULT_STABILITY_OPTIONS.windowMs;
   const pollMs = opts.pollMs ?? DEFAULT_STABILITY_OPTIONS.pollMs;
-  const maxWaitMs =
-    opts.maxWaitMs ?? DEFAULT_STABILITY_OPTIONS.maxWaitMs;
+  const maxWaitMs = opts.maxWaitMs ?? DEFAULT_STABILITY_OPTIONS.maxWaitMs;
 
   if (!Number.isFinite(windowMs) || windowMs <= 0) {
     return { stable: true, reason: "disabled" };

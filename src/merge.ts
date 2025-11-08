@@ -435,7 +435,8 @@ export async function runMerge({
   };
 
   const requestRemoteAlphaIgnore = async (paths: string[]) => {
-    if (!paths.length || !alphaHost || !fetchRemoteAlphaSignatures) return false;
+    if (!paths.length || !alphaHost || !fetchRemoteAlphaSignatures)
+      return false;
     await fetchRemoteAlphaSignatures(paths, { ignore: true });
     return true;
   };
@@ -1665,8 +1666,7 @@ export async function runMerge({
       };
 
       const isVanishedWarning = (stderr?: string | null) =>
-        typeof stderr === "string" &&
-        stderr.toLowerCase().includes("vanished");
+        typeof stderr === "string" && stderr.toLowerCase().includes("vanished");
 
       const copyFilesWithGuards = async (
         direction: "alpha->beta" | "beta->alpha",
@@ -1676,14 +1676,13 @@ export async function runMerge({
           "onChunkResult"
         > = {},
       ): Promise<{ ok: boolean; signatures: SignatureEntry[] }> => {
-      if (!paths.length) return { ok: true, signatures: [] };
-      paths = filterBounceByRecent(direction, paths);
-      if (!paths.length) {
-        return { ok: true, signatures: [] };
-      }
-      const uniquePaths = uniq(paths);
-      const remoteHost =
-        direction === "alpha->beta" ? betaHost : alphaHost;
+        if (!paths.length) return { ok: true, signatures: [] };
+        paths = filterBounceByRecent(direction, paths);
+        if (!paths.length) {
+          return { ok: true, signatures: [] };
+        }
+        const uniquePaths = uniq(paths);
+        const remoteHost = direction === "alpha->beta" ? betaHost : alphaHost;
         const remoteLock =
           direction === "alpha->beta" ? betaRemoteLock : alphaRemoteLock;
         if (remoteLock && uniquePaths.length) {
@@ -1701,30 +1700,31 @@ export async function runMerge({
             {
               ...rsyncOpts,
               ...(options ?? {}),
-            onChunkResult: (chunk, result) => {
-              if (result.code === 23 && !isVanishedWarning(result.stderr)) {
-                partialPaths.push(...chunk);
-              }
-            },
+              direction,
+              onChunkResult: (chunk, result) => {
+                if (result.code === 23 && !isVanishedWarning(result.stderr)) {
+                  partialPaths.push(...chunk);
+                }
+              },
             },
           );
-        if (partialPaths.length) {
-          if (remoteLock && uniquePaths.length) {
-            await remoteLock.unlock(uniquePaths);
+          if (partialPaths.length) {
+            if (remoteLock && uniquePaths.length) {
+              await remoteLock.unlock(uniquePaths);
+            }
+            if (remoteHost) {
+              await handlePartial(direction, partialPaths);
+            } else if (debug) {
+              logger.warn("partial transfer ignored (local merge)", {
+                direction,
+                paths: partialPaths.length,
+              });
+            }
           }
-          if (remoteHost) {
-            await handlePartial(direction, partialPaths);
-          } else if (debug) {
-            logger.warn("partial transfer ignored (local merge)", {
-              direction,
-              paths: partialPaths.length,
-            });
-          }
-        }
-        const fetchSignatures =
-          direction === "alpha->beta"
-            ? fetchRemoteBetaSignatures
-            : fetchRemoteAlphaSignatures;
+          const fetchSignatures =
+            direction === "alpha->beta"
+              ? fetchRemoteBetaSignatures
+              : fetchRemoteAlphaSignatures;
           if (
             remoteHost &&
             remoteLock &&
@@ -1769,6 +1769,7 @@ export async function runMerge({
           forceEmptySource: true,
           ...rsyncOpts,
           tempDir: alphaTempArg,
+          direction: "beta->alpha",
         },
       );
       await noteAlphaChange(delInAlpha);
@@ -1782,6 +1783,7 @@ export async function runMerge({
           forceEmptySource: true,
           ...rsyncOpts,
           tempDir: betaTempArg,
+          direction: "alpha->beta",
         },
       );
       await noteBetaChange(delInBeta);
@@ -1800,6 +1802,7 @@ export async function runMerge({
             forceEmptySource: true,
             ...rsyncOpts,
             tempDir: alphaTempArg,
+            direction: "alpha->alpha",
           },
         );
         await noteAlphaChange(preDeleteDirsOnAlphaForBetaFiles);
@@ -1815,6 +1818,7 @@ export async function runMerge({
             forceEmptySource: true,
             ...rsyncOpts,
             tempDir: betaTempArg,
+            direction: "beta->beta",
           },
         );
         await noteBetaChange(preDeleteDirsOnBetaForAlphaFiles);
@@ -1824,28 +1828,18 @@ export async function runMerge({
       // 2) create dirs
       done = t("rsync: 2) create dirs");
       copyDirsAlphaBetaOk = (
-        await rsyncCopyDirs(
-          alpha,
-          beta,
-          listToBetaDirs,
-          "alpha→beta",
-          {
-            ...rsyncOpts,
-            tempDir: betaTempArg,
-          },
-        )
+        await rsyncCopyDirs(alpha, beta, listToBetaDirs, "alpha→beta", {
+          ...rsyncOpts,
+          tempDir: betaTempArg,
+          direction: "alpha->beta",
+        })
       ).ok;
       copyDirsBetaAlphaOk = (
-        await rsyncCopyDirs(
-          beta,
-          alpha,
-          listToAlphaDirs,
-          "beta→alpha",
-          {
-            ...rsyncOpts,
-            tempDir: alphaTempArg,
-          },
-        )
+        await rsyncCopyDirs(beta, alpha, listToAlphaDirs, "beta→alpha", {
+          ...rsyncOpts,
+          tempDir: alphaTempArg,
+          direction: "beta->alpha",
+        })
       ).ok;
       if (copyDirsAlphaBetaOk && toBetaDirs.length) {
         await noteBetaChange(toBetaDirs);
@@ -1891,52 +1885,52 @@ export async function runMerge({
           }
           done();
           done = t("rsync: 3) copy files -- falling back to rsync");
-        const alphaCopyRes = await copyFilesWithGuards(
-          "alpha->beta",
-          toBetaRelative,
-          {
-            tempDir: betaTempArg,
-            progressScope: "merge.copy.alpha->beta",
-            progressMeta: {
-              stage: "copy",
-              direction: "alpha->beta",
-            },
-          },
-        );
-        const betaCopyRes = await copyFilesWithGuards(
-          "beta->alpha",
-          toAlphaRelative,
-          {
-            tempDir: alphaTempArg,
-            progressScope: "merge.copy.beta->alpha",
-            progressMeta: {
-              stage: "copy",
-              direction: "beta->alpha",
-            },
-          },
-        );
-        copyAlphaBetaOk = alphaCopyRes.ok;
-        copyBetaAlphaOk = betaCopyRes.ok;
-        if (copyAlphaBetaOk && toBetaRelative.length) {
-          const betaHints = buildPostCopyHints(
+          const alphaCopyRes = await copyFilesWithGuards(
+            "alpha->beta",
             toBetaRelative,
-            alphaCopyRes.signatures,
-            alphaSignatureHints,
-            betaRoot,
-            !!betaHost,
+            {
+              tempDir: betaTempArg,
+              progressScope: "merge.copy.alpha->beta",
+              progressMeta: {
+                stage: "copy",
+                direction: "alpha->beta",
+              },
+            },
           );
-          await noteBetaChange(toBetaRelative, { signatures: betaHints });
-        }
-        if (copyBetaAlphaOk && toAlphaRelative.length) {
-          const alphaHints = buildPostCopyHints(
+          const betaCopyRes = await copyFilesWithGuards(
+            "beta->alpha",
             toAlphaRelative,
-            betaCopyRes.signatures,
-            betaSignatureHints,
-            alphaRoot,
-            !!alphaHost,
+            {
+              tempDir: alphaTempArg,
+              progressScope: "merge.copy.beta->alpha",
+              progressMeta: {
+                stage: "copy",
+                direction: "beta->alpha",
+              },
+            },
           );
-          await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
-        }
+          copyAlphaBetaOk = alphaCopyRes.ok;
+          copyBetaAlphaOk = betaCopyRes.ok;
+          if (copyAlphaBetaOk && toBetaRelative.length) {
+            const betaHints = buildPostCopyHints(
+              toBetaRelative,
+              alphaCopyRes.signatures,
+              alphaSignatureHints,
+              betaRoot,
+              !!betaHost,
+            );
+            await noteBetaChange(toBetaRelative, { signatures: betaHints });
+          }
+          if (copyBetaAlphaOk && toAlphaRelative.length) {
+            const alphaHints = buildPostCopyHints(
+              toAlphaRelative,
+              betaCopyRes.signatures,
+              betaSignatureHints,
+              alphaRoot,
+              !!alphaHost,
+            );
+            await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
+          }
         }
       } else {
         // 3) copy files
@@ -2027,6 +2021,7 @@ export async function runMerge({
           forceEmptySource: true,
           ...rsyncOpts,
           tempDir: betaTempArg,
+          direction: "alpha->beta",
         },
       );
       await noteBetaChange(delDirsInBeta);
@@ -2040,6 +2035,7 @@ export async function runMerge({
           forceEmptySource: true,
           ...rsyncOpts,
           tempDir: alphaTempArg,
+          direction: "beta->alpha",
         },
       );
       await noteAlphaChange(delDirsInAlpha);
