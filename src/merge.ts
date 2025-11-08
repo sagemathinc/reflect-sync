@@ -3,6 +3,7 @@
 // merge.ts
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -281,6 +282,139 @@ export async function runMerge({
       map.set(path, signatureFromStamp(stamps.get(path)));
     }
     return map;
+  };
+
+  const signatureEntriesToMap = (entries: SignatureEntry[]) => {
+    const map = new Map<string, SendSignature | null>();
+    for (const entry of entries) {
+      map.set(entry.path, entry.signature ?? null);
+    }
+    return map;
+  };
+
+  const mergeSignatures = (
+    primary?: SendSignature | null,
+    fallback?: SendSignature | null,
+  ): SendSignature | null => {
+    if (!primary && !fallback) return null;
+    if (!primary) return fallback ?? null;
+    if (!fallback) return primary;
+    const merged: SendSignature = {
+      kind: primary.kind ?? fallback.kind,
+      opTs: primary.opTs ?? fallback.opTs ?? null,
+    };
+    const fields: Array<keyof SendSignature> = [
+      "size",
+      "mtime",
+      "ctime",
+      "hash",
+      "mode",
+      "uid",
+      "gid",
+    ];
+    for (const field of fields) {
+      const value = primary[field];
+      if (value != null) {
+        (merged as any)[field] = value;
+      } else if (fallback[field] != null) {
+        (merged as any)[field] = fallback[field];
+      }
+    }
+    return merged;
+  };
+
+  const mergeSignatureHints = (
+    paths: string[],
+    entries: SignatureEntry[],
+    fallback: Map<string, SendSignature | null>,
+  ): Map<string, SendSignature | null> => {
+    const entryMap = signatureEntriesToMap(entries);
+    const merged = new Map<string, SendSignature | null>();
+    for (const path of uniq(paths)) {
+      const sig = mergeSignatures(entryMap.get(path), fallback.get(path));
+      merged.set(path, sig ?? null);
+    }
+    return merged;
+  };
+
+  const buildSignatureFromFs = (
+    root: string,
+    relPath: string,
+  ): SendSignature | null => {
+    try {
+      const abs = path.join(root, relPath);
+      const st = lstatSync(abs);
+      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
+      if (st.isSymbolicLink()) {
+        return {
+          kind: "link",
+          opTs: mtime,
+          mtime,
+          ctime,
+        };
+      }
+      if (st.isDirectory()) {
+        return {
+          kind: "dir",
+          opTs: mtime,
+          mtime,
+          ctime,
+        };
+      }
+      if (st.isFile()) {
+        return {
+          kind: "file",
+          opTs: mtime,
+          mtime,
+          ctime,
+          size: st.size,
+        };
+      }
+      return {
+        kind: "file",
+        opTs: mtime,
+        mtime,
+        ctime,
+        size: st.size,
+      };
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        return {
+          kind: "missing",
+          opTs: Date.now(),
+        };
+      }
+      return null;
+    }
+  };
+
+  const collectLocalSignatureEntries = (
+    root: string,
+    paths: string[],
+  ): SignatureEntry[] => {
+    const entries: SignatureEntry[] = [];
+    for (const path of uniq(paths)) {
+      const sig = buildSignatureFromFs(root, path);
+      if (sig) {
+        entries.push({ path, signature: sig });
+      }
+    }
+    return entries;
+  };
+
+  const buildPostCopyHints = (
+    targetPaths: string[],
+    remoteEntries: SignatureEntry[],
+    fallback: Map<string, SendSignature | null>,
+    destRoot: string,
+    destIsRemote: boolean,
+  ): Map<string, SendSignature | null> => {
+    if (!targetPaths.length) return new Map();
+    const entries = destIsRemote
+      ? remoteEntries
+      : collectLocalSignatureEntries(destRoot, targetPaths);
+    return mergeSignatureHints(targetPaths, entries, fallback);
   };
 
   let alphaTempDir: string | undefined;
@@ -1499,11 +1633,11 @@ export async function runMerge({
           Parameters<typeof rsyncCopyChunked>[5],
           "onChunkResult"
         > = {},
-      ): Promise<boolean> => {
-      if (!paths.length) return true;
+      ): Promise<{ ok: boolean; signatures: SignatureEntry[] }> => {
+      if (!paths.length) return { ok: true, signatures: [] };
       paths = filterBounceByRecent(direction, paths);
       if (!paths.length) {
-        return true;
+        return { ok: true, signatures: [] };
       }
       const uniquePaths = uniq(paths);
       const remoteHost =
@@ -1514,6 +1648,7 @@ export async function runMerge({
           await remoteLock.lock(uniquePaths);
         }
         const partialPaths: string[] = [];
+        let postSignatures: SignatureEntry[] = [];
         try {
           const { ok } = await rsyncCopyChunked(
             tmp,
@@ -1554,18 +1689,21 @@ export async function runMerge({
             uniquePaths.length &&
             fetchSignatures
           ) {
-            const signatures =
+            postSignatures =
               (await fetchSignatures(uniquePaths, { ignore: false })) ?? [];
             await finalizeRemoteLock(
               remoteLock,
               uniquePaths,
               uniquePaths,
-              signatures,
+              postSignatures,
             );
           } else if (remoteLock && uniquePaths.length) {
             await remoteLock.unlock(uniquePaths);
           }
-          return ok;
+          return {
+            ok,
+            signatures: remoteHost ? postSignatures : [],
+          };
         } catch (err) {
           if (remoteLock && uniquePaths.length) {
             try {
@@ -1685,10 +1823,20 @@ export async function runMerge({
           copyAlphaBetaOk = toBeta.length === 0 || true;
           copyBetaAlphaOk = toAlpha.length === 0 || true;
           if (toBetaRelative.length) {
-            await noteBetaChange(toBetaRelative);
+            const betaHints = mergeSignatureHints(
+              toBetaRelative,
+              collectLocalSignatureEntries(betaRoot, toBetaRelative),
+              alphaSignatureHints,
+            );
+            await noteBetaChange(toBetaRelative, { signatures: betaHints });
           }
           if (toAlphaRelative.length) {
-            await noteAlphaChange(toAlphaRelative);
+            const alphaHints = mergeSignatureHints(
+              toAlphaRelative,
+              collectLocalSignatureEntries(alphaRoot, toAlphaRelative),
+              betaSignatureHints,
+            );
+            await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
           }
           done();
         } catch (e) {
@@ -1701,7 +1849,7 @@ export async function runMerge({
           }
           done();
           done = t("rsync: 3) copy files -- falling back to rsync");
-        copyAlphaBetaOk = await copyFilesWithGuards(
+        const alphaCopyRes = await copyFilesWithGuards(
           "alpha->beta",
           toBetaRelative,
           {
@@ -1713,7 +1861,7 @@ export async function runMerge({
             },
           },
         );
-        copyBetaAlphaOk = await copyFilesWithGuards(
+        const betaCopyRes = await copyFilesWithGuards(
           "beta->alpha",
           toAlphaRelative,
           {
@@ -1725,21 +1873,33 @@ export async function runMerge({
             },
           },
         );
-          if (copyAlphaBetaOk && toBetaRelative.length) {
-            await noteBetaChange(toBetaRelative, {
-              signatures: alphaSignatureHints,
-            });
-          }
-          if (copyBetaAlphaOk && toAlphaRelative.length) {
-            await noteAlphaChange(toAlphaRelative, {
-              signatures: betaSignatureHints,
-            });
-          }
+        copyAlphaBetaOk = alphaCopyRes.ok;
+        copyBetaAlphaOk = betaCopyRes.ok;
+        if (copyAlphaBetaOk && toBetaRelative.length) {
+          const betaHints = buildPostCopyHints(
+            toBetaRelative,
+            alphaCopyRes.signatures,
+            alphaSignatureHints,
+            betaRoot,
+            !!betaHost,
+          );
+          await noteBetaChange(toBetaRelative, { signatures: betaHints });
+        }
+        if (copyBetaAlphaOk && toAlphaRelative.length) {
+          const alphaHints = buildPostCopyHints(
+            toAlphaRelative,
+            betaCopyRes.signatures,
+            betaSignatureHints,
+            alphaRoot,
+            !!alphaHost,
+          );
+          await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
+        }
         }
       } else {
         // 3) copy files
         done = t("rsync: 3) copy files");
-        copyAlphaBetaOk = await copyFilesWithGuards(
+        const alphaCopyRes = await copyFilesWithGuards(
           "alpha->beta",
           toBetaRelative,
           {
@@ -1751,7 +1911,7 @@ export async function runMerge({
             },
           },
         );
-        copyBetaAlphaOk = await copyFilesWithGuards(
+        const betaCopyRes = await copyFilesWithGuards(
           "beta->alpha",
           toAlphaRelative,
           {
@@ -1763,15 +1923,27 @@ export async function runMerge({
             },
           },
         );
+        copyAlphaBetaOk = alphaCopyRes.ok;
+        copyBetaAlphaOk = betaCopyRes.ok;
         if (copyAlphaBetaOk && toBetaRelative.length) {
-          await noteBetaChange(toBetaRelative, {
-            signatures: alphaSignatureHints,
-          });
+          const betaHints = buildPostCopyHints(
+            toBetaRelative,
+            alphaCopyRes.signatures,
+            alphaSignatureHints,
+            betaRoot,
+            !!betaHost,
+          );
+          await noteBetaChange(toBetaRelative, { signatures: betaHints });
         }
         if (copyBetaAlphaOk && toAlphaRelative.length) {
-          await noteAlphaChange(toAlphaRelative, {
-            signatures: betaSignatureHints,
-          });
+          const alphaHints = buildPostCopyHints(
+            toAlphaRelative,
+            betaCopyRes.signatures,
+            betaSignatureHints,
+            alphaRoot,
+            !!alphaHost,
+          );
+          await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
         }
         done();
       }

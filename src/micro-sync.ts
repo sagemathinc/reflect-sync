@@ -143,6 +143,73 @@ export function makeMicroSync({
 
   const dedupe = (paths: Iterable<string>) => Array.from(new Set(paths));
 
+  const signatureEntriesToMap = (entries: SignatureEntry[]) => {
+    const map = new Map<string, SendSignature | null>();
+    for (const entry of entries) {
+      map.set(entry.path, entry.signature ?? null);
+    }
+    return map;
+  };
+
+  const mergeSignatures = (
+    primary?: SendSignature | null,
+    fallback?: SendSignature | null,
+  ): SendSignature | null => {
+    if (!primary && !fallback) return null;
+    if (!primary) return fallback ?? null;
+    if (!fallback) return primary;
+    const merged: SendSignature = {
+      kind: primary.kind ?? fallback.kind,
+      opTs: primary.opTs ?? fallback.opTs ?? null,
+    };
+    const fields: Array<keyof SendSignature> = [
+      "size",
+      "mtime",
+      "ctime",
+      "hash",
+      "mode",
+      "uid",
+      "gid",
+    ];
+    for (const field of fields) {
+      const value = primary[field];
+      if (value != null) {
+        (merged as any)[field] = value;
+      } else if (fallback[field] != null) {
+        (merged as any)[field] = fallback[field];
+      }
+    }
+    return merged;
+  };
+
+  const mergeSignatureHints = (
+    paths: string[],
+    entries: SignatureEntry[],
+    fallback: Map<string, SendSignature | null>,
+  ): Map<string, SendSignature | null> => {
+    const entryMap = signatureEntriesToMap(entries);
+    const merged = new Map<string, SendSignature | null>();
+    for (const path of dedupe(paths)) {
+      const sig = mergeSignatures(entryMap.get(path), fallback.get(path));
+      merged.set(path, sig ?? null);
+    }
+    return merged;
+  };
+
+  const collectLocalSignatureEntries = (
+    root: string,
+    paths: string[],
+  ): SignatureEntry[] => {
+    const out: SignatureEntry[] = [];
+    for (const path of dedupe(paths)) {
+      const signature = buildSignatureFromFs(root, path);
+      if (signature) {
+        out.push({ path, signature });
+      }
+    }
+    return out;
+  };
+
   const logPartial = (
     direction: "alpha->beta" | "beta->alpha",
     paths: string[],
@@ -795,9 +862,15 @@ export function makeMicroSync({
           }
 
           if (betaIsRemote && fetchRemoteBetaSignatures) {
-            betaPostSignatures = await fetchRemoteBetaSignatures(toBeta, {
-              ignore: false,
-            });
+            betaPostSignatures =
+              (await fetchRemoteBetaSignatures(toBeta, {
+                ignore: false,
+              })) ?? [];
+          } else {
+            betaPostSignatures = collectLocalSignatureEntries(
+              betaRoot,
+              toBeta,
+            );
           }
           if (needBetaLock && betaLockedPaths.length) {
             await finalizeRemoteLock(
@@ -808,7 +881,12 @@ export function makeMicroSync({
               betaPostSignatures,
             );
           }
-          recordDirection("alpha->beta", toBeta, alphaSigMap);
+          const betaPostHints = mergeSignatureHints(
+            toBeta,
+            betaPostSignatures,
+            alphaSigMap,
+          );
+          recordDirection("alpha->beta", toBeta, betaPostHints);
         } catch (err) {
           if (needBetaLock && betaLockedPaths.length) {
             try {
@@ -899,9 +977,15 @@ export function makeMicroSync({
           }
 
           if (alphaIsRemote && fetchRemoteAlphaSignatures) {
-            alphaPostSignatures = await fetchRemoteAlphaSignatures(toAlpha, {
-              ignore: false,
-            });
+            alphaPostSignatures =
+              (await fetchRemoteAlphaSignatures(toAlpha, {
+                ignore: false,
+              })) ?? [];
+          } else {
+            alphaPostSignatures = collectLocalSignatureEntries(
+              alphaRoot,
+              toAlpha,
+            );
           }
           if (betaIsRemote && fetchRemoteBetaSignatures) {
             await fetchRemoteBetaSignatures(toAlpha, { ignore: false });
@@ -915,7 +999,12 @@ export function makeMicroSync({
               alphaPostSignatures,
             );
           }
-        recordDirection("beta->alpha", toAlpha, betaSigMap);
+          const alphaPostHints = mergeSignatureHints(
+            toAlpha,
+            alphaPostSignatures,
+            betaSigMap,
+          );
+          recordDirection("beta->alpha", toAlpha, alphaPostHints);
         } catch (err) {
           if (needAlphaLock && alphaLockedPaths.length) {
             try {
