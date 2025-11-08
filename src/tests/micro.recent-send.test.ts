@@ -6,6 +6,7 @@ import { makeMicroSync } from "../micro-sync";
 import { getDb } from "../db";
 import { ConsoleLogger } from "../logger";
 import { getRecentSendSignatures } from "../recent-send";
+import type { SignatureEntry } from "../signature-store";
 
 jest.mock("../rsync.js", () => {
   const run = jest.fn().mockResolvedValue({
@@ -83,6 +84,20 @@ describe("micro-sync recent-send integration", () => {
     insertFileRow(alphaDbPath, pathRel, now, hash);
 
     const logger = new ConsoleLogger("error");
+    const makeEntry = (pathValue: string): SignatureEntry => ({
+      path: pathValue,
+      signature: {
+        kind: "file",
+        opTs: now,
+        size: 10,
+        mtime: now,
+        ctime: now,
+      },
+    });
+    const fetchRemoteAlphaSignatures = jest
+      .fn(async (paths: string[]) => paths.map((p) => makeEntry(p)));
+    const fetchRemoteBetaSignatures = jest
+      .fn(async (paths: string[]) => paths.map((p) => makeEntry(p)));
     const micro = makeMicroSync({
       alphaRoot,
       betaRoot,
@@ -96,6 +111,8 @@ describe("micro-sync recent-send integration", () => {
       logger,
       compress: "none",
       isMergeActive: () => false,
+      fetchRemoteAlphaSignatures,
+      fetchRemoteBetaSignatures,
     });
 
     runRsync.mockClear();

@@ -780,7 +780,7 @@ export async function runScheduler({
     add: (dirs: string[]) => void;
     stat: (
       paths: string[],
-      opts: { ignore: boolean },
+      opts: { ignore: boolean; stable?: boolean },
     ) => Promise<SignatureEntry[]>;
     lock?: (paths: string[]) => Promise<void>;
     release?: (entries: ReleaseAckEntry[]) => Promise<void>;
@@ -1014,7 +1014,7 @@ export async function runScheduler({
 
     const requestStat = (
       paths: string[],
-      opts: { ignore: boolean },
+      opts: { ignore: boolean; stable?: boolean },
     ): Promise<SignatureEntry[]> => {
       const unique = Array.from(new Set(paths.filter(Boolean)));
       if (!unique.length) {
@@ -1031,6 +1031,7 @@ export async function runScheduler({
               requestId,
               paths: unique,
               ignore: !!opts.ignore,
+              stable: opts.stable === false ? false : true,
             }) + "\n",
           );
         } catch (err) {
@@ -1174,7 +1175,7 @@ export async function runScheduler({
 
   const fetchAlphaRemoteSignatures = async (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ): Promise<SignatureEntry[]> => {
     if (!paths.length) return [];
     if (!alphaStream?.stat) {
@@ -1195,7 +1196,7 @@ export async function runScheduler({
 
   const fetchBetaRemoteSignatures = async (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ): Promise<SignatureEntry[]> => {
     if (!paths.length) return [];
     if (!betaStream?.stat) {

@@ -104,7 +104,7 @@ type ControlHandlers = {
   handleStat: (
     requestId: number,
     paths: string[],
-    ignore: boolean,
+    opts: { ignore: boolean; stable: boolean },
   ) => Promise<void>;
   handleLock?: (requestId: number, paths: string[]) => Promise<void>;
   handleRelease?: (
@@ -172,11 +172,12 @@ function serveJsonControl(handlers: ControlHandlers) {
       } else if (op === "stat") {
         const requestId = Number(msg.requestId ?? 0);
         const ignore = Boolean(msg.ignore);
+        const stable = msg.stable === false ? false : true;
         const paths: string[] = Array.isArray(msg.paths)
           ? msg.paths
               .map((p) => norm(String(p || "").replace(/^\.\/+/, "")))
           : [];
-        await handlers.handleStat(requestId, paths, ignore);
+        await handlers.handleStat(requestId, paths, { ignore, stable });
       } else if (op === "lock" && handlers.handleLock) {
         const requestId = Number(msg.requestId ?? 0);
         const paths: string[] = Array.isArray(msg.paths)
@@ -436,10 +437,12 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   async function handleStatRequest(
     requestId: number,
     paths: string[],
-    ignore: boolean,
+    opts: { ignore: boolean; stable: boolean },
   ) {
     const now = Date.now();
     pruneIgnores();
+    const waitForStable =
+      opts?.stable === false ? false : REMOTE_STABILITY_ENABLED;
     const unique = Array.from(new Set(paths.filter(Boolean)));
     const entries: Array<{
       path: string;
@@ -448,12 +451,12 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     }> = [];
     for (const rel of unique) {
       try {
-        if (REMOTE_STABILITY_ENABLED) {
+        if (waitForStable) {
           await ensureStable(path.join(rootAbs, rel));
         }
         const { signature, target } = await computeSignature(rel);
         entries.push({ path: rel, signature, target });
-        if (ignore) {
+        if (opts.ignore) {
           pendingIgnores.set(rel, {
             signature,
             expiresAt: now + IGNORE_TTL_MS,
@@ -465,7 +468,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
         );
         const signature: SendSignature = { kind: "missing", opTs: Date.now() };
         entries.push({ path: rel, signature });
-        if (ignore) {
+        if (opts.ignore) {
           pendingIgnores.set(rel, {
             signature,
             expiresAt: now + IGNORE_TTL_MS,

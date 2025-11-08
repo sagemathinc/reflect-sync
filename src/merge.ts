@@ -135,11 +135,11 @@ type MergeRsyncOptions = {
   ) => Promise<void> | void;
   fetchRemoteAlphaSignatures?: (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ) => Promise<SignatureEntry[]> | Promise<void> | void;
   fetchRemoteBetaSignatures?: (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ) => Promise<SignatureEntry[]> | Promise<void> | void;
   alphaRemoteLock?: RemoteLockHandle;
   betaRemoteLock?: RemoteLockHandle;

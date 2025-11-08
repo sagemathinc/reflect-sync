@@ -82,11 +82,11 @@ export type MicroSyncDeps = {
   logger: Logger;
   fetchRemoteAlphaSignatures?: (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ) => Promise<SignatureEntry[]>;
   fetchRemoteBetaSignatures?: (
     paths: string[],
-    opts: { ignore: boolean },
+    opts: { ignore: boolean; stable?: boolean },
   ) => Promise<SignatureEntry[]>;
   numericIds?: boolean;
   alphaRemoteLock?: RemoteLockHandle;
@@ -202,10 +202,10 @@ export function makeMicroSync({
     return merged;
   };
 
-  const collectLocalSignatureEntries = (
+  const collectLocalSignatureEntries = async (
     root: string,
     paths: string[],
-  ): SignatureEntry[] => {
+  ): Promise<SignatureEntry[]> => {
     const out: SignatureEntry[] = [];
     for (const path of dedupe(paths)) {
       const signature = buildSignatureFromFs(root, path);
@@ -214,6 +214,35 @@ export function makeMicroSync({
       }
     }
     return out;
+  };
+
+  const sampleDestinationSignatures = async (
+    dest: "alpha" | "beta",
+    paths: string[],
+  ): Promise<SignatureEntry[]> => {
+    if (!paths.length) return [];
+    if (dest === "alpha") {
+      if (alphaIsRemote) {
+        if (!fetchRemoteAlphaSignatures) return [];
+        return (
+          (await fetchRemoteAlphaSignatures(paths, {
+            ignore: false,
+            stable: false,
+          })) ?? []
+        );
+      }
+      return await collectLocalSignatureEntries(alphaRoot, paths);
+    }
+    if (betaIsRemote) {
+      if (!fetchRemoteBetaSignatures) return [];
+      return (
+        (await fetchRemoteBetaSignatures(paths, {
+          ignore: false,
+          stable: false,
+        })) ?? []
+      );
+    }
+    return await collectLocalSignatureEntries(betaRoot, paths);
   };
 
   const logPartial = (
@@ -801,7 +830,6 @@ export function makeMicroSync({
         if (needBetaLock && betaLockedPaths.length) {
           await betaRemoteLock!.lock(betaLockedPaths);
         }
-        let betaPostSignatures: SignatureEntry[] = [];
         try {
           if (alphaIsRemote || betaIsRemote) {
             log(
@@ -867,32 +895,36 @@ export function makeMicroSync({
             }
           }
 
-          if (betaIsRemote && fetchRemoteBetaSignatures) {
-            betaPostSignatures =
-              (await fetchRemoteBetaSignatures(toBeta, {
-                ignore: false,
-              })) ?? [];
-          } else {
-            betaPostSignatures = collectLocalSignatureEntries(
-              betaRoot,
-              toBeta,
+          const betaPostSignatures = await sampleDestinationSignatures(
+            "beta",
+            toBeta,
+          );
+          if (!betaPostSignatures.length && toBeta.length) {
+            throw new PartialTransferError(
+              "alpha→beta transfer unverifiable",
+              { alphaPaths: toBeta },
             );
           }
+          const betaSuccessPaths = dedupe(
+            betaPostSignatures.map((entry) => entry.path),
+          );
           if (needBetaLock && betaLockedPaths.length) {
             await finalizeRemoteLock(
               betaRemoteLock!,
               betaLockedPaths,
-              betaReleasePlan.copies,
+              betaSuccessPaths,
               betaReleasePlan.deletions,
               betaPostSignatures,
             );
           }
-          const betaPostHints = mergeSignatureHints(
-            toBeta,
-            betaPostSignatures,
-            alphaSigMap,
-          );
-          recordDirection("alpha->beta", toBeta, betaPostHints);
+          if (betaSuccessPaths.length) {
+            const betaPostHints = mergeSignatureHints(
+              betaSuccessPaths,
+              betaPostSignatures,
+              alphaSigMap,
+            );
+            recordDirection("alpha->beta", betaSuccessPaths, betaPostHints);
+          }
         } catch (err) {
           if (needBetaLock && betaLockedPaths.length) {
             try {
@@ -916,7 +948,6 @@ export function makeMicroSync({
         if (needAlphaLock && alphaLockedPaths.length) {
           await alphaRemoteLock!.lock(alphaLockedPaths);
         }
-        let alphaPostSignatures: SignatureEntry[] = [];
         try {
           if (alphaIsRemote || betaIsRemote) {
             log(
@@ -982,17 +1013,19 @@ export function makeMicroSync({
             }
           }
 
-          if (alphaIsRemote && fetchRemoteAlphaSignatures) {
-            alphaPostSignatures =
-              (await fetchRemoteAlphaSignatures(toAlpha, {
-                ignore: false,
-              })) ?? [];
-          } else {
-            alphaPostSignatures = collectLocalSignatureEntries(
-              alphaRoot,
-              toAlpha,
+          const alphaPostSignatures = await sampleDestinationSignatures(
+            "alpha",
+            toAlpha,
+          );
+          if (!alphaPostSignatures.length && toAlpha.length) {
+            throw new PartialTransferError(
+              "beta→alpha transfer unverifiable",
+              { betaPaths: toAlpha },
             );
           }
+          const alphaSuccessPaths = dedupe(
+            alphaPostSignatures.map((entry) => entry.path),
+          );
           if (betaIsRemote && fetchRemoteBetaSignatures) {
             await fetchRemoteBetaSignatures(toAlpha, { ignore: false });
           }
@@ -1000,17 +1033,19 @@ export function makeMicroSync({
             await finalizeRemoteLock(
               alphaRemoteLock!,
               alphaLockedPaths,
-              alphaReleasePlan.copies,
+              alphaSuccessPaths,
               alphaReleasePlan.deletions,
               alphaPostSignatures,
             );
           }
-          const alphaPostHints = mergeSignatureHints(
-            toAlpha,
-            alphaPostSignatures,
-            betaSigMap,
-          );
-          recordDirection("beta->alpha", toAlpha, alphaPostHints);
+          if (alphaSuccessPaths.length) {
+            const alphaPostHints = mergeSignatureHints(
+              alphaSuccessPaths,
+              alphaPostSignatures,
+              betaSigMap,
+            );
+            recordDirection("beta->alpha", alphaSuccessPaths, alphaPostHints);
+          }
         } catch (err) {
           if (needAlphaLock && alphaLockedPaths.length) {
             try {
