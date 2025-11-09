@@ -132,6 +132,8 @@ type ScanOptions = {
   ignore?: string[];
   restrictedPaths?: string[];
   restrictedDirs?: string[];
+  restrictedPath?: string[] | string;
+  restrictedDir?: string[] | string;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -150,6 +152,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     ignore: ignoreCliOpt = [],
     restrictedPaths: restrictedPathsOpt = [],
     restrictedDirs: restrictedDirsOpt = [],
+    restrictedPath: restrictedPathOpt = [],
+    restrictedDir: restrictedDirOpt = [],
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const ignoreRaw: string[] = [];
@@ -172,8 +176,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
-  let restrictedPathList = dedupeRestrictedList(restrictedPathsOpt);
-  let restrictedDirList = dedupeRestrictedList(restrictedDirsOpt);
+  const restrictedPathRaw = [
+    ...(Array.isArray(restrictedPathsOpt) ? restrictedPathsOpt : []),
+    ...(Array.isArray(restrictedPathOpt)
+      ? restrictedPathOpt
+      : restrictedPathOpt
+        ? [restrictedPathOpt]
+        : []),
+  ];
+  const restrictedDirRaw = [
+    ...(Array.isArray(restrictedDirsOpt) ? restrictedDirsOpt : []),
+    ...(Array.isArray(restrictedDirOpt)
+      ? restrictedDirOpt
+      : restrictedDirOpt
+        ? [restrictedDirOpt]
+        : []),
+  ];
+
+  let restrictedPathList = dedupeRestrictedList(restrictedPathRaw);
+  let restrictedDirList = dedupeRestrictedList(restrictedDirRaw);
   if (
     restrictedPathList.includes("") ||
     restrictedDirList.includes("")
