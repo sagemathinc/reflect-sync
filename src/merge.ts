@@ -56,6 +56,35 @@ const TERMINATE_ON_CHANGE_ALPHA =
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
 
+function normalizeRestrictedInput(value: string | undefined | null) {
+  if (typeof value !== "string") return undefined;
+  let normalized = value.trim();
+  if (!normalized) return undefined;
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  while (normalized.startsWith("/")) {
+    normalized = normalized.slice(1);
+  }
+  normalized = normalized.replace(/\/{2,}/g, "/");
+  normalized = normalized.replace(/\/+$/, "");
+  if (!normalized || normalized === ".") return undefined;
+  return normalized;
+}
+
+function dedupeList(values?: string[]) {
+  if (!Array.isArray(values) || !values.length) return [];
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of values) {
+    const normalized = normalizeRestrictedInput(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    cleaned.push(normalized);
+  }
+  return cleaned;
+}
+
 function toBoolVerbose(v?: boolean | string): boolean {
   if (typeof v === "string") {
     const trimmed = v.trim().toLowerCase();
@@ -154,6 +183,7 @@ type MergeRsyncOptions = {
   alphaRemoteLock?: RemoteLockHandle;
   betaRemoteLock?: RemoteLockHandle;
   restrictedPaths?: string[];
+  restrictedDirs?: string[];
 };
 
 // ---------- helpers ----------
@@ -236,6 +266,7 @@ export async function runMerge({
   alphaRemoteLock,
   betaRemoteLock,
   restrictedPaths,
+  restrictedDirs,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -578,18 +609,11 @@ export async function runMerge({
     db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
-    const restrictedList =
-      Array.isArray(restrictedPaths) && restrictedPaths.length
-        ? Array.from(
-            new Set(
-              restrictedPaths.filter(
-                (p): p is string => typeof p === "string" && p.length > 0,
-              ),
-            ),
-          )
-        : undefined;
-    const hasRestrictedPaths = !!(restrictedList && restrictedList.length);
-    if (hasRestrictedPaths) {
+    const restrictedPathList = dedupeList(restrictedPaths);
+    const restrictedDirList = dedupeList(restrictedDirs);
+    const hasRestrictions =
+      restrictedPathList.length > 0 || restrictedDirList.length > 0;
+    if (hasRestrictions) {
       db.exec(`
         DROP TABLE IF EXISTS restricted_paths;
         CREATE TEMP TABLE restricted_paths(
@@ -604,12 +628,47 @@ export async function runMerge({
           insertRestricted.run(relPath);
         }
       });
-      insertRestrictedBatch(restrictedList!);
+      if (restrictedPathList.length) {
+        insertRestrictedBatch(restrictedPathList);
+      }
+      if (restrictedDirList.length) {
+        const dirTables = [
+          "alpha.files",
+          "alpha.links",
+          "alpha.dirs",
+          "beta.files",
+          "beta.links",
+          "beta.dirs",
+          "base",
+          "base_dirs",
+        ];
+        const dirStmts = dirTables.map((tbl) =>
+          db.prepare(
+            `
+              INSERT OR IGNORE INTO restricted_paths(rpath)
+              SELECT path FROM ${tbl}
+              WHERE path = @dir
+                 OR (path >= @prefix AND path < @upper)
+            `,
+          ),
+        );
+        const insertDirs = db.transaction((dirs: string[]) => {
+          for (const dir of dirs) {
+            insertRestricted.run(dir);
+            const prefix = `${dir}/`;
+            const upper = `${prefix}\uffff`;
+            for (const stmt of dirStmts) {
+              stmt.run({ dir, prefix, upper });
+            }
+          }
+        });
+        insertDirs(restrictedDirList);
+      }
     }
-    const restrictEntriesSuffix = hasRestrictedPaths
+    const restrictEntriesSuffix = hasRestrictions
       ? " AND path IN (SELECT rpath FROM restricted_paths)"
       : "";
-    const restrictWhereClause = hasRestrictedPaths
+    const restrictWhereClause = hasRestrictions
       ? " WHERE path IN (SELECT rpath FROM restricted_paths)"
       : "";
 
