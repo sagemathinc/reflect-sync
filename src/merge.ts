@@ -639,8 +639,6 @@ export async function runMerge({
       `
       DROP VIEW IF EXISTS alpha_entries;
       DROP VIEW IF EXISTS beta_entries;
-      DROP VIEW IF EXISTS all_paths;
-      DROP VIEW IF EXISTS coalesced_pairs;
       `,
     );
     /*
@@ -705,18 +703,13 @@ export async function runMerge({
       SELECT path, hash, deleted, op_ts, mtime
       FROM ranked
       WHERE rn = 1;
-
-      -- =========================
-      -- Superset of paths
-      -- =========================
-      CREATE TEMP VIEW all_paths AS
-      SELECT path FROM alpha_entries
-      UNION
-      SELECT path FROM beta_entries;
     `);
 
     db.exec(
-      `DROP TABLE IF EXISTS alpha_rel; DROP TABLE IF EXISTS beta_rel; DROP TABLE IF EXISTS base_rel;`,
+      `
+      DROP TABLE IF EXISTS alpha_rel;
+      DROP TABLE IF EXISTS beta_rel;
+      DROP TABLE IF EXISTS base_rel;`,
     );
 
     done = t("build *_rel");
