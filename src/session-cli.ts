@@ -23,13 +23,8 @@ import {
 import { fmtAgo, registerSessionStatus } from "./session-status.js";
 import { registerSessionSync } from "./session-sync.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
-import {
-  ConsoleLogger,
-  LOG_LEVELS,
-  parseLogLevel,
-  type LogLevel,
-} from "./logger.js";
-import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
+import { ConsoleLogger, LOG_LEVELS, parseLogLevel } from "./logger.js";
+import { fetchSessionLogs } from "./session-logs.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { fmtLocalPath } from "./session-status.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
@@ -43,6 +38,10 @@ import { diffSession } from "./session-diff.js";
 import { getDb } from "./db.js";
 import type { Database } from "./db.js";
 import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
+import {
+  parseLogLevelOption,
+  renderLogRows,
+} from "./cli-log-output.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -54,47 +53,6 @@ function clampPositive(value: number | undefined, fallback: number): number {
   const n = Number(value);
   if (Number.isFinite(n) && n > 0) return n;
   return fallback;
-}
-
-function parseLogLevelOption(raw?: string): LogLevel | undefined {
-  if (!raw) return undefined;
-  const lvl = raw.toLowerCase();
-  if (!LOG_LEVELS.includes(lvl as LogLevel)) {
-    console.error(
-      `invalid level '${raw}', expected one of ${LOG_LEVELS.join(", ")}`,
-    );
-    process.exit(1);
-  }
-  return lvl as LogLevel;
-}
-
-function renderRows(
-  rows: SessionLogRow[],
-  { json, absolute }: { json: boolean; absolute: boolean },
-) {
-  for (const row of rows) {
-    if (json) {
-      const payload = {
-        id: row.id,
-        session_id: row.session_id,
-        ts: row.ts,
-        level: row.level,
-        scope: row.scope,
-        message: row.message,
-        meta: row.meta ?? null,
-      };
-      console.log(JSON.stringify(payload));
-      continue;
-    }
-    const scope = row.scope ? ` [${row.scope}]` : "";
-    const meta =
-      row.meta && Object.keys(row.meta).length
-        ? ` ${JSON.stringify(row.meta)}`
-        : "";
-    console.log(
-      `(${absolute ? new Date(row.ts).toISOString() : fmtAgo(row.ts)}) ${row.level.toUpperCase()}${scope} ${row.message}${meta}`,
-    );
-  }
 }
 
 function requireSessionRow(sessionDb: string, ref: string): SessionRow {
@@ -699,7 +657,7 @@ export function registerSessionCommands(program: Command) {
             return;
           }
         } else {
-          renderRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
+          renderLogRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
           lastId = rows[rows.length - 1].id;
         }
 
@@ -720,7 +678,7 @@ export function registerSessionCommands(program: Command) {
               message: opts.message ? String(opts.message) : undefined,
             });
             if (rows.length) {
-              renderRows(rows, {
+              renderLogRows(rows, {
                 json: !!opts.json,
                 absolute: !!opts.absolute,
               });

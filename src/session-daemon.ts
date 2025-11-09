@@ -21,8 +21,22 @@ import {
 import { spawnSchedulerForSession } from "./session-runner.js";
 import { launchForwardProcess } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
-import { ConsoleLogger, type Logger } from "./logger.js";
+import {
+  ConsoleLogger,
+  LOG_LEVELS,
+  parseLogLevel,
+  type LogLevel,
+  type Logger,
+} from "./logger.js";
 import { resolveSelfLaunch } from "./self-launch.js";
+import {
+  createDaemonLogger,
+  fetchDaemonLogs,
+} from "./daemon-logs.js";
+import {
+  parseLogLevelOption,
+  renderLogRows,
+} from "./cli-log-output.js";
 
 const DAEMON_DIR = join(getReflectSyncHome(), "daemon");
 const PID_FILE = join(DAEMON_DIR, "reflect.pid");
@@ -167,6 +181,12 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function clampPositive(value: number | undefined, fallback: number): number {
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  return fallback;
+}
+
 async function runSupervisorLoop(
   sessionDb: string,
   intervalMs: number,
@@ -256,55 +276,74 @@ async function stopDaemonProcess(pid: number, logger: Logger) {
 
 type ForegroundOptions = {
   stopExisting?: boolean;
-  logger?: ConsoleLogger;
+  logLevel?: LogLevel;
 };
 
 async function runDaemonForeground(
   sessionDb: string,
   options: ForegroundOptions = {},
 ) {
-  const baseLogger = options.logger ?? new ConsoleLogger("info");
-  const daemonLogger = baseLogger.child("daemon");
-  const existing = readPidSync();
-  if (isPidAlive(existing)) {
-    if (options.stopExisting) {
-      daemonLogger.info("stopping existing daemon before foreground start", {
-        pid: existing,
-      });
-      if (existing) await stopDaemonProcess(existing, daemonLogger);
-    } else {
-      throw new Error(`daemon already running (pid ${existing})`);
-    }
-  }
-  if (existing) {
-    removePidSync();
-  }
-  writePidSync(process.pid);
-  const stopSignal = { stopped: false };
-  const handleSignal = (sig: string) => {
-    if (!stopSignal.stopped) {
-      daemonLogger.info(`received ${sig}, stopping daemon`);
-      stopSignal.stopped = true;
-    }
-  };
-  process.on("SIGINT", () => handleSignal("SIGINT"));
-  process.on("SIGTERM", () => handleSignal("SIGTERM"));
-  const cleanUp = () => {
-    removePidSync();
-  };
-  process.on("exit", cleanUp);
-  process.on("uncaughtException", (err) => {
-    daemonLogger.error("uncaught exception", {
-      error: err instanceof Error ? (err.stack ?? err.message) : String(err),
-    });
-    stopSignal.stopped = true;
-    cleanUp();
-    process.exit(1);
+  const logHandle = createDaemonLogger(sessionDb, {
+    scope: "daemon",
+    echoLevel: options.logLevel ?? "info",
   });
-  daemonLogger.info("daemon started", { sessionDb, mode: "foreground" });
-  await runSupervisorLoop(sessionDb, 3000, daemonLogger, stopSignal);
-  cleanUp();
-  daemonLogger.info("daemon stopped");
+  const daemonLogger = logHandle.logger;
+  const stopSignal = { stopped: false };
+  const existing = readPidSync();
+  let wrotePid = false;
+  let cleaned = false;
+  const cleanUp = () => {
+    if (cleaned) return;
+    if (wrotePid) {
+      removePidSync();
+    }
+    logHandle.close();
+    cleaned = true;
+  };
+  try {
+    if (isPidAlive(existing)) {
+      if (options.stopExisting) {
+        daemonLogger.info(
+          "stopping existing daemon before foreground start",
+          {
+            pid: existing,
+          },
+        );
+        if (existing) await stopDaemonProcess(existing, daemonLogger);
+      } else {
+        throw new Error(`daemon already running (pid ${existing})`);
+      }
+    }
+    if (existing) {
+      removePidSync();
+    }
+    writePidSync(process.pid);
+    wrotePid = true;
+    const handleSignal = (sig: string) => {
+      if (!stopSignal.stopped) {
+        daemonLogger.info(`received ${sig}, stopping daemon`);
+        stopSignal.stopped = true;
+      }
+    };
+    const onSigint = () => handleSignal("SIGINT");
+    const onSigterm = () => handleSignal("SIGTERM");
+    process.on("SIGINT", onSigint);
+    process.on("SIGTERM", onSigterm);
+    process.on("exit", cleanUp);
+    process.on("uncaughtException", (err) => {
+      daemonLogger.error("uncaught exception", {
+        error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+      });
+      stopSignal.stopped = true;
+      cleanUp();
+      process.exit(1);
+    });
+    daemonLogger.info("daemon started", { sessionDb, mode: "foreground" });
+    await runSupervisorLoop(sessionDb, 3000, daemonLogger, stopSignal);
+    daemonLogger.info("daemon stopped");
+  } finally {
+    cleanUp();
+  }
 }
 
 function formatStatus(pid: number | null, running: boolean) {
@@ -412,14 +451,101 @@ export function registerSessionDaemon(program: Command) {
 
   addSessionDbOption(
     daemon
+      .command("logs")
+      .description("show recent daemon logs")
+      .option("--tail <n>", "number of log entries to display", (v: string) =>
+        Number.parseInt(v, 10),
+      )
+      .option("--since <ms>", "only show logs with ts >= ms since epoch", (v) =>
+        Number.parseInt(v, 10),
+      )
+      .option("--absolute", "show times as absolute timestamps", false)
+      .option(
+        "--level <level>",
+        `minimum log level (${LOG_LEVELS.join(", ")})`,
+        (v: string) => v.trim().toLowerCase(),
+      )
+      .option("-f, --follow", "follow log output", false)
+      .option("--json", "emit newline-delimited JSON", false)
+      .option("--scope <scope>", "only include logs with matching scope")
+      .option("--message <message>", "only include logs with matching message")
+      .action(async (opts: any, command: Command) => {
+        const sessionDb = resolveSessionDb(opts, command);
+        const minLevel = parseLogLevelOption(opts.level);
+        const tail = clampPositive(opts.tail, opts.follow ? 100 : 10000);
+        const sinceTs =
+          opts.since != null && Number.isFinite(Number(opts.since))
+            ? Number(opts.since)
+            : undefined;
+        const scope = opts.scope ? String(opts.scope) : undefined;
+        const message = opts.message ? String(opts.message) : undefined;
+        let rows = fetchDaemonLogs(sessionDb, {
+          limit: tail,
+          minLevel,
+          sinceTs,
+          order: "desc",
+          scope,
+          message,
+        }).reverse();
+
+        let lastId = 0;
+        if (!rows.length) {
+          if (!opts.follow) {
+            console.log("no logs");
+            return;
+          }
+        } else {
+          renderLogRows(rows, { json: !!opts.json, absolute: !!opts.absolute });
+          lastId = rows[rows.length - 1].id;
+        }
+
+        if (!opts.follow) return;
+
+        const intervalMs = clampPositive(
+          Number(process.env.REFLECT_LOG_FOLLOW_INTERVAL ?? 1000),
+          1000,
+        );
+
+        await new Promise<void>((resolve) => {
+          const tick = () => {
+            rows = fetchDaemonLogs(sessionDb, {
+              afterId: lastId,
+              minLevel,
+              order: "asc",
+              scope,
+              message,
+            });
+            if (rows.length) {
+              renderLogRows(rows, {
+                json: !!opts.json,
+                absolute: !!opts.absolute,
+              });
+              lastId = rows[rows.length - 1].id;
+            }
+          };
+          const timer = setInterval(tick, intervalMs);
+          const stop = () => {
+            clearInterval(timer);
+            resolve();
+          };
+          process.once("SIGINT", stop);
+          process.once("SIGTERM", stop);
+        });
+      }),
+  );
+
+  addSessionDbOption(
+    daemon
       .command("run")
       .description("run the daemon in the foreground (if not already running)")
       .action(async (opts: { sessionDb?: string }, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
+        const globals = command.optsWithGlobals() as { logLevel?: string };
+        const logLevel = parseLogLevel(globals.logLevel, "debug");
         try {
           await runDaemonForeground(sessionDb, {
             stopExisting: false,
-            logger: new ConsoleLogger("debug"),
+            logLevel,
           });
         } catch (err) {
           console.error(err instanceof Error ? err.message : String(err));

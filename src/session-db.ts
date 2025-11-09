@@ -358,6 +358,19 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
       CREATE INDEX IF NOT EXISTS idx_session_logs_sid_id
         ON session_logs(session_id, id);
 
+      CREATE TABLE IF NOT EXISTS daemon_logs (
+          id          INTEGER PRIMARY KEY,
+          ts          INTEGER NOT NULL,
+          level       TEXT NOT NULL,
+          scope       TEXT,
+          message     TEXT NOT NULL,
+          meta        TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_daemon_logs_ts
+        ON daemon_logs(ts);
+      CREATE INDEX IF NOT EXISTS idx_daemon_logs_level
+        ON daemon_logs(level, ts);
+
       CREATE TABLE IF NOT EXISTS ssh_sessions (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at     INTEGER NOT NULL,

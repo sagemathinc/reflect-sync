@@ -126,9 +126,10 @@ The `reflect daemon` command keeps schedulers alive in the background:
 reflect daemon start   # fire-and-forget supervisor (writes ~/.local/share/reflect-sync/daemon/reflect.pid)
 reflect daemon status  # quick health check
 reflect daemon stop    # terminate the supervisor
+reflect daemon logs [--follow] [--json]  # tail the supervisor logs stored in sessions.db
 ```
 
-Use `reflect daemon install` to install a user service (systemd on Linux, LaunchAgent on macOS) that launches the daemon on login. The service runs `reflect daemon run` in the foreground, so you can also wire it into your own service manager.
+Use `reflect daemon install` to install a user service (systemd on Linux, LaunchAgent on macOS) that launches the daemon on login. The service runs `reflect daemon run` in the foreground, so you can also wire it into your own service manager. All daemon output is persisted in `sessions.db`, so you can inspect historic activity with `reflect daemon logs` even if the process is no longer running.
 
 ### Common CLI commands
 
@@ -141,6 +142,7 @@ reflect logs <id-or-name> --message progress  # tail only progress events (scan/
 reflect stop <id-or-name...>                  # stop one or more sessions
 reflect start <id-or-name...>                 # start (and auto-start scheduler if needed)
 reflect terminate <id-or-name...>             # stop and remove session state
+reflect daemon logs [--follow]                # inspect supervisor logs persisted in sessions.db
 reflect daemon start                          # ensure the background supervisor is running
 reflect daemon stop                           # stop the supervisor (removes the PID file)
 ```
