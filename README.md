@@ -11,7 +11,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 - **Incremental scans** with content hashes only when needed \(based on ctime\)
 - **Realtime restricted cycles** for hot files \(debounced, safe on partial edits\)
 - **SSH\-friendly**: stream remote deltas over stdin
-- **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
+- **Copy on Write (optional):** when both roots are local you can opt into `cp --reflink` copies for fast COW transfers (`reflect create … --enable-reflink`); the flag is off by default so nothing attempts reflinks automatically.
 - **Very Lightweight:** The reflect-sync npm package is under 100KB compressed (about 300KB uncompressed), including all dependencies.
 
 > Requires **Node.js 22+**.
@@ -117,6 +117,12 @@ The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON de
 > Remote paths must begin with `/` or `~/`. The optional `:<port>` segment lives between the host and the path (`host:2222:/path`). A bare single colon or a double colon (`host:/path`, `host::/path`) uses the default port 22.
 
 > Advanced plumbing commands (`scan`, `watch`, `scheduler`, …) are hidden from the default help to keep the interface ergonomic. Run `reflect --help --advanced` if you need to see or invoke them directly.
+
+### Copy-on-write reflink copies (optional)
+
+Reflect never attempts reflink copies automatically. If **both roots are local and on the same filesystem**, pass `--enable-reflink` to `reflect create` (or `reflect edit … --enable-reflink`) to force `cp --reflink=always --parents …` for alpha↔beta copies. The scheduler CLI also accepts `--enable-reflink` when you launch it manually. Remote sessions must leave the flag unset; the CLI errors if either side is remote.
+
+With the flag enabled Reflect fails fast if the filesystem refuses a reflink copy—there is no silent fallback to rsync—so only opt in when you know the workload supports CoW clones (e.g., btrfs, XFS with reflinks). `reflect list` and `reflect status` annotate sessions with `reflink` so you can confirm the setting later.
 
 ### Running as a daemon
 
