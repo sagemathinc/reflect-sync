@@ -40,7 +40,12 @@ import {
   remoteWhich,
   RemoteConnectionError,
 } from "./remote.js";
-import type { SendSignature } from "./recent-send.js";
+import {
+  recordRecentSend,
+  signatureFromStamp,
+  type SendSignature,
+} from "./recent-send.js";
+import { fetchOpStamps } from "./op-stamp.js";
 import { applySignaturesToDb, type SignatureEntry } from "./signature-store.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
@@ -51,7 +56,7 @@ import {
   createSessionLogger,
   type SessionLoggerHandle,
 } from "./session-logs.js";
-import { runMerge } from "./merge.js";
+import { runMerge, type MarkDirectionOptions } from "./merge.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 import {
@@ -1662,6 +1667,41 @@ export async function runScheduler({
   let addRemoteAlphaHotDirs: null | ((dirs: string[]) => void) = null;
   let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
+  const makeMarkDirection = (
+    direction: "alpha->beta" | "beta->alpha",
+    destDb: string,
+    sourceDb: string,
+  ) => {
+    return async (
+      paths: string[],
+      opts?: MarkDirectionOptions,
+    ): Promise<void> => {
+      if (!paths.length) return;
+      const unique = Array.from(new Set(paths));
+      const sigMap = new Map<string, SendSignature | null>();
+      if (opts?.signatures) {
+        for (const [path, sig] of opts.signatures) {
+          sigMap.set(path, sig ?? null);
+        }
+      }
+      const missing = unique.filter((p) => !sigMap.has(p));
+      if (missing.length) {
+        const stamps = fetchOpStamps(sourceDb, missing);
+        for (const path of missing) {
+          sigMap.set(path, signatureFromStamp(stamps.get(path)));
+        }
+      }
+      const entries = unique.map((path) => ({
+        path,
+        signature: sigMap.get(path) ?? null,
+      }));
+      recordRecentSend(destDb, direction, entries);
+    };
+  };
+
+  const markAlphaToBeta = makeMarkDirection("alpha->beta", betaDb, alphaDb);
+  const markBetaToAlpha = makeMarkDirection("beta->alpha", alphaDb, betaDb);
+
   // ---------- full cycle ----------
   async function runCycle(options: CycleOptions = {}): Promise<void> {
     try {
@@ -1888,6 +1928,8 @@ export async function runScheduler({
             : undefined,
         alphaRemoteLock: alphaLockHandle,
         betaRemoteLock: betaLockHandle,
+        markAlphaToBeta,
+        markBetaToAlpha,
       });
       mergeOk = true;
     } catch (err) {

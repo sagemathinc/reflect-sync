@@ -694,6 +694,105 @@ export async function runMerge({
       ? " WHERE path IN (SELECT rpath FROM restricted_paths)"
       : "";
 
+    const chunkPaths = <T,>(items: T[], size = 200): T[][] => {
+      if (items.length <= size) return [items];
+      const chunks: T[][] = [];
+      for (let i = 0; i < items.length; i += size) {
+        chunks.push(items.slice(i, i + size));
+      }
+      return chunks;
+    };
+
+    type TableKind = "files" | "dirs" | "links";
+    type MirrorConfig = {
+      columns: string[];
+      select: string;
+    };
+
+    const mirrorConfigs: Record<TableKind, MirrorConfig> = {
+      files: {
+        columns: [
+          "path",
+          "size",
+          "ctime",
+          "mtime",
+          "op_ts",
+          "hash",
+          "deleted",
+          "last_seen",
+          "hashed_ctime",
+        ],
+        select:
+          "path, size, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen, hashed_ctime",
+      },
+      dirs: {
+        columns: [
+          "path",
+          "ctime",
+          "mtime",
+          "op_ts",
+          "hash",
+          "deleted",
+          "last_seen",
+        ],
+        select:
+          "path, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+      },
+      links: {
+        columns: [
+          "path",
+          "target",
+          "ctime",
+          "mtime",
+          "op_ts",
+          "hash",
+          "deleted",
+          "last_seen",
+        ],
+        select:
+          "path, target, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+      },
+    };
+
+    const mirrorTableEntries = (
+      source: "alpha" | "beta",
+      dest: "alpha" | "beta",
+      table: TableKind,
+      paths: string[],
+    ) => {
+      const unique = uniq(paths);
+      if (!unique.length || source === dest) return;
+      const cfg = mirrorConfigs[table];
+      const assignments = cfg.columns
+        .filter((col) => col !== "path")
+        .map((col) => `${col} = excluded.${col}`)
+        .join(", ");
+      for (const chunk of chunkPaths(unique)) {
+        if (!chunk.length) continue;
+        const placeholders = chunk.map(() => "?").join(",");
+        const sql = `
+          INSERT INTO ${dest}.${table} (${cfg.columns.join(",")})
+          SELECT ${cfg.select}
+          FROM ${source}.${table}
+          WHERE path IN (${placeholders})
+          ON CONFLICT(path) DO UPDATE SET ${assignments};
+        `;
+        db.prepare(sql).run(...chunk);
+      }
+    };
+
+    const mirrorFilesAndLinks = (
+      source: "alpha" | "beta",
+      dest: "alpha" | "beta",
+      paths: string[],
+    ) => {
+      if (!paths.length) return;
+      mirrorTableEntries(source, dest, "files", paths);
+      mirrorTableEntries(source, dest, "links", paths);
+    };
+
+
+
     // ---------- EARLY-OUT FAST PATH ----------
     // Hash live (non-deleted) catalogs of both sides. If unchanged vs last time → skip planning/rsync.
     db.exec(`
@@ -2088,10 +2187,17 @@ export async function runMerge({
         })
       ).ok;
       if (copyDirsAlphaBetaOk && toBetaDirs.length) {
-        await noteBetaChange(toBetaDirs);
+        const betaDirEntries = await fetchSignaturesForTarget("beta", toBetaDirs);
+        const betaDirHints = signatureEntriesToMap(betaDirEntries);
+        await noteBetaChange(toBetaDirs, { signatures: betaDirHints });
       }
       if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
-        await noteAlphaChange(toAlphaDirs);
+        const alphaDirEntries = await fetchSignaturesForTarget(
+          "alpha",
+          toAlphaDirs,
+        );
+        const alphaDirHints = signatureEntriesToMap(alphaDirEntries);
+        await noteAlphaChange(toAlphaDirs, { signatures: alphaDirHints });
       }
       done();
 
@@ -2125,6 +2231,7 @@ export async function runMerge({
             alphaSignatureHints,
           );
           await noteBetaChange(betaCopied, { signatures: betaHints });
+          mirrorFilesAndLinks("alpha", "beta", betaCopied);
         }
 
         const alphaCopied = alphaReflink.copied.filter((rel) =>
@@ -2138,6 +2245,7 @@ export async function runMerge({
             betaSignatureHints,
           );
           await noteAlphaChange(alphaCopied, { signatures: alphaHints });
+          mirrorFilesAndLinks("beta", "alpha", alphaCopied);
         }
 
         const reflinkFailures = [
@@ -2200,6 +2308,7 @@ export async function runMerge({
           await noteBetaChange(alphaCopyRes.transferred, {
             signatures: betaHints,
           });
+          mirrorFilesAndLinks("alpha", "beta", alphaCopyRes.transferred);
         }
         if (betaCopyRes.transferred.length) {
           betaCopyRes.transferred.forEach((rel) =>
@@ -2215,6 +2324,7 @@ export async function runMerge({
           await noteAlphaChange(betaCopyRes.transferred, {
             signatures: alphaHints,
           });
+          mirrorFilesAndLinks("beta", "alpha", betaCopyRes.transferred);
         }
         done();
       }

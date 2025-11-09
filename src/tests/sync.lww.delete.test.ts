@@ -49,6 +49,7 @@ describe("LWW: delete vs modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     // then modify alpha later (newer op_ts)
     await fsp.writeFile(a, "alpha-newer");
+    await setMtimeMs(a, Date.now() + 5000);
 
     await sync(r, "beta", false, undefined); // prefer irrelevant; newer op_ts should restore to beta
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-newer");
