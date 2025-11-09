@@ -434,6 +434,91 @@ export async function runMerge({
     return mergeSignatureHints(targetPaths, entries, fallback);
   };
 
+  const normalizeRpath = (input: string): string => {
+    if (!input) return input;
+    let out = input;
+    if (out.startsWith("./")) out = out.slice(2);
+    while (out.length > 1 && out.endsWith("/")) {
+      out = out.slice(0, -1);
+    }
+    return out;
+  };
+
+  const fetchSignaturesForTarget = async (
+    target: "alpha" | "beta",
+    paths: string[],
+  ): Promise<SignatureEntry[]> => {
+    if (!paths.length) return [];
+    if (target === "alpha") {
+      if (alphaHost) {
+        if (!fetchRemoteAlphaSignatures) return [];
+        const res =
+          (await fetchRemoteAlphaSignatures(paths, {
+            ignore: false,
+            stable: false,
+          })) ?? [];
+        return res;
+      }
+      return collectLocalSignatureEntries(alphaRoot, paths);
+    } else {
+      if (betaHost) {
+        if (!fetchRemoteBetaSignatures) return [];
+        const res =
+          (await fetchRemoteBetaSignatures(paths, {
+            ignore: false,
+            stable: false,
+          })) ?? [];
+        return res;
+      }
+      return collectLocalSignatureEntries(betaRoot, paths);
+    }
+  };
+
+  const confirmDeletions = async (
+    target: "alpha" | "beta",
+    planned: string[],
+    explicit: string[],
+  ): Promise<string[]> => {
+    if (!planned.length) return [];
+    const plannedEntries = planned.map((raw) => ({
+      raw,
+      norm: normalizeRpath(raw),
+    }));
+    const canonical = new Map<string, string>();
+    for (const entry of plannedEntries) {
+      if (!canonical.has(entry.norm)) {
+        canonical.set(entry.norm, entry.raw);
+      }
+    }
+    const confirmed = new Set<string>();
+    for (const p of explicit) {
+      const norm = normalizeRpath(p);
+      if (!norm) continue;
+      confirmed.add(norm);
+      if (!canonical.has(norm)) {
+        canonical.set(norm, p);
+      }
+    }
+    const remaining = plannedEntries
+      .filter((entry) => !confirmed.has(entry.norm))
+      .map((entry) => entry.raw);
+    if (remaining.length) {
+      const sigs = await fetchSignaturesForTarget(target, remaining);
+      for (const entry of sigs) {
+        if (entry.signature.kind === "missing") {
+          const norm = normalizeRpath(entry.path);
+          confirmed.add(norm);
+          if (!canonical.has(norm)) {
+            canonical.set(norm, entry.path);
+          }
+        }
+      }
+    }
+    return Array.from(confirmed).map(
+      (norm) => canonical.get(norm) ?? norm,
+    );
+  };
+
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
   let alphaTempArg: string | undefined;
@@ -1669,6 +1754,10 @@ export async function runMerge({
       let copyDirsBetaAlphaOk = false;
       const completedCopyToBeta = new Set<string>();
       const completedCopyToAlpha = new Set<string>();
+      const deletedFilesAlpha = new Set<string>();
+      const deletedFilesBeta = new Set<string>();
+      const deletedDirsAlpha = new Set<string>();
+      const deletedDirsBeta = new Set<string>();
 
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
@@ -1794,7 +1883,7 @@ export async function runMerge({
       // 1) delete file conflicts first
       done = t("rsync: 1) delete file conflicts");
 
-      await rsyncDeleteChunked(
+      const delAlphaRes = await rsyncDeleteChunked(
         tmp,
         beta,
         alpha,
@@ -1805,10 +1894,19 @@ export async function runMerge({
           ...rsyncOpts,
           tempDir: alphaTempArg,
           direction: "beta->alpha",
+          captureDeletes: true,
         },
       );
-      await noteAlphaChange(delInAlpha);
-      await rsyncDeleteChunked(
+      const confirmedAlphaDeletes = await confirmDeletions(
+        "alpha",
+        delInAlpha,
+        delAlphaRes.deleted,
+      );
+      confirmedAlphaDeletes.forEach((p) => deletedFilesAlpha.add(p));
+      if (confirmedAlphaDeletes.length) {
+        await noteAlphaChange(confirmedAlphaDeletes);
+      }
+      const delBetaRes = await rsyncDeleteChunked(
         tmp,
         alpha,
         beta,
@@ -1819,9 +1917,18 @@ export async function runMerge({
           ...rsyncOpts,
           tempDir: betaTempArg,
           direction: "alpha->beta",
+          captureDeletes: true,
         },
       );
-      await noteBetaChange(delInBeta);
+      const confirmedBetaDeletes = await confirmDeletions(
+        "beta",
+        delInBeta,
+        delBetaRes.deleted,
+      );
+      confirmedBetaDeletes.forEach((p) => deletedFilesBeta.add(p));
+      if (confirmedBetaDeletes.length) {
+        await noteBetaChange(confirmedBetaDeletes);
+      }
       done();
 
       // 1b) dir→file cleanup
@@ -2065,7 +2172,7 @@ export async function runMerge({
         }
       }
 
-      await rsyncDeleteChunked(
+      const dirDelBetaRes = await rsyncDeleteChunked(
         tmp,
         alpha,
         beta,
@@ -2076,10 +2183,19 @@ export async function runMerge({
           ...rsyncOpts,
           tempDir: betaTempArg,
           direction: "alpha->beta",
+          captureDeletes: true,
         },
       );
-      await noteBetaChange(delDirsInBeta);
-      await rsyncDeleteChunked(
+      const confirmedDirDeletesBeta = await confirmDeletions(
+        "beta",
+        delDirsInBeta,
+        dirDelBetaRes.deleted,
+      );
+      confirmedDirDeletesBeta.forEach((p) => deletedDirsBeta.add(p));
+      if (confirmedDirDeletesBeta.length) {
+        await noteBetaChange(confirmedDirDeletesBeta);
+      }
+      const dirBetaRes = await rsyncDeleteChunked(
         tmp,
         beta,
         alpha,
@@ -2090,9 +2206,18 @@ export async function runMerge({
           ...rsyncOpts,
           tempDir: alphaTempArg,
           direction: "beta->alpha",
+          captureDeletes: true,
         },
       );
-      await noteAlphaChange(delDirsInAlpha);
+      const confirmedDirDeletesAlpha = await confirmDeletions(
+        "alpha",
+        delDirsInAlpha,
+        dirBetaRes.deleted,
+      );
+      confirmedDirDeletesAlpha.forEach((p) => deletedDirsAlpha.add(p));
+      if (confirmedDirDeletesAlpha.length) {
+        await noteAlphaChange(confirmedDirDeletesAlpha);
+      }
       done();
 
       logger.info("rsync complete, updating base database");
@@ -2105,6 +2230,10 @@ export async function runMerge({
 
       const completedToBeta = Array.from(completedCopyToBeta);
       const completedToAlpha = Array.from(completedCopyToAlpha);
+      const completedDelBeta = Array.from(deletedFilesBeta);
+      const completedDelAlpha = Array.from(deletedFilesAlpha);
+      const completedDirDelBeta = Array.from(deletedDirsBeta);
+      const completedDirDelAlpha = Array.from(deletedDirsAlpha);
 
       // ---------- set-based base updates (fast) ----------
       done = t("post rsync database update");
@@ -2131,6 +2260,10 @@ export async function runMerge({
 
         CREATE TEMP TABLE plan_to_beta_done  (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
         CREATE TEMP TABLE plan_to_alpha_done (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_del_beta_done (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_del_alpha_done(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_dirs_del_beta_done (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_dirs_del_alpha_done(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
       `);
 
       function bulkInsert(table: string, rows: string[], chunk = 5000) {
@@ -2171,6 +2304,10 @@ export async function runMerge({
         const tx = db.transaction(() => {
           bulkInsert("plan_to_beta_done", completedToBeta);
           bulkInsert("plan_to_alpha_done", completedToAlpha);
+          bulkInsert("plan_del_beta_done", completedDelBeta);
+          bulkInsert("plan_del_alpha_done", completedDelAlpha);
+          bulkInsert("plan_dirs_del_beta_done", completedDirDelBeta);
+          bulkInsert("plan_dirs_del_alpha_done", completedDirDelAlpha);
         });
         tx();
       });
@@ -2188,6 +2325,10 @@ export async function runMerge({
 
         CREATE INDEX IF NOT EXISTS idx_plan_to_beta_done_rpath   ON plan_to_beta_done(rpath);
         CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_done_rpath  ON plan_to_alpha_done(rpath);
+        CREATE INDEX IF NOT EXISTS idx_plan_del_beta_done_rpath  ON plan_del_beta_done(rpath);
+        CREATE INDEX IF NOT EXISTS idx_plan_del_alpha_done_rpath ON plan_del_alpha_done(rpath);
+        CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_beta_done_rpath  ON plan_dirs_del_beta_done(rpath);
+        CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_alpha_done_rpath ON plan_dirs_del_alpha_done(rpath);
       `);
 
       if (debug) {
@@ -2204,6 +2345,10 @@ export async function runMerge({
           dirs_del_alpha: c("plan_dirs_del_alpha"),
           done_to_beta: c("plan_to_beta_done"),
           done_to_alpha: c("plan_to_alpha_done"),
+          del_beta_done: c("plan_del_beta_done"),
+          del_alpha_done: c("plan_del_alpha_done"),
+          dirs_del_beta_done: c("plan_dirs_del_beta_done"),
+          dirs_del_alpha_done: c("plan_dirs_del_alpha_done"),
         });
       }
 
@@ -2228,21 +2373,21 @@ export async function runMerge({
             JOIN beta_rel b USING (rpath);
           `);
         }
-        if (delInBeta.length) {
+        if (completedDelBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, NULL, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
-            FROM plan_del_beta p
+            SELECT d.rpath, NULL, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+            FROM plan_del_beta_done d
             LEFT JOIN alpha_rel a USING (rpath)
             LEFT JOIN beta_rel  b USING (rpath)
             LEFT JOIN base_rel  br USING (rpath);
           `);
         }
-        if (delInAlpha.length) {
+        if (completedDelAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, NULL, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
-            FROM plan_del_alpha p
+            SELECT d.rpath, NULL, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000)
+            FROM plan_del_alpha_done d
             LEFT JOIN beta_rel  b USING (rpath)
             LEFT JOIN alpha_rel a USING (rpath)
             LEFT JOIN base_rel  br USING (rpath);
@@ -2265,21 +2410,21 @@ export async function runMerge({
             JOIN beta_dirs_rel b USING (rpath);
           `);
         }
-        if (delDirsInBeta.length) {
+        if (completedDirDelBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
-            SELECT p.rpath, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
-            FROM plan_dirs_del_beta p
+            SELECT d.rpath, 1, COALESCE(a.op_ts, b.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
+            FROM plan_dirs_del_beta_done d
             LEFT JOIN alpha_dirs_rel a USING (rpath)
             LEFT JOIN beta_dirs_rel  b USING (rpath)
             LEFT JOIN base_dirs_rel  br USING (rpath);
           `);
         }
-        if (delDirsInAlpha.length) {
+        if (completedDirDelAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
-            SELECT p.rpath, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
-            FROM plan_dirs_del_alpha p
+            SELECT d.rpath, 1, COALESCE(b.op_ts, a.op_ts, br.op_ts, CAST(strftime('%s','now') AS INTEGER)*1000), ''
+            FROM plan_dirs_del_alpha_done d
             LEFT JOIN beta_dirs_rel  b USING (rpath)
             LEFT JOIN alpha_dirs_rel a USING (rpath)
             LEFT JOIN base_dirs_rel  br USING (rpath);

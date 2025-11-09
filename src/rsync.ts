@@ -606,8 +606,11 @@ function parseTransferLog(
 
 function normalizeTransferPath(p: string): string {
   if (!p) return p;
-  if (p.startsWith("./")) return p.slice(2);
-  return p;
+  let normalized = p.startsWith("./") ? p.slice(2) : p;
+  if (normalized.endsWith("/") && normalized.length > 1) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 export async function run(
@@ -1095,6 +1098,7 @@ export async function rsyncDelete(
   toRoot: string,
   listFile: string,
   label: string,
+  listedPaths: readonly string[] = [],
   opts: {
     forceEmptySource?: boolean;
     dryRun?: boolean | string;
@@ -1104,12 +1108,17 @@ export async function rsyncDelete(
     sshPort?: number;
     tempDir?: string;
     direction?;
+    captureDeletes?: boolean;
   } = {},
-): Promise<void> {
+): Promise<{ deleted: string[]; zero: boolean }> {
   const { logger, debug } = resolveLogContext(opts);
+  const plannedSet =
+    opts.captureDeletes && listedPaths.length
+      ? new Set(listedPaths.map((p) => normalizeTransferPath(p)))
+      : undefined;
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync delete ${label}: nothing to do`);
-    return;
+    return { deleted: [], zero: false };
   }
 
   // Force all listed paths to be "missing" by using an empty temp source dir
@@ -1137,8 +1146,20 @@ export async function rsyncDelete(
     const res = await run("rsync", args, [0, 24], {
       ...opts,
       tempDir: opts.tempDir,
+      captureTransfers:
+        opts.captureDeletes && listedPaths.length
+          ? { paths: listedPaths }
+          : undefined,
     });
     assertRsyncOk(`delete ${label}`, res, { from: sourceRoot, to });
+    const deleted: string[] =
+      opts.captureDeletes && res.transfers?.length
+        ? res.transfers
+            .filter((entry) => entry.itemized.startsWith("*deleting"))
+            .map((entry) => normalizeTransferPath(entry.path))
+            .filter((p) => (plannedSet ? plannedSet.has(p) : true))
+        : [];
+    return { deleted, zero: res.zero };
   } finally {
     if (tmpEmptyDir) {
       await rm(tmpEmptyDir, { recursive: true, force: true });
@@ -1162,9 +1183,10 @@ export async function rsyncDeleteChunked(
     logLevel?: LogLevel;
     sshPort?: number;
     tempDir?: string;
+    captureDeletes?: boolean;
   } = {},
-) {
-  if (!rpaths.length) return;
+): Promise<{ deleted: string[] }> {
+  if (!rpaths.length) return { deleted: [] };
   const { logger, debug } = resolveLogContext(opts);
   const { chunkSize = 50_000 } = opts;
   const batches = chunk(rpaths, chunkSize);
@@ -1174,6 +1196,7 @@ export async function rsyncDeleteChunked(
     );
   }
 
+  let deletedSet: Set<string> | null = null;
   for (let i = 0; i < batches.length; i++) {
     if (debug) {
       logger.debug(`>>> rsync delete ${label} [${i + 1}/${batches.length}]`);
@@ -1183,11 +1206,13 @@ export async function rsyncDeleteChunked(
       `${label.replace(/[\s\(\)]+/g, "-")}.${i}.list`,
     );
     await writeNulList(listFile, batches[i]);
-    await rsyncDelete(
+    const chunkPaths = batches[i];
+    const res = await rsyncDelete(
       fromRoot,
       toRoot,
       listFile,
       `${label} [${i + 1}/${batches.length}]`,
+      chunkPaths,
       {
         direction: opts.direction,
         forceEmptySource: opts.forceEmptySource,
@@ -1197,9 +1222,15 @@ export async function rsyncDeleteChunked(
         logLevel: opts.logLevel,
         sshPort: opts.sshPort,
         tempDir: opts.tempDir,
+        captureDeletes: opts.captureDeletes,
       },
     );
+    if (opts.captureDeletes && res.deleted.length) {
+      if (!deletedSet) deletedSet = new Set<string>();
+      for (const p of res.deleted) deletedSet.add(p);
+    }
   }
+  return { deleted: deletedSet ? Array.from(deletedSet) : [] };
 }
 
 function logFiles(listFile: string) {
@@ -1208,7 +1239,9 @@ function logFiles(listFile: string) {
   }
   try {
     const path = listFile.split("=").slice(-1)[0];
-    let v = readFileSync(path, "utf8").split("\0");
+    let v = readFileSync(path, "utf8")
+      .split("\0")
+      .filter((x) => x);
     if (v.length >= REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES) {
       v = v.slice(0, REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES);
       v.push("TRUNCATED");
