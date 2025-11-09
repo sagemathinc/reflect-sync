@@ -56,6 +56,7 @@ function baseSessionRow(
     compress: "auto",
     ignore_rules: null,
     disable_hot_sync: 0,
+    enable_reflink: 0,
     disable_full_cycle: 0,
     ...overrides,
   };

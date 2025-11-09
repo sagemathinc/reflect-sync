@@ -365,6 +365,7 @@ export async function newSession({
   ignore,
   logger,
   disableHotSync = false,
+  enableReflink = false,
   disableFullCycle = false,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
@@ -376,6 +377,9 @@ export async function newSession({
   }
   if (!b.host) {
     b.root = canonicalizeLocalRoot(b.root);
+  }
+  if (enableReflink && (a.host || b.host)) {
+    throw new Error("reflink can only be enabled when both roots are local");
   }
   compress = `${compress}${compressLevel ? ":" + compressLevel : ""}`;
   let sessionName: string | undefined;
@@ -414,6 +418,7 @@ export async function newSession({
         ignore,
         compress,
         disable_hot_sync: !!disableHotSync,
+        enable_reflink: !!enableReflink,
         disable_full_cycle: !!disableFullCycle,
       },
       parseLabelPairs(label || []),

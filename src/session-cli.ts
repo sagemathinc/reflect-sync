@@ -151,6 +151,11 @@ export function registerSessionCommands(program: Command) {
         "--disable-full-cycle",
         "disable automatic periodic full sync cycles",
       )
+      .option(
+        "--enable-reflink",
+        "copy files via cp --reflink when both roots are local",
+        false,
+      )
       .action(
         async (
           alphaSpec: string,
@@ -315,6 +320,7 @@ export function registerSessionCommands(program: Command) {
             : "-";
           const flags: string[] = [];
           if (r.disable_hot_sync) flags.push("hot-sync off");
+          if (r.enable_reflink) flags.push("reflink");
           if (r.disable_full_cycle) flags.push("full-cycle off");
           const flagsSummary = flags.length ? flags.join(", ") : "-";
 

@@ -94,6 +94,7 @@ export type SchedulerOptions = {
   disableHotWatch: boolean;
   disableHotSync?: boolean;
   disableFullCycle?: boolean;
+  enableReflink?: boolean;
 
   compress?: string;
   ignoreRules: string[];
@@ -172,6 +173,11 @@ export function configureSchedulerCommand(
       "disable automatic periodic full sync cycles",
     )
     .option(
+      "--enable-reflink",
+      "use reflink copies when both roots are local",
+      false,
+    )
+    .option(
       "-i, --ignore <pattern>",
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
@@ -224,6 +230,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     ignoreRules: normalizeIgnorePatterns(opts.ignore ?? []),
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
+    enableReflink: opts.enableReflink === true,
   };
 
   if (out.alphaHost && out.betaHost) {
@@ -282,6 +289,7 @@ export async function runScheduler({
   disableHotWatch: disableHotWatchOption,
   disableHotSync = false,
   disableFullCycle = false,
+  enableReflink = false,
   compress,
   ignoreRules: schedulerIgnoreRules,
   sessionDb,
@@ -294,6 +302,11 @@ export async function runScheduler({
     throw new Error(
       "Both sides remote is not supported yet (rsync two-remote).",
     );
+  if (enableReflink && (alphaHost || betaHost)) {
+    throw new Error(
+      "Reflink can only be enabled when both alpha and beta are local paths.",
+    );
+  }
 
   let sessionLogHandle: SessionLoggerHandle | null = null;
   let logger: Logger;
@@ -1857,6 +1870,7 @@ export async function runScheduler({
         verbose: !!sessionLogHandle,
         restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
         restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+        enableReflink,
         fetchRemoteAlphaSignatures:
           alphaIsRemote && !DISABLE_SIGNATURES
             ? fetchAlphaRemoteSignatures

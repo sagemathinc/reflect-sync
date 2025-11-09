@@ -47,10 +47,6 @@ import {
 
 const VERY_VERBOSE = false;
 
-// [ ] TODO: trying and fallback to rsync leads to corruption.
-// This should instead by a property of session and a hard error if it fails.
-const DISABLE_REFLINK = true;
-
 // if true immediately freeze if there is a plan to modify anything on alpha.
 // Obviously only for very low level debugging!
 const TERMINATE_ON_CHANGE_ALPHA =
@@ -197,6 +193,7 @@ type MergeRsyncOptions = {
   betaRemoteLock?: RemoteLockHandle;
   restrictedPaths?: string[];
   restrictedDirs?: string[];
+  enableReflink?: boolean;
 };
 
 // ---------- helpers ----------
@@ -291,6 +288,7 @@ export async function runMerge({
   betaRemoteLock,
   restrictedPaths,
   restrictedDirs,
+  enableReflink = false,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -2096,7 +2094,7 @@ export async function runMerge({
       done();
 
       const canReflink =
-        !DISABLE_REFLINK &&
+        enableReflink &&
         !alphaHost &&
         !betaHost &&
         (await sameDevice(alphaRoot, betaRoot));

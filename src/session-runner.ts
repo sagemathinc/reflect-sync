@@ -73,6 +73,9 @@ export function spawnSchedulerForSession(
   if (row.disable_hot_sync) {
     args.push("--disable-hot-sync");
   }
+  if (row.enable_reflink) {
+    args.push("--enable-reflink");
+  }
   if (row.disable_full_cycle) {
     args.push("--disable-full-cycle");
   }
