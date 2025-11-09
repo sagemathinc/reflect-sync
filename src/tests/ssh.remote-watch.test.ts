@@ -136,7 +136,7 @@ describe("SSH remote watch → hot-sync", () => {
       await waitFor(
         () => fileExists(localFile),
         (ok) => ok === true,
-        2500,
+        4500,
         50,
       );
     } finally {

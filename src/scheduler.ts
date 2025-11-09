@@ -1455,6 +1455,13 @@ export async function runScheduler({
         restrictedPaths: readyPaths,
         label: "hot",
       });
+      if (readyPaths.length) {
+        log("info", "realtime", "restricted sync complete", {
+          paths: readyPaths.length,
+          alphaPaths: readyAlpha.length,
+          betaPaths: readyBeta.length,
+        });
+      }
     } catch (e: any) {
       for (const rel of rpathsAlpha) {
         if (rel) hotAlpha.add(rel);

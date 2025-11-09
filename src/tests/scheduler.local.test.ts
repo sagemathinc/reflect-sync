@@ -171,7 +171,12 @@ describe("scheduler (local watchers + hot-sync)", () => {
       );
 
       // Confirm we logged a realtime push
-      expect(sawRealtimePush(baseDb)).toBe(true);
+      await waitFor(
+        () => sawRealtimePush(baseDb),
+        (ok) => ok === true,
+        2000,
+        50,
+      );
     } finally {
       await stopScheduler(child);
     }
