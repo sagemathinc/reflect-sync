@@ -1,11 +1,17 @@
 // reflink.ts
 import { cpus } from "node:os";
-import { stat, readFile } from "node:fs/promises";
+import path from "node:path";
+import { stat as fsStat, lstat, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { argsJoin } from "./remote.js";
 
+export type ReflinkCopyResult = {
+  copied: string[];
+  failed: Array<{ path: string; error: string }>;
+};
+
 export async function sameDevice(a: string, b: string): Promise<boolean> {
-  const [sa, sb] = await Promise.all([stat(a), stat(b)]);
+  const [sa, sb] = await Promise.all([fsStat(a), fsStat(b)]);
   return sa.dev === sb.dev;
 }
 
@@ -29,17 +35,17 @@ function run(cmd: string, args: string[], cwd?: string): Promise<void> {
 
 /**
  * Reflink-copy each relative path from listFile (NUL-delimited) from srcRoot→dstRoot.
- * - Uses batched `cp --reflink=always --parents -t DST rel1 rel2 ...` commands
+ * - Uses batched `cp --reflink --parents -t DST rel1 rel2 ...` commands (cp falls back to normal copy if CoW fails)
  * - Runs several batch cp's in parallel (default: up to ~8 or CPU count)
  * - Expects rel paths (as produced by your planner lists). Do not include directories here.
- * - Throws on any failure so the caller can fall back to rsync-copy path.
+ * - Returns the subset that actually copied plus any failures so callers can log/throw as needed.
  */
 export async function cpReflinkFromList(
   srcRoot: string,
   dstRoot: string,
   listFile: string,
   parallel = Math.max(2, Math.min(8, cpus().length)),
-): Promise<void> {
+): Promise<ReflinkCopyResult> {
   // Fast fail if cross-device (no reflink possible):
   if (!(await sameDevice(srcRoot, dstRoot))) {
     throw new Error("reflink: src/dst are on different devices");
@@ -50,7 +56,9 @@ export async function cpReflinkFromList(
   const rels = Array.from(
     new Set(buf.toString("utf8").split("\0").filter(Boolean)),
   );
-  if (rels.length === 0) return;
+  if (rels.length === 0) {
+    return { copied: [], failed: [] };
+  }
 
   // --- Chunking strategy ----------------------------------------------------
   // We have two constraints:
@@ -82,24 +90,59 @@ export async function cpReflinkFromList(
   }
 
   const isRoot = process.geteuid?.() === 0;
+  const successes = new Set<string>();
+  const failures: Array<{ path: string; error: string }> = [];
+
+  const buildArgs = (relChunk: string[]) => [
+    "--reflink",
+    "--no-dereference", // copy symlink objects as symlinks
+    `--preserve=timestamps,mode${isRoot ? ",ownership" : ""}`,
+    "--parents",
+    "-t",
+    dstRoot,
+    "--",
+    ...relChunk,
+  ];
+
+  const recordFailure = (rel: string, err: unknown) => {
+    failures.push({
+      path: rel,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  };
+
+  const CLOCK_SLOP_MS = 50;
+  async function detectCopiesAfterFailure(
+    relChunk: string[],
+    startedAt: number,
+    err: unknown,
+  ) {
+    for (const rel of relChunk) {
+      const dstPath = path.join(dstRoot, rel);
+      try {
+        const st = await lstat(dstPath);
+        if (Number.isFinite(st.ctimeMs) && st.ctimeMs >= startedAt - CLOCK_SLOP_MS) {
+          successes.add(rel);
+          continue;
+        }
+      } catch {
+        // fallthrough to failure record below
+      }
+      recordFailure(rel, err);
+    }
+  }
 
   // Worker that processes chunk indices i, i+parallel, ...
   async function worker(startIdx: number) {
     for (let i = startIdx; i < chunks.length; i += parallel) {
       const relChunk = chunks[i];
-      // Use --parents and -t DEST so one cp handles a big slice.
-      // Set cwd=srcRoot so rel paths map to the right source files.
-      const args = [
-        "--reflink=always",
-        "--no-dereference", // copy symlink objects as symlinks
-        `--preserve=timestamps,mode${isRoot ? ",ownership" : ""}`, // keep basic attrs (no uid/gid except root);
-        "--parents",
-        "-t",
-        dstRoot,
-        "--", // so any filename starting with '-' isnt parsed as an option
-        ...relChunk,
-      ];
-      await run("cp", args, srcRoot);
+      const startedAt = Date.now();
+      try {
+        await run("cp", buildArgs(relChunk), srcRoot);
+        relChunk.forEach((rel) => successes.add(rel));
+      } catch (err) {
+        await detectCopiesAfterFailure(relChunk, startedAt, err);
+      }
     }
   }
 
@@ -109,4 +152,8 @@ export async function cpReflinkFromList(
     (_, k) => worker(k),
   );
   await Promise.all(workers);
+  return {
+    copied: Array.from(successes),
+    failed: failures,
+  };
 }

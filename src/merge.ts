@@ -1811,6 +1811,7 @@ export async function runMerge({
         toBetaRelative.push(rel);
         alphaSignatureHints.set(rel, sig ?? null);
       }
+      const toBetaRelativeSet = new Set(toBetaRelative);
 
       const toAlphaRelative: string[] = [];
       const betaSignatureHints = new Map<string, SendSignature | null>();
@@ -1824,6 +1825,7 @@ export async function runMerge({
         toAlphaRelative.push(rel);
         betaSignatureHints.set(rel, sig ?? null);
       }
+      const toAlphaRelativeSet = new Set(toAlphaRelative);
 
       toBetaDirs = uniq([...toBetaDirs, ...extraBetaDirs]);
       toAlphaDirs = uniq([...toAlphaDirs, ...extraAlphaDirs]);
@@ -2100,92 +2102,62 @@ export async function runMerge({
         (await sameDevice(alphaRoot, betaRoot));
       if (canReflink) {
         done = t("cp: 3) copy files -- using copy on write, if possible");
-        try {
-          await cpReflinkFromList(alphaRoot, betaRoot, listToBeta);
-          await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
-          if (toBetaRelative.length) {
-            toBetaRelative.forEach((rel) => completedCopyToBeta.add(rel));
-            const betaHints = mergeSignatureHints(
-              toBetaRelative,
-              collectLocalSignatureEntries(betaRoot, toBetaRelative),
-              alphaSignatureHints,
-            );
-            await noteBetaChange(toBetaRelative, { signatures: betaHints });
-          }
-          if (toAlphaRelative.length) {
-            toAlphaRelative.forEach((rel) => completedCopyToAlpha.add(rel));
-            const alphaHints = mergeSignatureHints(
-              toAlphaRelative,
-              collectLocalSignatureEntries(alphaRoot, toAlphaRelative),
-              betaSignatureHints,
-            );
-            await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
-          }
-          done();
-        } catch (e) {
-          // Fallback: if any cp --reflink failed (e.g., subtrees on different filesystems),
-          // fall back to your current rsync path for the affected direction(s).
-          if (debug) {
-            logger.warn("reflink copy failed; falling back to rsync", {
-              error: String(e),
-            });
-          }
-          done();
-          done = t("rsync: 3) copy files -- falling back to rsync");
-          const alphaCopyRes = await copyFilesWithGuards(
-            "alpha->beta",
-            toBetaRelative,
-            {
-              tempDir: betaTempArg,
-              progressScope: "merge.copy.alpha->beta",
-              progressMeta: {
-                stage: "copy",
-                direction: "alpha->beta",
-              },
-            },
+        const betaReflink = await cpReflinkFromList(
+          alphaRoot,
+          betaRoot,
+          listToBeta,
+        );
+        const alphaReflink = await cpReflinkFromList(
+          betaRoot,
+          alphaRoot,
+          listToAlpha,
+        );
+        done();
+
+        const betaCopied = betaReflink.copied.filter((rel) =>
+          toBetaRelativeSet.has(rel),
+        );
+        if (betaCopied.length) {
+          betaCopied.forEach((rel) => completedCopyToBeta.add(rel));
+          const betaHints = mergeSignatureHints(
+            betaCopied,
+            collectLocalSignatureEntries(betaRoot, betaCopied),
+            alphaSignatureHints,
           );
-          const betaCopyRes = await copyFilesWithGuards(
-            "beta->alpha",
-            toAlphaRelative,
-            {
-              tempDir: alphaTempArg,
-              progressScope: "merge.copy.beta->alpha",
-              progressMeta: {
-                stage: "copy",
-                direction: "beta->alpha",
-              },
-            },
+          await noteBetaChange(betaCopied, { signatures: betaHints });
+        }
+
+        const alphaCopied = alphaReflink.copied.filter((rel) =>
+          toAlphaRelativeSet.has(rel),
+        );
+        if (alphaCopied.length) {
+          alphaCopied.forEach((rel) => completedCopyToAlpha.add(rel));
+          const alphaHints = mergeSignatureHints(
+            alphaCopied,
+            collectLocalSignatureEntries(alphaRoot, alphaCopied),
+            betaSignatureHints,
           );
-          if (alphaCopyRes.transferred.length) {
-            alphaCopyRes.transferred.forEach((rel) =>
-              completedCopyToBeta.add(rel),
-            );
-            const betaHints = buildPostCopyHints(
-              alphaCopyRes.transferred,
-              alphaCopyRes.signatures,
-              alphaSignatureHints,
-              betaRoot,
-              !!betaHost,
-            );
-            await noteBetaChange(alphaCopyRes.transferred, {
-              signatures: betaHints,
-            });
-          }
-          if (betaCopyRes.transferred.length) {
-            betaCopyRes.transferred.forEach((rel) =>
-              completedCopyToAlpha.add(rel),
-            );
-            const alphaHints = buildPostCopyHints(
-              betaCopyRes.transferred,
-              betaCopyRes.signatures,
-              betaSignatureHints,
-              alphaRoot,
-              !!alphaHost,
-            );
-            await noteAlphaChange(betaCopyRes.transferred, {
-              signatures: alphaHints,
-            });
-          }
+          await noteAlphaChange(alphaCopied, { signatures: alphaHints });
+        }
+
+        const reflinkFailures = [
+          ...betaReflink.failed.map((f) => ({
+            direction: "alpha->beta" as const,
+            ...f,
+          })),
+          ...alphaReflink.failed.map((f) => ({
+            direction: "beta->alpha" as const,
+            ...f,
+          })),
+        ];
+        if (reflinkFailures.length) {
+          logger.error("reflink copy incomplete", {
+            failures: reflinkFailures.slice(0, debug ? undefined : 20),
+            totalFailures: reflinkFailures.length,
+          });
+          const err = new Error("reflink partial transfer");
+          (err as any).failures = reflinkFailures;
+          throw err;
         }
       } else {
         // 3) copy files
