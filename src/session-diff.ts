@@ -3,6 +3,7 @@
 import path from "node:path";
 import { getDb } from "./db.js";
 import { deriveSessionPaths, type SessionRow } from "./session-db.js";
+import { dedupeRestrictedList } from "./restrict.js";
 
 export type DiffEntryType = "file" | "dir" | "link";
 
@@ -14,11 +15,13 @@ export interface DiffEntry {
 
 export interface SessionDiffOptions {
   limit?: number;
+  restrictedPaths?: string[];
+  restrictedDirs?: string[];
 }
 
 export function diffSession(
   session: SessionRow,
-  { limit }: SessionDiffOptions = {},
+  { limit, restrictedPaths, restrictedDirs }: SessionDiffOptions = {},
 ): DiffEntry[] {
   const alphaDb = resolveDbPath(session, "alpha");
   const betaDb = resolveDbPath(session, "beta");
@@ -116,19 +119,46 @@ export function diffSession(
         kind: DiffEntryType;
         mtime: number | null;
       }[];
+      const allowed = buildRestrictionFilter(restrictedPaths, restrictedDirs);
       return rows
         .filter((row) => typeof row.path === "string")
         .map((row) => ({
           path: normalizePath(row.path as string),
           type: row.kind,
           mtime: typeof row.mtime === "number" ? row.mtime : null,
-        }));
+        }))
+        .filter((entry) => allowed(entry.path));
     } finally {
       db.exec("DETACH DATABASE beta");
     }
   } finally {
     db.close();
   }
+}
+
+function buildRestrictionFilter(
+  restrictedPaths?: string[],
+  restrictedDirs?: string[],
+) {
+  const pathList = dedupeRestrictedList(restrictedPaths);
+  const dirList = dedupeRestrictedList(restrictedDirs);
+  const hasRestrictions = pathList.length > 0 || dirList.length > 0;
+  const pathSet = new Set(pathList);
+  const dirSet = new Set(dirList);
+  const dirPrefixes = dirList.filter(Boolean).map((dir) => `${dir}/`);
+
+  if (!hasRestrictions) {
+    return () => true;
+  }
+
+  return (relPath: string) => {
+    if (pathSet.has(relPath)) return true;
+    if (dirSet.has(relPath)) return true;
+    for (const prefix of dirPrefixes) {
+      if (relPath.startsWith(prefix)) return true;
+    }
+    return false;
+  };
 }
 
 function resolveDbPath(session: SessionRow, side: "alpha" | "beta"): string {

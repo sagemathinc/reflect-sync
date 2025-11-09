@@ -42,6 +42,7 @@ import {
   parseLogLevelOption,
   renderLogRows,
 } from "./cli-log-output.js";
+import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
@@ -736,6 +737,18 @@ export function registerSessionCommands(program: Command) {
       .argument("<id-or-name>", "session id or name")
       .option("--max-paths <n>", "maximum number of paths to display")
       .option("--json", "emit JSON output", false)
+      .option(
+        "--restricted-path <path>",
+        "restrict diff to a specific relative path (repeat or comma-separated)",
+        collectListOption,
+        [] as string[],
+      )
+      .option(
+        "--restricted-dir <dir>",
+        "restrict diff to a directory tree (repeat or comma-separated)",
+        collectListOption,
+        [] as string[],
+      )
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -749,6 +762,8 @@ export function registerSessionCommands(program: Command) {
         try {
           const differences = diffSession(row, {
             limit: opts.maxPaths ? Number(opts.maxPaths) : undefined,
+            restrictedPaths: dedupeRestrictedList(opts.restrictedPath),
+            restrictedDirs: dedupeRestrictedList(opts.restrictedDir),
           });
           if (opts.json) {
             console.log(JSON.stringify(differences, null, 2));
