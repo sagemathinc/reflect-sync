@@ -104,12 +104,15 @@ export type SchedulerOptions = {
 };
 
 // ---------- CLI ----------
-function buildProgram(): Command {
-  const program = new Command()
-    .name(`${CLI_NAME}-scheduler`)
-    .description("Orchestration of scanning, watching, syncing");
-
-  program
+export function configureSchedulerCommand(
+  command: Command,
+  { standalone = false }: { standalone?: boolean } = {},
+): Command {
+  if (standalone) {
+    command.name(`${CLI_NAME}-scheduler`);
+  }
+  return command
+    .description("Orchestration of scanning, watching, syncing")
     .requiredOption("--alpha-root <path>", "path to root of alpha sync tree")
     .requiredOption("--beta-root <path>", "path to root of beta sync tree")
     .option("--alpha-db <file>", "path to alpha sqlite database", "alpha.db")
@@ -174,8 +177,10 @@ function buildProgram(): Command {
       "optional session id to enable heartbeats, report state, etc",
     )
     .option("--session-db <path>", "path to session database");
+}
 
-  return program;
+function buildProgram(): Command {
+  return configureSchedulerCommand(new Command(), { standalone: true });
 }
 
 export function cliOptsToSchedulerOptions(opts): SchedulerOptions {

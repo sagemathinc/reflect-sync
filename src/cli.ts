@@ -6,7 +6,6 @@ import { Command, Option } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { registerForwardCommands } from "./forward-cli.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
-import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { getSessionDbPath } from "./session-db.js";
 import {
   ConsoleLogger,
@@ -18,6 +17,7 @@ import pkg from "../package.json" with { type: "json" };
 import { collectIgnoreOption } from "./ignore.js";
 import { registerInstallCommand } from "./install-cli.js";
 import { configureScanCommand } from "./scan.js";
+import { configureSchedulerCommand } from "./scheduler.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -178,75 +178,16 @@ program
     await runMerge(params as any);
   });
 
-program
-  .command("scheduler")
-  .description("Orchestration of scanning, watching, and syncing")
-  .requiredOption("--alpha-root <path>", "path to alpha root")
-  .requiredOption("--beta-root <path>", "path to beta root")
-  .option("--alpha-db <file>", "alpha sqlite database", "alpha.db")
-  .option("--beta-db <file>", "beta sqlite database", "beta.db")
-  .option("--base-db <file>", "base sqlite database", "base.db")
-  .addOption(
-    new Option("--prefer <side>", "conflict preference")
-      .choices(["alpha", "beta"])
-      .default("alpha"),
-  )
-  .addOption(
-    new Option("--hash <algorithm>", "content hash algorithm")
-      .choices(listSupportedHashes())
-      .default(defaultHashAlg()),
-  )
-  // optional SSH endpoints (only one side may be remote)
-  .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-  .option("--alpha-port <n>", "SSH port for alpha", (v) =>
-    Number.parseInt(v, 10),
-  )
-  .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-  .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
-  .option(
-    "--alpha-remote-db <file>",
-    "remote alpha sqlite DB path (on SSH host)",
-    `~/.local/share/${CLI_NAME}/alpha.db`,
-  )
-  .option(
-    "--beta-remote-db <file>",
-    "remote beta sqlite DB path (on SSH host)",
-    `~/.local/share/${CLI_NAME}/beta.db`,
-  )
-  .option(
-    "--remote-command <cmd>",
-    "absolute path to remote reflect-sync command",
-  )
-  .option(
-    "--compress <algo>",
-    "[auto|zstd|lz4|zlib|zlibx|none][:level]",
-    "auto",
-  )
-  .option("--session-id <id>", "optional session id to enable heartbeats")
-  .option("--session-db <path>", "path to session database")
-  .option("--disable-micro-sync", "disable realtime micro-sync watchers")
-  .option("--disable-full-cycle", "disable automatic periodic full sync cycles")
-  .option(
-    "-i, --ignore <pattern>",
-    "gitignore-style ignore rule (repeat or comma-separated)",
-    collectIgnoreOption,
-    [] as string[],
-  )
-  .action(async (opts, command) => {
-    // Safety: disallow both sides remote (two-remote rsync not yet supported)
-    if (opts.alphaHost && opts.betaHost) {
-      console.error(
-        "Both sides remote is not supported yet (rsync two-remote).",
-      );
-      process.exit(1);
-    }
+configureSchedulerCommand(program.command("scheduler")).action(
+  async (opts, command) => {
     // Import and run in-process so we can manage lifecycle cleanly
     const { runScheduler, cliOptsToSchedulerOptions } = await import(
       "./scheduler.js"
     );
     const params = mergeOptsWithLogger(command, opts);
     await runScheduler(cliOptsToSchedulerOptions(params));
-  });
+  },
+);
 
 program
   .command("watch")
