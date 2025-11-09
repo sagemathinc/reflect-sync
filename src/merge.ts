@@ -73,10 +73,14 @@ function toBoolVerbose(v?: boolean | string): boolean {
   return !!v;
 }
 
-function buildProgram(): Command {
-  const program = new Command();
-  return program
-    .command(`${CLI_NAME}-merge`)
+export function configureMergeCommand(
+  command: Command,
+  { standalone = false }: { standalone?: boolean } = {},
+): Command {
+  if (standalone) {
+    command.name(`${CLI_NAME}-merge`);
+  }
+  return command
     .description("3-way plan + rsync between alpha/beta; updates base snapshot")
     .requiredOption("--alpha-root <path>", "alpha filesystem root")
     .requiredOption("--beta-root <path>", "beta filesystem root")
@@ -115,6 +119,10 @@ function buildProgram(): Command {
       collectIgnoreOption,
       [] as string[],
     );
+}
+
+function buildProgram(): Command {
+  return configureMergeCommand(new Command(), { standalone: true });
 }
 
 type MergeRsyncOptions = {

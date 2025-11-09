@@ -724,15 +724,17 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   await new Promise<void>(() => {});
 }
 
-// ---------- CLI ----------
-function buildProgram() {
-  const program = new Command()
-    .name(`${CLI_NAME}-watch`)
+export function configureWatchCommand(
+  command: Command,
+  { standalone = false }: { standalone?: boolean } = {},
+) {
+  if (standalone) {
+    command.name(`${CLI_NAME}-watch`);
+  }
+  return command
     .description(
       "Watch a tree and emit NDJSON events to stdout; control via JSON on stdin.",
-    );
-
-  program
+    )
     .requiredOption("--root <path>", "root directory to watch")
     .option("--shallow-depth <n>", "root watcher depth", "1")
     .option("--hot-depth <n>", "hot anchor depth", "2")
@@ -753,8 +755,10 @@ function buildProgram() {
       "include uid:gid metadata in hashes (requires root on both sides)",
       false,
     );
+}
 
-  return program;
+function buildProgram() {
+  return configureWatchCommand(new Command(), { standalone: true });
 }
 
 async function mainFromCli() {

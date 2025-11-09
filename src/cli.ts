@@ -2,10 +2,10 @@
 // src/cli.ts (ESM, TypeScript)
 import fs from "node:fs";
 import path from "node:path";
-import { Command, Option } from "commander";
+import { Command } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { registerForwardCommands } from "./forward-cli.js";
-import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
+import { CLI_NAME } from "./constants.js";
 import { getSessionDbPath } from "./session-db.js";
 import {
   ConsoleLogger,
@@ -14,10 +14,11 @@ import {
   type LogLevel,
 } from "./logger.js";
 import pkg from "../package.json" with { type: "json" };
-import { collectIgnoreOption } from "./ignore.js";
 import { registerInstallCommand } from "./install-cli.js";
 import { configureScanCommand } from "./scan.js";
 import { configureSchedulerCommand } from "./scheduler.js";
+import { configureMergeCommand } from "./merge.js";
+import { configureWatchCommand } from "./watch.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -142,41 +143,12 @@ program
     await runIngestDelta(params as any);
   });
 
-program
-  .command("merge")
-  .description("3-way plan + rsync between alpha/beta; updates base snapshot")
-  .requiredOption("--alpha-root <path>", "alpha filesystem root")
-  .requiredOption("--beta-root <path>", "beta filesystem root")
-  .option("--alpha-db <path>", "alpha sqlite", "alpha.db")
-  .option("--beta-db <path>", "beta sqlite", "beta.db")
-  .option("--base-db <path>", "base sqlite", "base.db")
-  .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-  .option("--alpha-port <n>", "SSH port for alpha", (v) =>
-    Number.parseInt(v, 10),
-  )
-  .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-  .option("--beta-port <n>", "SSH port for beta", (v) => Number.parseInt(v, 10))
-  .option(
-    "--compress <algo>",
-    "[auto|zstd|lz4|zlib|zlibx|none][:level]",
-    "auto",
-  )
-  .option(
-    "--session-id <id>",
-    "optional session id to enable heartbeats, report state, etc",
-  )
-  .option("--session-db <path>", "path to session database")
-  .addOption(
-    new Option("--prefer <side>", "conflict winner")
-      .choices(["alpha", "beta"])
-      .default("alpha"),
-  )
-  .action(async (opts, command) => {
-    const { runMerge } = await import("./merge.js");
-    const params = mergeOptsWithLogger(command, opts);
-    params.verbose = params.logLevel === "debug";
-    await runMerge(params as any);
-  });
+configureMergeCommand(program.command("merge")).action(async (opts, command) => {
+  const { runMerge } = await import("./merge.js");
+  const params = mergeOptsWithLogger(command, opts);
+  params.verbose = params.logLevel === "debug";
+  await runMerge(params as any);
+});
 
 configureSchedulerCommand(program.command("scheduler")).action(
   async (opts, command) => {
@@ -189,40 +161,17 @@ configureSchedulerCommand(program.command("scheduler")).action(
   },
 );
 
-program
-  .command("watch")
-  .description("Watch a root and emit NDJSON events on stdout")
-  .requiredOption("--root <path>", "root directory to watch")
-  .option("--shallow-depth <n>", "root watcher depth", "1")
-  .option("--hot-depth <n>", "hot anchor depth", "2")
-  .option("--hot-ttl-ms <ms>", "TTL for hot anchors", String(30 * 60_000))
-  .option(
-    "--max-hot-watchers <n>",
-    "max concurrent hot watchers",
-    String(MAX_WATCHERS),
-  )
-  .option(
-    "-i, --ignore <pattern>",
-    "gitignore-style ignore rule (repeat or comma-separated)",
-    collectIgnoreOption,
-    [] as string[],
-  )
-  .option(
-    "--numeric-ids",
-    "include uid:gid metadata in hashes (requires root on both sides)",
-    false,
-  )
-  .action(async (opts, command) => {
-    const { runWatch } = await import("./watch.js");
-    const merged = {
-      ...command.optsWithGlobals(),
-      ...opts,
-    } as any;
-    if (Array.isArray(merged.ignore)) {
-      merged.ignoreRules = merged.ignore;
-    }
-    await runWatch(merged);
-  });
+configureWatchCommand(program.command("watch")).action(async (opts, command) => {
+  const { runWatch } = await import("./watch.js");
+  const merged = {
+    ...command.optsWithGlobals(),
+    ...opts,
+  } as any;
+  if (Array.isArray(merged.ignore)) {
+    merged.ignoreRules = merged.ignore;
+  }
+  await runWatch(merged);
+});
 
 // Default help when no subcommand given
 if (process.argv.length <= 2) {
