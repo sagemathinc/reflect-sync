@@ -1807,8 +1807,19 @@ export async function runMerge({
         //         delInAlpha,
       });
 
-      if (TERMINATE_ON_CHANGE_ALPHA && (toAlpha.length || delInAlpha.length)) {
-        logger.info("invalid - pausing forever", { toAlpha, delInAlpha });
+      if (
+        TERMINATE_ON_CHANGE_ALPHA &&
+        (toAlpha.length ||
+          delInAlpha.length ||
+          toAlphaDirs.length ||
+          delDirsInAlpha.length)
+      ) {
+        logger.info("invalid - pausing forever", {
+          toAlpha,
+          delInAlpha,
+          toAlphaDirs,
+          delDirsInAlpha,
+        });
         await new Promise(() => {});
       }
 
