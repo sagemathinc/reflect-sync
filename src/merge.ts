@@ -41,7 +41,10 @@ import {
   parseLogLevel,
 } from "./logger.js";
 import type { SignatureEntry } from "./signature-store.js";
-import { dedupeRestrictedList } from "./restrict.js";
+import {
+  collectListOption,
+  dedupeRestrictedList,
+} from "./restrict.js";
 
 const VERY_VERBOSE = false;
 
@@ -118,7 +121,38 @@ export function configureMergeCommand(
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
       [] as string[],
+    )
+    .option(
+      "--restricted-path <path>",
+      "restrict merge to a relative path (repeat or comma-separated)",
+      collectListOption,
+      [] as string[],
+    )
+    .option(
+      "--restricted-dir <path>",
+      "restrict merge to a directory tree (repeat or comma-separated)",
+      collectListOption,
+      [] as string[],
     );
+}
+
+export function normalizeMergeCliOptions<T extends Record<string, unknown>>(
+  opts: T,
+): T {
+  const anyOpts = opts as Record<string, unknown>;
+  if (
+    Array.isArray(anyOpts.restrictedPath) &&
+    !Array.isArray(anyOpts.restrictedPaths)
+  ) {
+    anyOpts.restrictedPaths = anyOpts.restrictedPath;
+  }
+  if (
+    Array.isArray(anyOpts.restrictedDir) &&
+    !Array.isArray(anyOpts.restrictedDirs)
+  ) {
+    anyOpts.restrictedDirs = anyOpts.restrictedDir;
+  }
+  return opts;
 }
 
 function buildProgram(): Command {
@@ -2599,6 +2633,13 @@ export async function runMerge({
   await main();
 }
 
-cliEntrypoint<MergeRsyncOptions>(import.meta.url, buildProgram, runMerge, {
-  label: "merge",
-});
+cliEntrypoint<MergeRsyncOptions>(
+  import.meta.url,
+  buildProgram,
+  async (opts) => {
+    await runMerge(normalizeMergeCliOptions(opts));
+  },
+  {
+    label: "merge",
+  },
+);

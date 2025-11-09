@@ -31,7 +31,11 @@ import {
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
-import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
+import {
+  collectListOption,
+  dedupeRestrictedList,
+  dirnameRel,
+} from "./restrict.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -60,16 +64,6 @@ function makeHashWorker(alg: string): Worker {
   return new Worker(new URL("./hash-worker.js", import.meta.url), {
     workerData: { alg },
   });
-}
-
-function collectListOption(value: string, previous: string[] = []): string[] {
-  if (!value) return previous;
-  const parts = value
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (!parts.length) return previous;
-  return previous.concat(parts);
 }
 
 export function configureScanCommand(

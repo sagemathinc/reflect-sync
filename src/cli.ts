@@ -17,7 +17,10 @@ import pkg from "../package.json" with { type: "json" };
 import { registerInstallCommand } from "./install-cli.js";
 import { configureScanCommand } from "./scan.js";
 import { configureSchedulerCommand } from "./scheduler.js";
-import { configureMergeCommand } from "./merge.js";
+import {
+  configureMergeCommand,
+  normalizeMergeCliOptions,
+} from "./merge.js";
 import { configureWatchCommand } from "./watch.js";
 
 if (!process.env.REFLECT_ENTRY) {
@@ -143,12 +146,15 @@ program
     await runIngestDelta(params as any);
   });
 
-configureMergeCommand(program.command("merge")).action(async (opts, command) => {
-  const { runMerge } = await import("./merge.js");
-  const params = mergeOptsWithLogger(command, opts);
-  params.verbose = params.logLevel === "debug";
-  await runMerge(params as any);
-});
+configureMergeCommand(program.command("merge")).action(
+  async (opts, command) => {
+    const { runMerge } = await import("./merge.js");
+    const normalized = normalizeMergeCliOptions({ ...opts });
+    const params = mergeOptsWithLogger(command, normalized);
+    params.verbose = params.logLevel === "debug";
+    await runMerge(params as any);
+  },
+);
 
 configureSchedulerCommand(program.command("scheduler")).action(
   async (opts, command) => {

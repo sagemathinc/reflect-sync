@@ -35,3 +35,16 @@ export function dirnameRel(rel: string): string {
   const dir = path.posix.dirname(rel);
   return dir === "." ? "" : dir;
 }
+
+export function collectListOption(
+  value: string,
+  previous: string[] = [],
+): string[] {
+  if (!value) return previous;
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!parts.length) return previous;
+  return previous.concat(parts);
+}
