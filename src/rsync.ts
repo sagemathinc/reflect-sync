@@ -792,6 +792,11 @@ export async function run(
       await rm(captureDir, { recursive: true, force: true });
     } catch {}
   }
+  if (REFLECT_RSYNC_VERY_VERBOSE && transfers) {
+    logger.debug(`rsync.run ${opts.direction ?? ""}`, {
+      transfers: transfers.map(({ path }) => path),
+    });
+  }
   return { ...res, transfers };
 }
 

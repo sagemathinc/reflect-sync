@@ -22,7 +22,6 @@ import {
   rsyncDeleteChunked,
   ensureTempDir,
 } from "./rsync.js";
-import { PartialTransferError } from "./micro-sync.js";
 import type { MarkDirectionOptions, RemoteLockHandle } from "./micro-sync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
@@ -514,9 +513,7 @@ export async function runMerge({
         }
       }
     }
-    return Array.from(confirmed).map(
-      (norm) => canonical.get(norm) ?? norm,
-    );
+    return Array.from(confirmed).map((norm) => canonical.get(norm) ?? norm);
   };
 
   let alphaTempDir: string | undefined;
@@ -1762,26 +1759,6 @@ export async function runMerge({
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
 
-      const handlePartial = async (
-        direction: "alpha->beta" | "beta->alpha",
-        paths: string[],
-      ) => {
-        if (!paths.length) return;
-        const unique = uniq(paths);
-        if (!unique.length) return;
-        if (direction === "alpha->beta") {
-          await markAlphaToBeta?.(unique);
-          throw new PartialTransferError("alpha→beta transfer incomplete", {
-            alphaPaths: unique,
-          });
-        } else {
-          await markBetaToAlpha?.(unique);
-          throw new PartialTransferError("beta→alpha transfer incomplete", {
-            betaPaths: unique,
-          });
-        }
-      };
-
       const isVanishedWarning = (stderr?: string | null) =>
         typeof stderr === "string" && stderr.toLowerCase().includes("vanished");
 
@@ -1835,10 +1812,8 @@ export async function runMerge({
             if (remoteLock && uniquePaths.length) {
               await remoteLock.unlock(uniquePaths);
             }
-            if (remoteHost) {
-              await handlePartial(direction, partialPaths);
-            } else if (debug) {
-              logger.warn("partial transfer ignored (local merge)", {
+            if (debug) {
+              logger.warn("partial transfer", {
                 direction,
                 paths: partialPaths.length,
               });
