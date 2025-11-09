@@ -21,6 +21,7 @@ import {
   collectIgnoreOption,
   normalizeIgnorePatterns,
   autoIgnoreForRoot,
+  createIgnorer,
 } from "./ignore.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
@@ -242,17 +243,27 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     );
   };
 
+  const ignoreRaw = Array.isArray(rawIgnoreRules) ? [...rawIgnoreRules] : [];
+  ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
+  const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
+  const ignorer = createIgnorer(ignoreRules);
+
   const allowPath = async (
     abs: string,
     opts: DeviceCheckOptions & { isDir: boolean },
   ): Promise<boolean> => {
     const ok = await deviceBoundary.isOnRootDevice(abs, opts);
-    if (!ok) logCrossDevice(abs);
-    return ok;
+    if (!ok) {
+      logCrossDevice(abs);
+      return false;
+    }
+    const rel = relR(rootAbs, abs);
+    if (!rel) return true;
+    const ignored = opts.isDir
+      ? ignorer.ignoresDir(rel)
+      : ignorer.ignoresFile(rel);
+    return !ignored;
   };
-  const ignoreRaw = Array.isArray(rawIgnoreRules) ? [...rawIgnoreRules] : [];
-  ignoreRaw.push(...autoIgnoreForRoot(rootAbs, getReflectSyncHome()));
-  const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
   const pendingIgnores = new Map<
     string,
