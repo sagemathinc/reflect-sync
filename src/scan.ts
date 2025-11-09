@@ -31,6 +31,7 @@ import {
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
+import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -61,6 +62,16 @@ function makeHashWorker(alg: string): Worker {
   });
 }
 
+function collectListOption(value: string, previous: string[] = []): string[] {
+  if (!value) return previous;
+  const parts = value
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!parts.length) return previous;
+  return previous.concat(parts);
+}
+
 function buildProgram(): Command {
   const program = new Command();
 
@@ -84,6 +95,18 @@ function buildProgram(): Command {
       "--prune-ms <milliseconds>",
       "prune deleted entries at least this old *before* doing the scan",
     )
+    .option(
+      "--restricted-path <path>",
+      "restrict scan to a relative path (repeat or comma-separated)",
+      collectListOption,
+      [] as string[],
+    )
+    .option(
+      "--restricted-dir <path>",
+      "restrict scan to a directory tree (repeat or comma-separated)",
+      collectListOption,
+      [] as string[],
+    )
     .option("--numeric-ids", "include uid and gid in file hashes", false)
     .option(
       "-i, --ignore <pattern>",
@@ -106,6 +129,8 @@ type ScanOptions = {
   logLevel?: LogLevel;
   ignoreRules?: string[];
   ignore?: string[];
+  restrictedPaths?: string[];
+  restrictedDirs?: string[];
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -122,6 +147,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     logLevel = "info",
     ignoreRules: ignoreRulesOpt = [],
     ignore: ignoreCliOpt = [],
+    restrictedPaths: restrictedPathsOpt = [],
+    restrictedDirs: restrictedDirsOpt = [],
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const ignoreRaw: string[] = [];
@@ -143,6 +170,72 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const syncHome = getReflectSyncHome();
   ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
+
+  let restrictedPathList = dedupeRestrictedList(restrictedPathsOpt);
+  let restrictedDirList = dedupeRestrictedList(restrictedDirsOpt);
+  if (
+    restrictedPathList.includes("") ||
+    restrictedDirList.includes("")
+  ) {
+    restrictedPathList = [];
+    restrictedDirList = [];
+  }
+  const hasRestrictions =
+    restrictedPathList.length > 0 || restrictedDirList.length > 0;
+  const restrictedPathSet = new Set(restrictedPathList);
+  const restrictedDirSet = new Set(restrictedDirList);
+  const restrictedDirPrefixes = restrictedDirList
+    .filter((dir) => dir.length > 0)
+    .map((dir) => `${dir}/`);
+  const dirTraversalAllow = new Set<string>([""]);
+  const addDirAndAncestors = (rel: string) => {
+    let current = rel;
+    while (true) {
+      if (!dirTraversalAllow.has(current)) {
+        dirTraversalAllow.add(current);
+      }
+      const parent = dirnameRel(current);
+      if (parent === current || current === "") {
+        dirTraversalAllow.add("");
+        break;
+      }
+      current = parent;
+      if (current === "") {
+        dirTraversalAllow.add("");
+        break;
+      }
+    }
+  };
+  for (const dir of restrictedDirList) {
+    addDirAndAncestors(dir);
+  }
+  for (const relPath of restrictedPathList) {
+    addDirAndAncestors(dirnameRel(relPath));
+  }
+  const inRestrictedDir = (rel: string): boolean => {
+    if (!restrictedDirList.length) return false;
+    if (restrictedDirSet.has(rel)) return true;
+    for (const prefix of restrictedDirPrefixes) {
+      if (rel.startsWith(prefix)) return true;
+    }
+    return false;
+  };
+  const dirAllowsTraversal = (rel: string): boolean => {
+    if (!hasRestrictions) return true;
+    if (dirTraversalAllow.has(rel)) return true;
+    return inRestrictedDir(rel);
+  };
+  const dirMatches = (rel: string): boolean => {
+    if (!hasRestrictions) return true;
+    if (restrictedDirSet.has(rel)) return true;
+    if (restrictedPathSet.has(rel)) return true;
+    return inRestrictedDir(rel);
+  };
+  const pathMatches = (rel: string): boolean => {
+    if (!hasRestrictions) return true;
+    if (restrictedPathSet.has(rel)) return true;
+    return inRestrictedDir(rel);
+  };
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -196,6 +289,54 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
+
+  const restrictedClause =
+    hasRestrictions && !restrictedDirSet.has("")
+      ? " AND path IN (SELECT rpath FROM restricted_paths)"
+      : "";
+  if (hasRestrictions && !restrictedDirSet.has("")) {
+    db.exec(`
+      DROP TABLE IF EXISTS restricted_paths;
+      CREATE TEMP TABLE restricted_paths(
+        rpath TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+    `);
+    const insertRestricted = db.prepare(
+      `INSERT OR IGNORE INTO restricted_paths(rpath) VALUES (?)`,
+    );
+    const insertRestrictedBatch = db.transaction((paths: string[]) => {
+      for (const relPath of paths) {
+        insertRestricted.run(relPath);
+      }
+    });
+    insertRestrictedBatch([
+      ...restrictedPathList,
+      ...restrictedDirList,
+    ]);
+    if (restrictedDirList.length) {
+      const tables = ["files", "dirs", "links"];
+      const dirStmts = tables.map((tbl) =>
+        db.prepare(
+          `
+            INSERT OR IGNORE INTO restricted_paths(rpath)
+            SELECT path FROM ${tbl}
+            WHERE path = @dir
+               OR (path >= @prefix AND path < @upper)
+          `,
+        ),
+      );
+      const insertExisting = db.transaction((dirs: string[]) => {
+        for (const dir of dirs) {
+          const prefix = dir ? `${dir}/` : "";
+          const upper = dir ? `${dir}/\uffff` : "\uffff";
+          for (const stmt of dirStmts) {
+            stmt.run({ dir, prefix, upper });
+          }
+        }
+      });
+      insertExisting(restrictedDirList);
+    }
+  }
 
   if (pruneMs) {
     const olderThanTs = Date.now() - Number(pruneMs);
@@ -414,7 +555,7 @@ ON CONFLICT(path) DO UPDATE SET
         `
     SELECT path, size, ctime, mtime, op_ts, hash, deleted
     FROM files
-    WHERE op_ts >= ?
+    WHERE op_ts >= ?${restrictedClause}
     ORDER BY op_ts ASC, path ASC
   `,
       )
@@ -447,7 +588,7 @@ ON CONFLICT(path) DO UPDATE SET
         `
     SELECT path, ctime, mtime, op_ts, hash, deleted
     FROM dirs
-    WHERE op_ts >= ?
+    WHERE op_ts >= ?${restrictedClause}
     ORDER BY op_ts ASC, path ASC
   `,
       )
@@ -479,7 +620,7 @@ ON CONFLICT(path) DO UPDATE SET
         `
     SELECT path, target, ctime, mtime, op_ts, hash, deleted
     FROM links
-    WHERE op_ts >= ?
+    WHERE op_ts >= ?${restrictedClause}
     ORDER BY op_ts ASC, path ASC
   `,
       )
@@ -589,15 +730,14 @@ ON CONFLICT(path) DO UPDATE SET
       stats: true,
       followSymbolicLinks: false,
       concurrency: 128,
-      // Do not descend into ignored directories
+      // Do not descend into ignored or out-of-scope directories
       deepFilter: (e) => {
-        if (e.dirent.isDirectory()) {
-          const r = toRel(e.path, absRoot);
-          return !ig.ignoresDir(r);
-        }
-        return true;
+        if (!e.dirent.isDirectory()) return true;
+        const r = toRel(e.path, absRoot);
+        if (!dirAllowsTraversal(r)) return false;
+        return !ig.ignoresDir(r);
       },
-      // Do not emit ignored directories/files/links as entries
+      // Do not emit ignored or out-of-scope entries
       entryFilter: (e) => {
         const st = (e as { stats?: import("fs").Stats }).stats;
         if (rootDevice !== undefined && st && st.dev !== rootDevice) {
@@ -605,9 +745,10 @@ ON CONFLICT(path) DO UPDATE SET
         }
         const r = toRel(e.path, absRoot);
         if (e.dirent.isDirectory()) {
+          if (!dirAllowsTraversal(r) || !dirMatches(r)) return false;
           return !ig.ignoresDir(r);
         }
-        // For files & symlinks, ignore file-style rules
+        if (!pathMatches(r)) return false;
         return !ig.ignoresFile(r);
       },
       errorFilter: () => true,
@@ -840,14 +981,16 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Compute deletions (anything not seen this pass and not already deleted)
     const toDelete = db
-      .prepare(`SELECT path FROM files WHERE last_seen <> ? AND deleted = 0`)
+      .prepare(
+        `SELECT path FROM files WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
+      )
       .all(scan_id) as { path: string }[];
 
     const op_ts = Date.now();
     db.prepare(
       `UPDATE files
        SET deleted = 1, op_ts = ?
-       WHERE last_seen <> ? AND deleted = 0`,
+       WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
     ).run(op_ts, scan_id);
 
     // emit-delta: file deletions
@@ -860,13 +1003,15 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Mark deletions: dirs
     const toDeleteDirs = db
-      .prepare(`SELECT path FROM dirs WHERE last_seen <> ? AND deleted = 0`)
+      .prepare(
+        `SELECT path FROM dirs WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
+      )
       .all(scan_id) as { path: string }[];
 
     const op_ts_dirs = Date.now();
 
     db.prepare(
-      `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
+      `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
     ).run(op_ts_dirs, scan_id);
 
     // emit-delta: Emit dir deletions (use the snapshot we captured BEFORE the update)
@@ -879,12 +1024,14 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Mark deletions: links
     const toDeleteLinks = db
-      .prepare(`SELECT path FROM links WHERE last_seen <> ? AND deleted = 0`)
+      .prepare(
+        `SELECT path FROM links WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
+      )
       .all(scan_id) as { path: string }[];
 
     const op_ts_links = Date.now();
     db.prepare(
-      `UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0`,
+      `UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
     ).run(op_ts_links, scan_id);
 
     if (emitDelta && toDeleteLinks.length) {

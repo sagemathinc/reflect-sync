@@ -41,6 +41,7 @@ import {
   parseLogLevel,
 } from "./logger.js";
 import type { SignatureEntry } from "./signature-store.js";
+import { dedupeRestrictedList } from "./restrict.js";
 
 const VERY_VERBOSE = false;
 
@@ -55,35 +56,6 @@ const TERMINATE_ON_CHANGE_ALPHA =
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
-
-function normalizeRestrictedInput(value: string | undefined | null) {
-  if (typeof value !== "string") return undefined;
-  let normalized = value.trim();
-  if (!normalized) return undefined;
-  while (normalized.startsWith("./")) {
-    normalized = normalized.slice(2);
-  }
-  while (normalized.startsWith("/")) {
-    normalized = normalized.slice(1);
-  }
-  normalized = normalized.replace(/\/{2,}/g, "/");
-  normalized = normalized.replace(/\/+$/, "");
-  if (!normalized || normalized === ".") return undefined;
-  return normalized;
-}
-
-function dedupeList(values?: string[]) {
-  if (!Array.isArray(values) || !values.length) return [];
-  const seen = new Set<string>();
-  const cleaned: string[] = [];
-  for (const raw of values) {
-    const normalized = normalizeRestrictedInput(raw);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    cleaned.push(normalized);
-  }
-  return cleaned;
-}
 
 function toBoolVerbose(v?: boolean | string): boolean {
   if (typeof v === "string") {
@@ -609,8 +581,8 @@ export async function runMerge({
     db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
-    const restrictedPathList = dedupeList(restrictedPaths);
-    const restrictedDirList = dedupeList(restrictedDirs);
+    const restrictedPathList = dedupeRestrictedList(restrictedPaths);
+    const restrictedDirList = dedupeRestrictedList(restrictedDirs);
     const hasRestrictions =
       restrictedPathList.length > 0 || restrictedDirList.length > 0;
     if (hasRestrictions) {
