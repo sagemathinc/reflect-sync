@@ -802,7 +802,7 @@ export function registerSessionCommands(program: Command) {
   addSessionDbOption(
     program
       .command("stop")
-      .description("Stop sync for one or more sessions")
+      .description("Stop one or more sync sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
         (refs: string[], opts: { sessionDb?: string }, command: Command) => {
@@ -831,7 +831,7 @@ export function registerSessionCommands(program: Command) {
   addSessionDbOption(
     program
       .command("start")
-      .description("Start sync for one or more sessions")
+      .description("Start one or more sync sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
         (refs: string[], opts: { sessionDb?: string }, command: Command) => {

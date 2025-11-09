@@ -80,8 +80,7 @@ export function spawnSchedulerForSession(
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 
-  // Debug output suppressed to avoid polluting CLI stdout contracts.
-  logger?.debug(`start session: '${process.execPath} ${argsJoin(args)}'`);
+  logger?.info(`start session: '${process.execPath} ${argsJoin(args)}'`);
   const child = spawn(launcher.command, args, {
     stdio: "ignore",
     detached: true,
@@ -90,9 +89,7 @@ export function spawnSchedulerForSession(
   child.unref();
 
   if (logger) {
-    const earlyMs = Number(
-      process.env.REFLECT_SCHEDULER_EARLY_EXIT_MS ?? 3000,
-    );
+    const earlyMs = Number(process.env.REFLECT_SCHEDULER_EARLY_EXIT_MS ?? 3000);
     if (Number.isFinite(earlyMs) && earlyMs > 0) {
       let timer: NodeJS.Timeout | null = null;
       const onEarlyExit = (
