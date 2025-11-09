@@ -18,7 +18,7 @@ sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,workdir=$
 cp -v run.sh stress.sh $root/
 
 reflect terminate overlay
-reflect create  --disable-micro-sync  --name=o $upperdir localhost:$upperdir2
+reflect create  --disable-hot-sync  --name=o $upperdir localhost:$upperdir2
 
 podman run -it --rm --rootfs "$root" bash /stress.sh
 

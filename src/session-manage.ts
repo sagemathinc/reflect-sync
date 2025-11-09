@@ -364,7 +364,7 @@ export async function newSession({
   name,
   ignore,
   logger,
-  disableMicroSync = false,
+  disableHotSync = false,
   disableFullCycle = false,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
@@ -413,7 +413,7 @@ export async function newSession({
         hash_alg: hash,
         ignore,
         compress,
-        disable_micro_sync: !!disableMicroSync,
+        disable_hot_sync: !!disableHotSync,
         disable_full_cycle: !!disableFullCycle,
       },
       parseLabelPairs(label || []),
@@ -486,7 +486,7 @@ export interface SessionEditOptions {
   betaSpec?: string;
   reset?: boolean;
   logger?: Logger;
-  disableMicroSync?: boolean;
+  disableHotSync?: boolean;
   disableFullCycle?: boolean;
 }
 
@@ -505,7 +505,7 @@ export async function editSession(options: SessionEditOptions) {
     betaSpec,
     reset,
     logger,
-    disableMicroSync,
+    disableHotSync,
     disableFullCycle,
   } = options;
 
@@ -572,11 +572,11 @@ export async function editSession(options: SessionEditOptions) {
     }
   }
 
-  if (disableMicroSync !== undefined) {
-    const desired = !!disableMicroSync;
-    if (!!row.disable_micro_sync !== desired) {
-      updates.disable_micro_sync = desired;
-      changes.push(`micro-sync=${desired ? "disabled" : "enabled"}`);
+  if (disableHotSync !== undefined) {
+    const desired = !!disableHotSync;
+    if (!!row.disable_hot_sync !== desired) {
+      updates.disable_hot_sync = desired;
+      changes.push(`hot-sync=${desired ? "disabled" : "enabled"}`);
       needRestart = true;
     }
   }

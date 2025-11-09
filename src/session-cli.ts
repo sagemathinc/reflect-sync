@@ -140,8 +140,12 @@ export function registerSessionCommands(program: Command) {
         [] as string[],
       )
       .option(
-        "--disable-micro-sync",
-        "disable realtime micro-sync watchers for this session",
+        "--disable-hot-sync",
+        "disable realtime hot-sync cycles for this session",
+      )
+      .option(
+        "--enable-hot-sync",
+        "enable realtime hot-sync cycles for this session",
       )
       .option(
         "--disable-full-cycle",
@@ -155,6 +159,16 @@ export function registerSessionCommands(program: Command) {
           command: Command,
         ) => {
           const sessionDb = resolveSessionDb(opts, command);
+          if (typeof opts.disableHotSync !== "boolean") {
+            if (typeof opts.enableHotSync === "boolean" && opts.enableHotSync) {
+              opts.disableHotSync = false;
+            }
+          } else if (
+            typeof opts.enableHotSync === "boolean" &&
+            opts.enableHotSync
+          ) {
+            opts.disableHotSync = false;
+          }
           const cliLogger = new ConsoleLogger(getLogLevel());
           try {
             const id = await newSession({
@@ -252,7 +266,7 @@ export function registerSessionCommands(program: Command) {
         if (opts.json) {
           const payload = rows.map((r) => ({
             ...r,
-            disable_micro_sync: !!r.disable_micro_sync,
+            disable_hot_sync: !!r.disable_hot_sync,
             disable_full_cycle: !!r.disable_full_cycle,
           }));
           console.log(JSON.stringify(payload, null, 2));
@@ -300,7 +314,7 @@ export function registerSessionCommands(program: Command) {
             ? ignoreRules.join(", ")
             : "-";
           const flags: string[] = [];
-          if (r.disable_micro_sync) flags.push("micro-sync off");
+          if (r.disable_hot_sync) flags.push("hot-sync off");
           if (r.disable_full_cycle) flags.push("full-cycle off");
           const flagsSummary = flags.length ? flags.join(", ") : "-";
 
@@ -518,15 +532,15 @@ export function registerSessionCommands(program: Command) {
       .option("--reset", "reset session state after applying changes", false)
       .addOption(
         new Option(
-          "--disable-micro-sync",
-          "disable realtime micro-sync watchers",
-        ).conflicts("enableMicroSync"),
+          "--disable-hot-sync",
+          "disable realtime hot-sync cycles",
+        ).conflicts("enableHotSync"),
       )
       .addOption(
         new Option(
-          "--enable-micro-sync",
-          "enable realtime micro-sync watchers",
-        ).conflicts("disableMicroSync"),
+          "--enable-hot-sync",
+          "enable realtime hot-sync cycles",
+        ).conflicts("disableHotSync"),
       )
       .addOption(
         new Option(
@@ -552,10 +566,10 @@ export function registerSessionCommands(program: Command) {
         }
 
         const cliLogger = new ConsoleLogger(getLogLevel());
-        const disableMicroSyncUpdate =
-          opts.disableMicroSync === true
+        const disableHotSyncUpdate =
+          opts.disableHotSync === true
             ? true
-            : opts.enableMicroSync === true
+            : opts.enableHotSync === true
               ? false
               : undefined;
         const disableFullCycleUpdate =
@@ -579,7 +593,7 @@ export function registerSessionCommands(program: Command) {
             betaSpec: opts.beta,
             reset: !!opts.reset,
             logger: cliLogger,
-            disableMicroSync: disableMicroSyncUpdate,
+            disableHotSync: disableHotSyncUpdate,
             disableFullCycle: disableFullCycleUpdate,
           });
 

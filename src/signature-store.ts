@@ -9,7 +9,7 @@ export interface SignatureEntry {
 }
 
 /**
- * Apply remote signatures to the local mirror database so later scans/micro-sync
+ * Apply remote signatures to the local mirror database so later restricted cycles
  * see the fresh metadata. Mirrors the behaviour of ingest-delta but with a much
  * smaller surface.
  */

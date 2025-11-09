@@ -92,7 +92,7 @@ export type SchedulerOptions = {
   remoteCommand?: string;
 
   disableHotWatch: boolean;
-  disableMicroSync?: boolean;
+  disableHotSync?: boolean;
   disableFullCycle?: boolean;
 
   compress?: string;
@@ -166,7 +166,7 @@ export function configureSchedulerCommand(
       "only sync during the full sync cycle",
       false,
     )
-    .option("--disable-micro-sync", "disable realtime micro-sync watchers")
+    .option("--disable-hot-sync", "disable realtime hot-sync cycles")
     .option(
       "--disable-full-cycle",
       "disable automatic periodic full sync cycles",
@@ -190,6 +190,11 @@ function buildProgram(): Command {
 }
 
 export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
+  let disableHotSync =
+    opts.disableHotSync !== undefined ? !!opts.disableHotSync : false;
+  if (opts.enableHotSync === true) {
+    disableHotSync = false;
+  }
   const out: SchedulerOptions = {
     alphaRoot: String(opts.alphaRoot),
     betaRoot: String(opts.betaRoot),
@@ -212,8 +217,8 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     alphaRemoteDb: String(opts.alphaRemoteDb),
     betaRemoteDb: String(opts.betaRemoteDb),
     remoteCommand: opts.remoteCommand,
-    disableHotWatch: !!opts.disableHotWatch || !!opts.disableMicroSync,
-    disableMicroSync: !!opts.disableMicroSync,
+    disableHotWatch: !!opts.disableHotWatch || disableHotSync,
+    disableHotSync,
     disableFullCycle: !!opts.disableFullCycle,
     compress: opts.compress,
     ignoreRules: normalizeIgnorePatterns(opts.ignore ?? []),
@@ -237,7 +242,10 @@ const HOT_TTL_MS = envNum("HOT_TTL_MS", 30 * 60_000);
 const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
 
-const MICRO_DEBOUNCE_MS = envNum("MICRO_DEBOUNCE_MS", 200);
+const HOT_DEBOUNCE_MS = envNum(
+  "HOT_DEBOUNCE_MS",
+  envNum("MICRO_DEBOUNCE_MS", 200),
+);
 
 const MIN_INTERVAL_MS = envNum("SCHED_MIN_MS", 7_500);
 const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
@@ -272,7 +280,7 @@ export async function runScheduler({
   betaRemoteDb,
   remoteCommand,
   disableHotWatch: disableHotWatchOption,
-  disableMicroSync = false,
+  disableHotSync = false,
   disableFullCycle = false,
   compress,
   ignoreRules: schedulerIgnoreRules,
@@ -311,7 +319,7 @@ export async function runScheduler({
   };
 
   const syncHome = getReflectSyncHome();
-  const disableHotWatch = disableHotWatchOption || disableMicroSync;
+  const disableHotWatch = disableHotWatchOption || disableHotSync;
   const baseIgnore = normalizeIgnorePatterns(schedulerIgnoreRules ?? []);
   const autoIgnores: string[] = [];
   if (!alphaHost) autoIgnores.push(...autoIgnoreForRoot(alphaRoot, syncHome));
@@ -1366,7 +1374,7 @@ export async function runScheduler({
     hotTimer = setTimeout(() => {
       hotTimer = null;
       startHotFlush();
-    }, MICRO_DEBOUNCE_MS);
+    }, HOT_DEBOUNCE_MS);
   }
 
   function startHotFlush() {

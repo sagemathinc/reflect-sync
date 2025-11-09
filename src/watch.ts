@@ -674,7 +674,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
       if (!(await allowPath(abs, { isDir: isDirEvent, stats }))) {
         return;
       }
-      // Send the event immediately (so microSync can act quickly)
+      // Send the event immediately (so the hot-sync cycle can act quickly)
       const r = relR(rootAbs, abs);
       scheduleStableEmit(r, abs, evt, stats);
     };

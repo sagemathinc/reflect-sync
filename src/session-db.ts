@@ -111,7 +111,7 @@ export interface SessionCreateInput {
   hash_alg: string;
   compress?: string | null;
   ignore?: string[];
-  disable_micro_sync?: boolean;
+  disable_hot_sync?: boolean;
   disable_full_cycle?: boolean;
 }
 
@@ -142,7 +142,7 @@ export interface SessionPatch {
   compress?: string | null;
   hash_alg?: string | null;
   ignore_rules?: string | null;
-  disable_micro_sync?: boolean | number | null;
+  disable_hot_sync?: boolean | number | null;
   disable_full_cycle?: boolean | number | null;
 }
 
@@ -176,7 +176,7 @@ export interface SessionRow {
   beta_digest?: string | null;
   compress?: string | null;
   ignore_rules?: string | null;
-  disable_micro_sync: number;
+  disable_hot_sync: number;
   disable_full_cycle: number;
 }
 
@@ -267,7 +267,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
         compress         TEXT,
         ignore_rules     TEXT,  -- JSON.stringify(string[])
-        disable_micro_sync INTEGER NOT NULL DEFAULT 0,
+        disable_hot_sync INTEGER NOT NULL DEFAULT 0,
         disable_full_cycle INTEGER NOT NULL DEFAULT 0,
 
         desired_state    TEXT NOT NULL DEFAULT 'stopped',
@@ -405,7 +405,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "alpha_port", "INTEGER");
   ensureColumn("sessions", "beta_port", "INTEGER");
   ensureColumn("sessions", "ignore_rules", "TEXT");
-  ensureColumn("sessions", "disable_micro_sync", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("sessions", "disable_hot_sync", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "disable_full_cycle", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("ssh_sessions", "ssh_args", "TEXT");
 
@@ -442,7 +442,7 @@ export function createSession(
         alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
         hash_alg, compress, ignore_rules,
-        disable_micro_sync, disable_full_cycle
+        disable_hot_sync, disable_full_cycle
       )
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
@@ -464,7 +464,7 @@ export function createSession(
       input.hash_alg ?? defaultHashAlg(),
       input.compress ?? null,
       input.ignore ? serializeIgnoreRules(input.ignore) : null,
-      input.disable_micro_sync ? 1 : 0,
+      input.disable_hot_sync ? 1 : 0,
       input.disable_full_cycle ? 1 : 0,
     );
     const id = Number(info.lastInsertRowid);
@@ -623,7 +623,7 @@ export function updateSession(
     for (const [k, v] of Object.entries(patch)) {
       let value = v;
       if (
-        (k === "disable_micro_sync" || k === "disable_full_cycle") &&
+        (k === "disable_hot_sync" || k === "disable_full_cycle") &&
         value !== undefined &&
         value !== null &&
         typeof value === "boolean"

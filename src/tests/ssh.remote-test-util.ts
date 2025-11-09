@@ -62,7 +62,7 @@ export function startSchedulerRemote(opts: SchedulerOpts): ChildProcess {
     SCHED_MAX_MS: "200",
     SCHED_MAX_BACKOFF_MS: "50",
     SCHED_JITTER_MS: "0",
-    MICRO_DEBOUNCE_MS: "0",
+    HOT_DEBOUNCE_MS: "0",
     COOLDOWN_MS: "10",
     SHALLOW_DEPTH: "1",
     HOT_DEPTH: "1",

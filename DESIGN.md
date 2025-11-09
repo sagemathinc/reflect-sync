@@ -17,7 +17,7 @@ Why? In large deployments we’ve seen in-memory file indexes ramp to multiple G
 - **Databases**: `alpha.db`, `beta.db` \(one per root\), and `base.db` \(3\-way merge base\).
 - **scan**: walks a tree, stores/refreshes `files(relative path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime, ...)` and **only rehashes when ctime changed**.
 - **merge**: builds **relative\-path** temp views of alpha/beta/base, computes the 3\-way plan \(changed A, changed B, deletions\), resolves conflicts by `--prefer`, and then feeds rsync with NUL\-separated `--files-from` lists. On success, it updates `base.db` to the merged state.
-- **scheduler**: adaptive loop that \(1\) runs a full scan/merge at a dynamic interval, \(2\) runs **micro\-sync** immediately for hot files, and \(3\) uses shallow \+ bounded deep watchers to avoid inotify/fsevents explosions.
+- **scheduler**: adaptive loop that \(1\) runs a full scan/merge at a dynamic interval, \(2\) runs **restricted scan/merge cycles** immediately for hot files, and \(3\) uses shallow \+ bounded deep watchers to avoid inotify/fsevents explosions.
 - **SSH mode**: remote scan streams NDJSON deltas \(`--emit-delta`\) over stdout; a local **ingest** process mirrors them into a local SQLite DB for planning.
 
 ---
@@ -45,22 +45,22 @@ Three\-way merge is accomplished by simply doing SQL queries. This is nice becau
 - Copies: `rsync -a --relative --from0 --files-from=/tmp/list …`
 - Deletes: `rsync -a --relative --from0 --ignore-missing-args --delete-missing-args …`
 - NUL\-separated lists prevent path edge cases \(filenames with newlines in them\).
-- We **allow exit codes 23/24** in micro\-sync \(files vanishing while edited\) to avoid breaking the loop; the next full cycle settles consistency.
+- We **allow exit codes 23/24** in restricted cycles \(files vanishing while edited\) to avoid breaking the loop; the next full cycle settles consistency.
 
 On completion, we upsert `base.db` to the merged result with **relative** paths only. That keeps `base.db` portable and small.
 
 ---
 
-## Realtime micro-sync (hot files)
+## Realtime restricted cycles (hot files)
 
 When watchers report a handful of touched files, we:
 
-1. decide direction per rpath (conflicts → `--prefer` side),
-2. filter to **regular files** (`lstat.isFile()`),
-3. write a tiny NUL-separated list and **rsync just those paths** immediately,
-4. accept partial rsync codes (23/24) and debounce repeats.
+1. debounce/dedupe the rpaths reported by root + hot watchers,
+2. wait for them to become stable (mtime settled, file closed),
+3. run `scan` with `--restricted-path/dir` so only those entries refresh,
+4. run `merge` with the same restrictions, which feeds rsync the tiny subset.
 
-No base updates here—**the next full cycle verifies and updates base**. This keeps micro-sync simple and robust in the face of edits-in-flight.
+It’s the exact same planner pipeline, just scoped. Failures simply drop the paths back into the hot queue; the next pass (restricted or full) reconciles them.
 
 ---
 
@@ -110,7 +110,7 @@ Typical large-tree outcomes we’ve seen:
 
 ## Tradeoffs & known limitations (current)
 
-- **Dirs/links**: micro\-sync currently focuses on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate. Directories and symlinks are sync'd, just not immediately.
+- **Dirs/links**: restricted cycles currently focus on regular files. Full rsync handles dirs/permissions per `-a`, but may add explicit handling for directories, symlinks, xattrs/ACLs, and **numeric IDs** where appropriate. Directories and symlinks are sync'd, just not immediately.
 - **Base updates & verification**: we update `base.db` after rsync; the next full cycle **verifies** the result end\-to\-end. In high\-churn cases you may see rsync 23/24 warnings—by design.
 - **ctime reliance**: ctime is an excellent gate for rehashing but can vary across FS types or be coarser than you like; you can switch to an `(mtime, size)` policy if desired \(configurable in future\).
 
@@ -125,4 +125,3 @@ Typical large-tree outcomes we’ve seen:
 ---
 
 This design aims to keep the _algorithm_ you like from Mutagen, but shift its heavy lifting to **SQLite** and **rsync**, which are fast, observable, and easy to operate at scale—while keeping the codebase small and pleasant to evolve.
-

@@ -2,7 +2,7 @@
  * pnpm test scheduler.local.test.ts
  *
  * Verifies: scheduler starts, completes an initial full cycle, and
- * microSync mirrors a newly-written file from alpha -> beta quickly,
+ * restricted hot-sync cycles mirror a newly-written file from alpha -> beta quickly,
  * well before the next scheduled full cycle.
  */
 
@@ -49,12 +49,12 @@ function startScheduler(opts: {
     stdio: ["ignore", "inherit", "inherit"],
     env: {
       ...process.env,
-      // Make the loop slow, but micro-sync fast.
+      // Make the loop slow, but hot-sync fast.
       SCHED_MIN_MS: "5000",
       SCHED_MAX_MS: "5000",
       SCHED_MAX_BACKOFF_MS: "5000",
       SCHED_JITTER_MS: "0",
-      MICRO_DEBOUNCE_MS: "50",
+      HOT_DEBOUNCE_MS: "50",
       COOLDOWN_MS: "50",
       SHALLOW_DEPTH: "1",
       HOT_DEPTH: "1",
@@ -104,7 +104,7 @@ function sawRealtimePush(baseDb: string): boolean {
   }
 }
 
-describe("scheduler (local watchers + microSync)", () => {
+describe("scheduler (local watchers + hot-sync)", () => {
   let tmp: string;
   let alphaRoot: string, betaRoot: string;
   let alphaDb: string, betaDb: string, baseDb: string;
@@ -145,7 +145,7 @@ describe("scheduler (local watchers + microSync)", () => {
     });
 
     try {
-      // make sure we're right after a sync cycle, so microsync has to pick up our change.
+      // make sure we're right after a sync cycle, so hot-sync has to pick up our change.
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 1,
@@ -162,7 +162,7 @@ describe("scheduler (local watchers + microSync)", () => {
 
       const bFile = path.join(betaRoot, "hello.txt");
 
-      // Expect it to arrive quickly (microSync) — well before next 5s cycle
+      // Expect it to arrive quickly (hot-sync) — well before next 5s cycle
       await waitFor(
         async () => await fileExists(bFile),
         (ok) => ok === true,
@@ -187,7 +187,7 @@ describe("scheduler (local watchers + microSync)", () => {
       baseDb,
       prefer: "alpha",
     });
-    // make sure we're right after a sync cycle, so microsync has to pick up our change.
+    // make sure we're right after a sync cycle, so hot-sync has to pick up our change.
     await waitFor(
       () => countSchedulerCycles(baseDb),
       (n) => n >= 1,
@@ -247,7 +247,7 @@ describe("scheduler (local watchers + microSync)", () => {
     }
   }, 20_000);
 
-  test("disable micro sync defers propagation until the next full cycle", async () => {
+  test("disable hot sync defers propagation until the next full cycle", async () => {
     const child = startScheduler({
       alphaRoot,
       betaRoot,
@@ -255,7 +255,7 @@ describe("scheduler (local watchers + microSync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      extraArgs: ["--disable-micro-sync"],
+      extraArgs: ["--disable-hot-sync"],
     });
 
     try {
@@ -267,8 +267,8 @@ describe("scheduler (local watchers + microSync)", () => {
         100,
       );
 
-      const aFile = path.join(alphaRoot, "micro-disabled.txt");
-      const bFile = path.join(betaRoot, "micro-disabled.txt");
+      const aFile = path.join(alphaRoot, "hot-disabled.txt");
+      const bFile = path.join(betaRoot, "hot-disabled.txt");
       await fsp.mkdir(path.dirname(aFile), { recursive: true });
       await fsp.rm(aFile, { force: true });
       await fsp.rm(bFile, { force: true });

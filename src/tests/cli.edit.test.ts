@@ -177,7 +177,7 @@ describe("reflect edit CLI", () => {
     expect(row.hash_alg).toBe(defaultHashAlg());
   });
 
-  it("toggles micro/full cycle flags via CLI", async () => {
+  it("toggles hot/full cycle flags via CLI", async () => {
     const alphaRoot = join(tmpHome, "alpha");
     const betaRoot = join(tmpHome, "beta");
     await mkdir(alphaRoot, { recursive: true });
@@ -206,14 +206,14 @@ describe("reflect edit CLI", () => {
         "--name",
         "flag-test",
         "--stopped",
-        "--disable-micro-sync",
+        "--disable-hot-sync",
         "--disable-full-cycle",
       ],
       { from: "node" },
     );
 
     let row = loadSessionByName(sessionDbPath, "flag-test")!;
-    expect(row.disable_micro_sync).toBe(1);
+    expect(row.disable_hot_sync).toBe(1);
     expect(row.disable_full_cycle).toBe(1);
 
     await buildProgram().parseAsync(
@@ -224,12 +224,12 @@ describe("reflect edit CLI", () => {
         sessionDbPath,
         "edit",
         "flag-test",
-        "--enable-micro-sync",
+        "--enable-hot-sync",
       ],
       { from: "node" },
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
-    expect(row.disable_micro_sync).toBe(0);
+    expect(row.disable_hot_sync).toBe(0);
     expect(row.disable_full_cycle).toBe(1);
 
     await buildProgram().parseAsync(
@@ -240,13 +240,13 @@ describe("reflect edit CLI", () => {
         sessionDbPath,
         "edit",
         "flag-test",
-        "--disable-micro-sync",
+        "--disable-hot-sync",
         "--enable-full-cycle",
       ],
       { from: "node" },
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
-    expect(row.disable_micro_sync).toBe(1);
+    expect(row.disable_hot_sync).toBe(1);
     expect(row.disable_full_cycle).toBe(0);
 
     await buildProgram().parseAsync(
@@ -262,7 +262,7 @@ describe("reflect edit CLI", () => {
       { from: "node" },
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
-    expect(row.disable_micro_sync).toBe(1);
+    expect(row.disable_hot_sync).toBe(1);
     expect(row.disable_full_cycle).toBe(1);
     expect(process.exitCode).toBeUndefined();
   });

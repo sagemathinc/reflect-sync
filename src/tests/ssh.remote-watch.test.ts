@@ -2,7 +2,7 @@
  * pnpm test ssh.remote-watch.test.ts
  *
  * Verifies: scheduler starts with beta as a remote side, and a file created
- * on the remote (beta) arrives locally on alpha via microSync before the next
+ * on the remote (beta) arrives locally on alpha via the hot-sync path before the next
  * full cycle.
  */
 
@@ -41,14 +41,14 @@ function startSchedulerRemote(opts: {
     "--beta-host",
     "localhost", // mark beta as remote so scheduler uses ssh-based watch/scan
   ];
-  // Make full cycles slow; micro-sync snappy for the test
+  // Make full cycles slow; hot-sync snappy for the test
   const env = {
     ...process.env,
     SCHED_MIN_MS: "5000",
     SCHED_MAX_MS: "5000",
     SCHED_MAX_BACKOFF_MS: "5000",
     SCHED_JITTER_MS: "0",
-    MICRO_DEBOUNCE_MS: "50",
+    HOT_DEBOUNCE_MS: "50",
     COOLDOWN_MS: "50",
     SHALLOW_DEPTH: "1",
     HOT_DEPTH: "1",
@@ -77,7 +77,7 @@ async function stopScheduler(p: ChildProcess) {
   }
 }
 
-describe("SSH remote watch → microSync", () => {
+describe("SSH remote watch → hot-sync", () => {
   let tmp: string = "";
   let alphaRoot: string, betaRootRemote: string;
   let alphaDb: string, betaDb: string, baseDb: string;
@@ -107,7 +107,7 @@ describe("SSH remote watch → microSync", () => {
     }
   });
 
-  test("file created on remote (beta) appears locally on alpha via microSync", async () => {
+  test("file created on remote (beta) appears locally on alpha via hot-sync", async () => {
     const child = startSchedulerRemote({
       alphaRoot,
       betaRootRemote,
@@ -131,7 +131,7 @@ describe("SSH remote watch → microSync", () => {
       const remoteFile = path.join(betaRootRemote, "hello.txt");
       await fsp.writeFile(remoteFile, "hi\n", "utf8");
 
-      // Expect it to arrive on alpha quickly via microSync
+      // Expect it to arrive on alpha quickly via hot-sync
       const localFile = path.join(alphaRoot, "hello.txt");
       await waitFor(
         () => fileExists(localFile),
