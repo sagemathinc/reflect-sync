@@ -56,11 +56,17 @@ export function spawnSchedulerForSession(
     if (row.alpha_port != null) {
       args.push("--alpha-port", String(row.alpha_port));
     }
+    if (row.alpha_remote_db) {
+      args.push("--alpha-remote-db", row.alpha_remote_db);
+    }
   }
   if (row.beta_host) {
     args.push("--beta-host", row.beta_host);
     if (row.beta_port != null) {
       args.push("--beta-port", String(row.beta_port));
+    }
+    if (row.beta_remote_db) {
+      args.push("--beta-remote-db", row.beta_remote_db);
     }
   }
 
