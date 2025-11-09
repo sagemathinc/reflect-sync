@@ -17,6 +17,7 @@ import {
 import pkg from "../package.json" with { type: "json" };
 import { collectIgnoreOption } from "./ignore.js";
 import { registerInstallCommand } from "./install-cli.js";
+import { configureScanCommand } from "./scan.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -109,36 +110,7 @@ program.addHelpText(
   "\nAdvanced plumbing commands are hidden by default. Use `reflect --help --advanced` to show them.\n",
 );
 
-program
-  .command("scan")
-  .description(
-    "Run a local scan writing to sqlite database and optionally stdout",
-  )
-  .requiredOption("--root <path>", "directory to scan")
-  .requiredOption("--db <path>", "sqlite db file", "alpha.db")
-  .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
-  .option(
-    "--emit-since-ts <milliseconds>",
-    "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
-  )
-  .addOption(
-    new Option("--hash <algorithm>", "content hash algorithm")
-      .choices(listSupportedHashes())
-      .default(defaultHashAlg()),
-  )
-  .option("--vacuum", "vacuum the database after doing the scan", false)
-  .option(
-    "--prune-ms <milliseconds>",
-    "prune deleted entries at least this old *before* doing the scan",
-  )
-  .option("--numeric-ids", "include uid and gid in file hashes", false)
-  .option(
-    "-i, --ignore <pattern>",
-    "gitignore-style ignore rule (repeat or comma-separated)",
-    collectIgnoreOption,
-    [] as string[],
-  )
-  .action(
+configureScanCommand(program.command("scan")).action(
     async (
       opts: {
         root: string;

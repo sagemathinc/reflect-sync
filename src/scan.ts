@@ -72,11 +72,14 @@ function collectListOption(value: string, previous: string[] = []): string[] {
   return previous.concat(parts);
 }
 
-function buildProgram(): Command {
-  const program = new Command();
-
-  return program
-    .name(`${CLI_NAME}-scan`)
+export function configureScanCommand(
+  command: Command,
+  { standalone = false }: { standalone?: boolean } = {},
+): Command {
+  if (standalone) {
+    command.name(`${CLI_NAME}-scan`);
+  }
+  return command
     .description("Run a local scan writing to sqlite database")
     .requiredOption("--db <file>", "path to sqlite database")
     .requiredOption("--root <path>", "directory to scan")
@@ -114,6 +117,10 @@ function buildProgram(): Command {
       collectIgnoreOption,
       [] as string[],
     );
+}
+
+function buildProgram(): Command {
+  return configureScanCommand(new Command(), { standalone: true });
 }
 
 type ScanOptions = {
