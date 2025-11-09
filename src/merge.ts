@@ -153,6 +153,7 @@ type MergeRsyncOptions = {
   ) => Promise<SignatureEntry[]> | Promise<void> | void;
   alphaRemoteLock?: RemoteLockHandle;
   betaRemoteLock?: RemoteLockHandle;
+  restrictedPaths?: string[];
 };
 
 // ---------- helpers ----------
@@ -234,6 +235,7 @@ export async function runMerge({
   fetchRemoteBetaSignatures,
   alphaRemoteLock,
   betaRemoteLock,
+  restrictedPaths,
 }: MergeRsyncOptions) {
   const coercePort = (value: unknown): number | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
@@ -576,6 +578,41 @@ export async function runMerge({
     db.prepare(`ATTACH DATABASE ? AS alpha`).run(alphaDb);
     db.prepare(`ATTACH DATABASE ? AS beta`).run(betaDb);
 
+    const restrictedList =
+      Array.isArray(restrictedPaths) && restrictedPaths.length
+        ? Array.from(
+            new Set(
+              restrictedPaths.filter(
+                (p): p is string => typeof p === "string" && p.length > 0,
+              ),
+            ),
+          )
+        : undefined;
+    const hasRestrictedPaths = !!(restrictedList && restrictedList.length);
+    if (hasRestrictedPaths) {
+      db.exec(`
+        DROP TABLE IF EXISTS restricted_paths;
+        CREATE TEMP TABLE restricted_paths(
+          rpath TEXT PRIMARY KEY
+        ) WITHOUT ROWID;
+      `);
+      const insertRestricted = db.prepare(
+        `INSERT OR IGNORE INTO restricted_paths(rpath) VALUES (?)`,
+      );
+      const insertRestrictedBatch = db.transaction((paths: string[]) => {
+        for (const relPath of paths) {
+          insertRestricted.run(relPath);
+        }
+      });
+      insertRestrictedBatch(restrictedList!);
+    }
+    const restrictEntriesSuffix = hasRestrictedPaths
+      ? " AND path IN (SELECT rpath FROM restricted_paths)"
+      : "";
+    const restrictWhereClause = hasRestrictedPaths
+      ? " WHERE path IN (SELECT rpath FROM restricted_paths)"
+      : "";
+
     // ---------- EARLY-OUT FAST PATH ----------
     // Hash live (non-deleted) catalogs of both sides. If unchanged vs last time → skip planning/rsync.
     db.exec(`
@@ -679,7 +716,7 @@ export async function runMerge({
       )
       SELECT path, hash, deleted, op_ts, mtime
       FROM ranked
-      WHERE rn = 1;
+      WHERE rn = 1${restrictEntriesSuffix};
 
       -- =========================
       -- beta_entries (ranked)
@@ -702,7 +739,7 @@ export async function runMerge({
       )
       SELECT path, hash, deleted, op_ts, mtime
       FROM ranked
-      WHERE rn = 1;
+      WHERE rn = 1${restrictEntriesSuffix};
     `);
 
     db.exec(
@@ -748,12 +785,14 @@ export async function runMerge({
       SELECT path, hash, deleted, op_ts, mtime FROM beta_entries;
 
       INSERT INTO base_rel(rpath,hash,deleted,op_ts)
-      SELECT path, hash, deleted, op_ts FROM base;
+      SELECT path, hash, deleted, op_ts FROM base${restrictWhereClause};
     `);
 
     // Dirs (RELATIVE)
     db.exec(`
-      DROP TABLE IF EXISTS alpha_dirs_rel; DROP TABLE IF EXISTS beta_dirs_rel; DROP TABLE IF EXISTS base_dirs_rel;
+      DROP TABLE IF EXISTS alpha_dirs_rel;
+      DROP TABLE IF EXISTS beta_dirs_rel;
+      DROP TABLE IF EXISTS base_dirs_rel;
 
       CREATE TEMP TABLE alpha_dirs_rel(
         rpath   TEXT PRIMARY KEY,
@@ -780,13 +819,16 @@ export async function runMerge({
       ) WITHOUT ROWID;
 
       INSERT INTO alpha_dirs_rel(rpath,deleted,op_ts,mtime,hash)
-      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'') FROM alpha.dirs;
+      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'')
+      FROM alpha.dirs${restrictWhereClause};
 
       INSERT INTO beta_dirs_rel(rpath,deleted,op_ts,mtime,hash)
-      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'') FROM beta.dirs;
+      SELECT path, deleted, op_ts, mtime, COALESCE(hash,'')
+      FROM beta.dirs${restrictWhereClause};
 
       INSERT INTO base_dirs_rel(rpath,deleted,op_ts,hash)
-      SELECT path, deleted, op_ts, COALESCE(hash,'') FROM base_dirs;
+      SELECT path, deleted, op_ts, COALESCE(hash,'')
+      FROM base_dirs${restrictWhereClause};
     `);
 
     // covering indexes for (deleted,rpath) checks
