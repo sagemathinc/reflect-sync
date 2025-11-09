@@ -115,7 +115,7 @@ async function superviseSessions(sessionDb: string, logger: Logger) {
       if (row.scheduler_pid) {
         updateSession(sessionDb, row.id, { scheduler_pid: null });
       }
-      const targetState: ActualState = "paused";
+      const targetState: ActualState = "stopped";
       if (row.actual_state !== targetState) {
         setActualState(sessionDb, row.id, targetState);
       }

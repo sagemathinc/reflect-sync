@@ -90,8 +90,8 @@ function expandHome(p: string): string {
 
 //   Types
 export type Side = "alpha" | "beta";
-export type DesiredState = "running" | "paused";
-export type ActualState = "running" | "starting" | "paused" | "error";
+export type DesiredState = "running" | "stopped";
+export type ActualState = "running" | "starting" | "stopped" | "error";
 export type ForwardDesiredState = "running" | "stopped";
 export type ForwardActualState = "running" | "error" | "stopped";
 
@@ -270,8 +270,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         disable_micro_sync INTEGER NOT NULL DEFAULT 0,
         disable_full_cycle INTEGER NOT NULL DEFAULT 0,
 
-        desired_state    TEXT NOT NULL DEFAULT 'paused',
-        actual_state     TEXT NOT NULL DEFAULT 'paused',
+        desired_state    TEXT NOT NULL DEFAULT 'stopped',
+        actual_state     TEXT NOT NULL DEFAULT 'stopped',
         last_heartbeat   INTEGER,
 
         last_digest      INTEGER,
@@ -296,9 +296,9 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
       CREATE TABLE IF NOT EXISTS session_state(
         session_id     INTEGER PRIMARY KEY,
         pid            INTEGER,
-        status         TEXT,        -- starting|running|paused|error
+        status         TEXT,        -- starting|running|stopped|error
         started_at     INTEGER,
-        paused_at     INTEGER,
+        stopped_at     INTEGER,
         last_heartbeat INTEGER,
         running        INTEGER,     -- boolean
         pending        INTEGER,     -- boolean
@@ -971,8 +971,8 @@ export class SessionWriter {
 
     this.stopStmt = this.db.prepare(`
     UPDATE session_state SET
-      status='paused',
-      paused_at=?,
+      status='stopped',
+      stopped_at=?,
       last_heartbeat=?
     WHERE session_id = ?
   `);

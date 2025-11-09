@@ -111,8 +111,8 @@ describe("reflect reset CLI", () => {
 
     const row = loadSessionById(sessionDbPath, sessionId)!;
     expect(row.name).toBe(sessionName);
-    expect(row.actual_state).toBe("paused");
-    expect(row.desired_state).toBe("paused");
+    expect(row.actual_state).toBe("stopped");
+    expect(row.desired_state).toBe("stopped");
     expect(row.scheduler_pid).toBeNull();
     expect(row.last_heartbeat).toBeNull();
     expect(row.last_digest).toBeNull();

@@ -205,7 +205,7 @@ describe("reflect edit CLI", () => {
         betaRoot,
         "--name",
         "flag-test",
-        "--paused",
+        "--stopped",
         "--disable-micro-sync",
         "--disable-full-cycle",
       ],

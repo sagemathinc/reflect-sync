@@ -203,8 +203,8 @@ export async function resetSession({
     last_digest: null,
     alpha_digest: null,
     beta_digest: null,
-    actual_state: "paused",
-    desired_state: "paused",
+    actual_state: "stopped",
+    desired_state: "stopped",
   });
 
   clearSessionRuntime(sessionDb, id);
@@ -702,7 +702,7 @@ export async function editSession(options: SessionEditOptions) {
     if (row.scheduler_pid) {
       stopPid(row.scheduler_pid);
     }
-    setActualState(sessionDb, id, "paused");
+    setActualState(sessionDb, id, "stopped");
   }
 
   const shouldRestart = wasRunning && (resetRequested || needRestart);

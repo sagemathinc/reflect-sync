@@ -158,7 +158,7 @@ export function registerSessionCommands(program: Command) {
           .default("alpha"),
       )
       .option("-l, --label <k=v>", "add a label", collectLabels, [] as string[])
-      .option("-p, --paused", "leave session paused (do not sync)", false)
+      .option("-s, --stopped", "leave session stopped (do not sync)", false)
       .addOption(
         new Option("--hash <algorithm>", "content hash algorithm")
           .choices(listSupportedHashes())
@@ -212,7 +212,7 @@ export function registerSessionCommands(program: Command) {
             console.log(
               `created session ${id}${opts.name ? ` (${opts.name})` : ""}`,
             );
-            if (!opts.paused) {
+            if (!opts.stopped) {
               setDesiredState(sessionDb, id, "running");
               console.log(
                 daemonPid
@@ -220,7 +220,7 @@ export function registerSessionCommands(program: Command) {
                   : `queued session ${id} for daemon start`,
               );
             } else {
-              console.log(`session ${id} left paused`);
+              console.log(`session ${id} left stopped`);
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -828,8 +828,8 @@ export function registerSessionCommands(program: Command) {
 
   addSessionDbOption(
     program
-      .command("pause")
-      .description("Pause sync for one or more sessions")
+      .command("stop")
+      .description("Stop sync for one or more sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
         (refs: string[], opts: { sessionDb?: string }, command: Command) => {
@@ -843,11 +843,11 @@ export function registerSessionCommands(program: Command) {
               continue;
             }
             const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
-            setDesiredState(sessionDb, row.id, "paused");
-            setActualState(sessionDb, row.id, "paused");
+            setDesiredState(sessionDb, row.id, "stopped");
+            setActualState(sessionDb, row.id, "stopped");
             console.log(
               ok
-                ? `paused session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
+                ? `stopped session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
                 : `session ${row.name ?? row.id} was not running`,
             );
           }
@@ -857,8 +857,8 @@ export function registerSessionCommands(program: Command) {
 
   addSessionDbOption(
     program
-      .command("resume")
-      .description("Resume sync for one or more sessions")
+      .command("start")
+      .description("Start sync for one or more sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
         (refs: string[], opts: { sessionDb?: string }, command: Command) => {
@@ -879,8 +879,8 @@ export function registerSessionCommands(program: Command) {
             }
             console.log(
               pid
-                ? `resumed session ${row.name ?? row.id} (pid ${pid})`
-                : `failed to resume session ${row.name ?? row.id}`,
+                ? `started session ${row.name ?? row.id} (pid ${pid})`
+                : `failed to start session ${row.name ?? row.id}`,
             );
           }
         },
@@ -914,7 +914,7 @@ export function registerSessionCommands(program: Command) {
             try {
               await resetSession({ sessionDb, id: row.id, logger: cliLogger });
               console.log(
-                `reset session ${label}; run 'reflect resume ${label}' to restart`,
+                `reset session ${label}; run 'reflect start ${label}' to restart`,
               );
             } catch (err) {
               hadError = true;

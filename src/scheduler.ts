@@ -382,7 +382,7 @@ export async function runScheduler({
     return false;
   }
 
-  function pauseForDiskFull(reason: string, err?: unknown): string {
+  function stopForDiskFull(reason: string, err?: unknown): string {
     const detail = describeError(err);
     const message = detail ? `${reason}: ${detail}` : reason;
     if (!fatalTriggered) {
@@ -393,7 +393,7 @@ export async function runScheduler({
       sessionWriter?.error(message);
       if (sessionDb && sessionId) {
         try {
-          setDesiredState(sessionDb, sessionId, "paused");
+          setDesiredState(sessionDb, sessionId, "stopped");
         } catch {}
         try {
           setActualState(sessionDb, sessionId, "error");
@@ -753,7 +753,7 @@ export async function runScheduler({
             : String(ingestError),
       });
       if (isDiskFullCause(ingestError)) {
-        const fatalMessage = pauseForDiskFull(
+        const fatalMessage = stopForDiskFull(
           `disk full during remote scan (${params.host})`,
           ingestError,
         );
@@ -856,7 +856,7 @@ export async function runScheduler({
       abortSignal: ingestAbort.signal,
     }).catch((err) => {
       if (isDiskFullCause(err)) {
-        pauseForDiskFull(`disk full during remote ${side} watch ingest`, err);
+        stopForDiskFull(`disk full during remote ${side} watch ingest`, err);
         return;
       }
       remoteLog.error("ingest watch error", {
@@ -1460,7 +1460,7 @@ export async function runScheduler({
           retryBeta: retryBeta.length,
         });
       } else if (isDiskFullCause(e)) {
-        pauseForDiskFull("disk full during realtime sync", e);
+        stopForDiskFull("disk full during realtime sync", e);
       } else {
         log("warn", "realtime", "microSync failed", {
           err: String(e?.message || e),
@@ -1799,7 +1799,7 @@ export async function runScheduler({
         isDiskFullCause(failure.error),
       );
       if (diskFail) {
-        const fatalMessage = pauseForDiskFull(
+        const fatalMessage = stopForDiskFull(
           `disk full during ${diskFail.side} scan`,
           diskFail.error,
         );
@@ -1892,7 +1892,7 @@ export async function runScheduler({
             : "merge failed";
       sessionWriter?.error(`merge failed: ${message}`);
       if (isDiskFullCause(mergeError) || messageHasDiskFull(message)) {
-        const fatalMessage = pauseForDiskFull(
+        const fatalMessage = stopForDiskFull(
           "disk full during merge",
           mergeError,
         );
@@ -1936,7 +1936,7 @@ export async function runScheduler({
       await microSync(a, b);
     } catch (err) {
       if (isDiskFullCause(err)) {
-        const fatalMessage = pauseForDiskFull(
+        const fatalMessage = stopForDiskFull(
           "disk full during micro flush",
           err,
         );
@@ -2068,7 +2068,7 @@ export async function runScheduler({
           } catch (e: any) {
             if (e instanceof FatalSchedulerError) throw e;
             if (isDiskFullCause(e)) {
-              const fatalMessage = pauseForDiskFull(
+              const fatalMessage = stopForDiskFull(
                 "disk full during manual sync",
                 e,
               );

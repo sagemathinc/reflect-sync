@@ -138,8 +138,8 @@ reflect list                          # list sessions
 reflect status <id-or-name>                   # show heartbeat / merge status
 reflect logs <id-or-name> [--follow]          # stream recent structured logs
 reflect logs <id-or-name> --message progress  # tail only progress events (scan/hash/rsync/etc.)
-reflect pause <id-or-name...>                 # pause one or more sessions
-reflect resume <id-or-name...>                # resume (and auto-start scheduler if needed)
+reflect stop <id-or-name...>                  # stop one or more sessions
+reflect start <id-or-name...>                 # start (and auto-start scheduler if needed)
 reflect terminate <id-or-name...>             # stop and remove session state
 reflect daemon start                          # ensure the background supervisor is running
 reflect daemon stop                           # stop the supervisor (removes the PID file)
