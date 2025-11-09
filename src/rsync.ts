@@ -1,7 +1,7 @@
 // src/rsync.ts
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, stat as fsStat, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, stat as fsStat, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream, readFileSync } from "node:fs";
 import { finished } from "node:stream/promises";
@@ -24,6 +24,11 @@ const REFLECT_COPY_CONCURRENCY = Number(
   process.env.REFLECT_COPY_CONCURRENCY ?? 2,
 );
 const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
+
+const DEFAULT_FIELD_DELIM = "\x1F"; // US
+const DEFAULT_RECORD_DELIM = "\x1E"; // RS
+const DELIM_FALLBACK_START = 0xe000;
+const DELIM_FALLBACK_END = 0xf8ff;
 
 export const RSYNC_TEMP_DIR =
   process.env.REFLECT_RSYNC_TEMP_DIR ?? ".reflect-rsync-tmp";
@@ -86,6 +91,16 @@ type RsyncRunOptions = RsyncLogOptions & {
   onProgress?: (event: RsyncProgressEvent) => void;
   tempDir?: string;
   direction?: "alpha->beta" | "beta->alpha" | "alpha->alpha" | "beta->beta";
+  captureTransfers?: TransferCaptureSpec | false;
+};
+
+export type RsyncTransferRecord = {
+  path: string;
+  itemized: string;
+};
+
+type TransferCaptureSpec = {
+  paths?: readonly string[];
 };
 
 export type RsyncProgressEvent = {
@@ -257,9 +272,10 @@ export async function rsyncCopyChunked(
         stderr?: string;
       },
     ) => void | Promise<void>;
+    captureTransfers?: boolean;
   } = {},
-): Promise<{ ok: boolean }> {
-  if (!fileRpaths.length) return { ok: true };
+): Promise<{ ok: boolean; transferred: string[] }> {
+  if (!fileRpaths.length) return { ok: true, transferred: [] };
   const { logger, debug } = resolveLogContext(opts);
 
   const chunkSize = opts.chunkSize ?? REFLECT_COPY_CHUNK;
@@ -311,6 +327,7 @@ export async function rsyncCopyChunked(
   }
 
   let allOk = true;
+  const transferredSet = new Set<string>();
 
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
     if (debug) {
@@ -322,6 +339,8 @@ export async function rsyncCopyChunked(
       chunkIndex: idx + 1,
       chunkCount: listFiles.length,
     };
+    const plannedChunk = opts.captureTransfers ? batches[idx] : undefined;
+    const plannedSet = plannedChunk ? new Set(plannedChunk) : undefined;
     const result = await rsyncCopy(
       fromRoot,
       toRoot,
@@ -338,15 +357,33 @@ export async function rsyncCopyChunked(
         tempDir: opts.tempDir,
         progressScope: scope,
         progressMeta: chunkMeta,
+        captureTransfers: plannedChunk
+          ? {
+              paths: plannedChunk,
+            }
+          : undefined,
       },
     );
+    if (opts.captureTransfers && result.transfers?.length) {
+      for (const entry of result.transfers) {
+        const normalized = normalizeTransferPath(entry.path);
+        if (!normalized) continue;
+        if (plannedSet && !plannedSet.has(normalized) && debug) {
+          logger.debug("rsync transfer outside planned chunk", {
+            label,
+            path: entry.path,
+          });
+        }
+        transferredSet.add(normalized);
+      }
+    }
     if (opts.onChunkResult) {
       await opts.onChunkResult(batches[idx], result);
     }
     if (!result.ok) allOk = false;
   });
 
-  return { ok: allOk };
+  return { ok: allOk, transferred: Array.from(transferredSet) };
 }
 
 // ---------- helpers that used to be local to merge ----------
@@ -498,7 +535,82 @@ export function assertRsyncOk(
   throw new RsyncError(message, res.code ?? null, errorContext);
 }
 
-export function run(
+function containsDelimiterChar(
+  paths: readonly string[] | undefined,
+  token: string,
+): boolean {
+  if (!paths?.length) return false;
+  for (const p of paths) {
+    if (p.includes(token)) return true;
+  }
+  return false;
+}
+
+function pickDelimiterChar(
+  paths: readonly string[] | undefined,
+  preferred: string,
+  avoid: Set<string>,
+): string {
+  if (!avoid.has(preferred) && !containsDelimiterChar(paths, preferred)) {
+    return preferred;
+  }
+  for (let code = DELIM_FALLBACK_START; code <= DELIM_FALLBACK_END; code++) {
+    const candidate = String.fromCharCode(code);
+    if (avoid.has(candidate)) continue;
+    if (!containsDelimiterChar(paths, candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("unable to find safe delimiter for rsync transfer capture");
+}
+
+function chooseDelimiters(paths?: readonly string[]) {
+  const avoid = new Set<string>();
+  const field = pickDelimiterChar(paths, DEFAULT_FIELD_DELIM, avoid);
+  avoid.add(field);
+  const record = pickDelimiterChar(paths, DEFAULT_RECORD_DELIM, avoid);
+  if (record === field) {
+    avoid.add(record);
+    const next = pickDelimiterChar(paths, DEFAULT_RECORD_DELIM, avoid);
+    return { field, record: next };
+  }
+  return { field, record };
+}
+
+function stripRecordPreamble(segment: string): string {
+  if (!segment) return segment;
+  return segment.replace(/^\r?\n/, "");
+}
+
+function parseTransferLog(
+  data: string,
+  field: string,
+  record: string,
+): RsyncTransferRecord[] {
+  if (!data) return [];
+  const entries = data.split(record);
+  const records: RsyncTransferRecord[] = [];
+  for (const raw of entries) {
+    if (!raw) continue;
+    const normalized = stripRecordPreamble(raw);
+    if (!normalized) continue;
+    const idx = normalized.indexOf(field);
+    if (idx === -1) continue;
+    const itemized = normalized.slice(0, idx);
+    const path = normalized.slice(idx + field.length);
+    if (!path) continue;
+    records.push({ path, itemized });
+  }
+  return records;
+}
+
+function normalizeTransferPath(p: string): string {
+  if (!p) return p;
+  if (p.startsWith("./")) return p.slice(2);
+  return p;
+}
+
+export async function run(
   cmd: string,
   args: string[],
   okCodes: number[] = [0],
@@ -508,6 +620,7 @@ export function run(
   ok: boolean;
   zero: boolean;
   stderr?: string;
+  transfers: RsyncTransferRecord[];
 }> {
   const t = Date.now();
   const { logger, debug } = resolveLogContext(opts);
@@ -533,6 +646,19 @@ export function run(
     // This can be very useful for testing/debugging to simulate a slower network:
     finalArgs.push(`--bwlimit=${process.env.REFLECT_RSYNC_BWLIMIT}`);
   }
+  const captureSpec = opts.captureTransfers ? opts.captureTransfers : undefined;
+  let captureDir: string | undefined;
+  let captureLogPath: string | undefined;
+  let captureDelims: { field: string; record: string } | undefined;
+  if (captureSpec) {
+    captureDelims = chooseDelimiters(captureSpec.paths);
+    captureDir = await mkdtemp(path.join(tmpdir(), "reflect-rsync-log-"));
+    captureLogPath = path.join(captureDir, "transfers.log");
+    finalArgs.push(`--log-file=${captureLogPath}`);
+    finalArgs.push(
+      `--log-file-format=%i${captureDelims.field}%n${captureDelims.record}`,
+    );
+  }
   if (debug)
     logger.debug(
       `rsync.run ${opts.direction ?? ""}: '${cmd} ${argsJoin(finalArgs)}'`,
@@ -544,7 +670,12 @@ export function run(
       ? Math.max(10, Math.floor(1000 / MAX_PROGRESS_UPDATES_PER_SEC))
       : 0;
 
-  return new Promise((resolve) => {
+  const res = await new Promise<{
+    code: number | null;
+    ok: boolean;
+    zero: boolean;
+    stderr?: string;
+  }>((resolve) => {
     const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
       ? ["ignore", "pipe", "pipe"]
       : ["ignore", "ignore", "ignore"];
@@ -635,6 +766,30 @@ export function run(
       resolve({ code: 1, ok: okCodes.includes(1), zero: false });
     });
   });
+
+  let transfers: RsyncTransferRecord[] = [];
+  if (captureSpec && captureLogPath && captureDelims) {
+    try {
+      const raw = await readFile(captureLogPath, "utf8");
+      transfers = parseTransferLog(
+        raw,
+        captureDelims.field,
+        captureDelims.record,
+      );
+    } catch (err) {
+      if (debug) {
+        logger.warn("failed to read rsync transfer log", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+  if (captureDir) {
+    try {
+      await rm(captureDir, { recursive: true, force: true });
+    } catch {}
+  }
+  return { ...res, transfers };
 }
 
 // write a NUL-separated list memory efficiently
@@ -725,17 +880,19 @@ export async function rsyncCopy(
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
     direction?;
+    captureTransfers?: TransferCaptureSpec;
   } = {},
 ): Promise<{
   ok: boolean;
   zero: boolean;
   code: number | null;
   stderr?: string;
+  transfers: RsyncTransferRecord[];
 }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync ${label}: nothing to do`);
-    return { ok: true, zero: false, code: 0 };
+    return { ok: true, zero: false, code: 0, transfers: [] };
   }
   if (debug) {
     logger.debug(`>>> rsync ${label} (${fromRoot} -> ${toRoot})`);
@@ -771,6 +928,7 @@ export async function rsyncCopy(
     ...runOpts,
     onProgress: progressHandler,
     tempDir: opts.tempDir,
+    captureTransfers: opts.captureTransfers,
   }); // accept partials
   if (debug) {
     logger.debug(`>>> rsync ${label}: done`, {
@@ -778,7 +936,13 @@ export async function rsyncCopy(
       ok: res.ok,
     });
   }
-  return { ok: res.ok, zero: res.zero, code: res.code, stderr: res.stderr };
+  return {
+    ok: res.ok,
+    zero: res.zero,
+    code: res.code,
+    stderr: res.stderr,
+    transfers: res.transfers ?? [],
+  };
 }
 
 export async function rsyncCopyDirs(

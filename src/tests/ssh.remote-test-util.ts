@@ -156,7 +156,7 @@ export async function hashDirectory(root: string): Promise<string> {
     .catch(() => []);
   const sorted = entries.map((e) => e.name).sort();
   for (const name of sorted) {
-    const entry = entries.find((e:any) => e.name === name)!;
+    const entry = entries.find((e: any) => e.name === name)!;
     const full = join(root, entry.name);
     if (entry.isDirectory()) {
       const subHash = await hashDirectory(full);

@@ -50,7 +50,9 @@ const VERY_VERBOSE = false;
 const DISABLE_REFLINK = true;
 
 // if true immediately freeze if there is a plan to modify anything on alpha.
-const TERMINATE_ON_CHANGE_ALPHA = false;
+// Obviously only for very low level debugging!
+const TERMINATE_ON_CHANGE_ALPHA =
+  !!process.env.REFLECT_TERMINATE_ON_CHANGE_ALPHA;
 
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
@@ -1663,10 +1665,10 @@ export async function runMerge({
       }
 
       // ---------- rsync ----------
-      let copyAlphaBetaOk = false;
-      let copyBetaAlphaOk = false;
       let copyDirsAlphaBetaOk = false;
       let copyDirsBetaAlphaOk = false;
+      const completedCopyToBeta = new Set<string>();
+      const completedCopyToAlpha = new Set<string>();
 
       const alpha = alphaHost ? `${alphaHost}:${alphaRoot}` : alphaRoot;
       const beta = betaHost ? `${betaHost}:${betaRoot}` : betaRoot;
@@ -1701,11 +1703,15 @@ export async function runMerge({
           Parameters<typeof rsyncCopyChunked>[5],
           "onChunkResult"
         > = {},
-      ): Promise<{ ok: boolean; signatures: SignatureEntry[] }> => {
-        if (!paths.length) return { ok: true, signatures: [] };
+      ): Promise<{
+        ok: boolean;
+        signatures: SignatureEntry[];
+        transferred: string[];
+      }> => {
+        if (!paths.length) return { ok: true, signatures: [], transferred: [] };
         paths = filterBounceByRecent(direction, paths);
         if (!paths.length) {
-          return { ok: true, signatures: [] };
+          return { ok: true, signatures: [], transferred: [] };
         }
         const uniquePaths = uniq(paths);
         const remoteHost = direction === "alpha->beta" ? betaHost : alphaHost;
@@ -1717,7 +1723,7 @@ export async function runMerge({
         const partialPaths: string[] = [];
         let postSignatures: SignatureEntry[] = [];
         try {
-          const { ok } = await rsyncCopyChunked(
+          const { ok, transferred } = await rsyncCopyChunked(
             tmp,
             direction === "alpha->beta" ? alpha : beta,
             direction === "alpha->beta" ? beta : alpha,
@@ -1727,6 +1733,7 @@ export async function runMerge({
               ...rsyncOpts,
               ...(options ?? {}),
               direction,
+              captureTransfers: true,
               onChunkResult: (chunk, result) => {
                 if (result.code === 23 && !isVanishedWarning(result.stderr)) {
                   partialPaths.push(...chunk);
@@ -1734,6 +1741,7 @@ export async function runMerge({
               },
             },
           );
+          const transferredPaths = transferred ?? [];
           if (partialPaths.length) {
             if (remoteLock && uniquePaths.length) {
               await remoteLock.unlock(uniquePaths);
@@ -1771,6 +1779,7 @@ export async function runMerge({
           return {
             ok,
             signatures: remoteHost ? postSignatures : [],
+            transferred: transferredPaths,
           };
         } catch (err) {
           if (remoteLock && uniquePaths.length) {
@@ -1885,9 +1894,8 @@ export async function runMerge({
         try {
           await cpReflinkFromList(alphaRoot, betaRoot, listToBeta);
           await cpReflinkFromList(betaRoot, alphaRoot, listToAlpha);
-          copyAlphaBetaOk = toBeta.length === 0 || true;
-          copyBetaAlphaOk = toAlpha.length === 0 || true;
           if (toBetaRelative.length) {
+            toBetaRelative.forEach((rel) => completedCopyToBeta.add(rel));
             const betaHints = mergeSignatureHints(
               toBetaRelative,
               collectLocalSignatureEntries(betaRoot, toBetaRelative),
@@ -1896,6 +1904,7 @@ export async function runMerge({
             await noteBetaChange(toBetaRelative, { signatures: betaHints });
           }
           if (toAlphaRelative.length) {
+            toAlphaRelative.forEach((rel) => completedCopyToAlpha.add(rel));
             const alphaHints = mergeSignatureHints(
               toAlphaRelative,
               collectLocalSignatureEntries(alphaRoot, toAlphaRelative),
@@ -1938,27 +1947,35 @@ export async function runMerge({
               },
             },
           );
-          copyAlphaBetaOk = alphaCopyRes.ok;
-          copyBetaAlphaOk = betaCopyRes.ok;
-          if (copyAlphaBetaOk && toBetaRelative.length) {
+          if (alphaCopyRes.transferred.length) {
+            alphaCopyRes.transferred.forEach((rel) =>
+              completedCopyToBeta.add(rel),
+            );
             const betaHints = buildPostCopyHints(
-              toBetaRelative,
+              alphaCopyRes.transferred,
               alphaCopyRes.signatures,
               alphaSignatureHints,
               betaRoot,
               !!betaHost,
             );
-            await noteBetaChange(toBetaRelative, { signatures: betaHints });
+            await noteBetaChange(alphaCopyRes.transferred, {
+              signatures: betaHints,
+            });
           }
-          if (copyBetaAlphaOk && toAlphaRelative.length) {
+          if (betaCopyRes.transferred.length) {
+            betaCopyRes.transferred.forEach((rel) =>
+              completedCopyToAlpha.add(rel),
+            );
             const alphaHints = buildPostCopyHints(
-              toAlphaRelative,
+              betaCopyRes.transferred,
               betaCopyRes.signatures,
               betaSignatureHints,
               alphaRoot,
               !!alphaHost,
             );
-            await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
+            await noteAlphaChange(betaCopyRes.transferred, {
+              signatures: alphaHints,
+            });
           }
         }
       } else {
@@ -1988,27 +2005,35 @@ export async function runMerge({
             },
           },
         );
-        copyAlphaBetaOk = alphaCopyRes.ok;
-        copyBetaAlphaOk = betaCopyRes.ok;
-        if (copyAlphaBetaOk && toBetaRelative.length) {
+        if (alphaCopyRes.transferred.length) {
+          alphaCopyRes.transferred.forEach((rel) =>
+            completedCopyToBeta.add(rel),
+          );
           const betaHints = buildPostCopyHints(
-            toBetaRelative,
+            alphaCopyRes.transferred,
             alphaCopyRes.signatures,
             alphaSignatureHints,
             betaRoot,
             !!betaHost,
           );
-          await noteBetaChange(toBetaRelative, { signatures: betaHints });
+          await noteBetaChange(alphaCopyRes.transferred, {
+            signatures: betaHints,
+          });
         }
-        if (copyBetaAlphaOk && toAlphaRelative.length) {
+        if (betaCopyRes.transferred.length) {
+          betaCopyRes.transferred.forEach((rel) =>
+            completedCopyToAlpha.add(rel),
+          );
           const alphaHints = buildPostCopyHints(
-            toAlphaRelative,
+            betaCopyRes.transferred,
             betaCopyRes.signatures,
             betaSignatureHints,
             alphaRoot,
             !!alphaHost,
           );
-          await noteAlphaChange(toAlphaRelative, { signatures: alphaHints });
+          await noteAlphaChange(betaCopyRes.transferred, {
+            signatures: alphaHints,
+          });
         }
         done();
       }
@@ -2078,6 +2103,9 @@ export async function runMerge({
         return;
       }
 
+      const completedToBeta = Array.from(completedCopyToBeta);
+      const completedToAlpha = Array.from(completedCopyToAlpha);
+
       // ---------- set-based base updates (fast) ----------
       done = t("post rsync database update");
       db.exec(`
@@ -2100,6 +2128,9 @@ export async function runMerge({
         CREATE TEMP TABLE plan_dirs_to_alpha (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
         CREATE TEMP TABLE plan_dirs_del_beta (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
         CREATE TEMP TABLE plan_dirs_del_alpha(rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+
+        CREATE TEMP TABLE plan_to_beta_done  (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
+        CREATE TEMP TABLE plan_to_alpha_done (rpath TEXT PRIMARY KEY) WITHOUT ROWID;
       `);
 
       function bulkInsert(table: string, rows: string[], chunk = 5000) {
@@ -2136,6 +2167,14 @@ export async function runMerge({
         tx();
       });
 
+      timed("insert success tables", () => {
+        const tx = db.transaction(() => {
+          bulkInsert("plan_to_beta_done", completedToBeta);
+          bulkInsert("plan_to_alpha_done", completedToAlpha);
+        });
+        tx();
+      });
+
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_plan_to_beta_rpath        ON plan_to_beta(rpath);
         CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_rpath       ON plan_to_alpha(rpath);
@@ -2146,6 +2185,9 @@ export async function runMerge({
         CREATE INDEX IF NOT EXISTS idx_plan_dirs_to_alpha_rpath  ON plan_dirs_to_alpha(rpath);
         CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_beta_rpath  ON plan_dirs_del_beta(rpath);
         CREATE INDEX IF NOT EXISTS idx_plan_dirs_del_alpha_rpath ON plan_dirs_del_alpha(rpath);
+
+        CREATE INDEX IF NOT EXISTS idx_plan_to_beta_done_rpath   ON plan_to_beta_done(rpath);
+        CREATE INDEX IF NOT EXISTS idx_plan_to_alpha_done_rpath  ON plan_to_alpha_done(rpath);
       `);
 
       if (debug) {
@@ -2160,24 +2202,29 @@ export async function runMerge({
           dirs_to_alpha: c("plan_dirs_to_alpha"),
           dirs_del_beta: c("plan_dirs_del_beta"),
           dirs_del_alpha: c("plan_dirs_del_alpha"),
+          done_to_beta: c("plan_to_beta_done"),
+          done_to_alpha: c("plan_to_alpha_done"),
         });
       }
 
-      // set-based updates (preserve op_ts of chosen side); gate on rsync success
+      // set-based updates:
+      // -- copy to base for every path that was successfully transferred, as
+      //    reported by rsync.
+      // -- preserve op_ts of chosen side
       db.transaction(() => {
-        if (copyAlphaBetaOk && toBeta.length) {
+        if (completedToBeta.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, a.hash, 0, a.op_ts
-            FROM plan_to_beta p
+            SELECT d.rpath, a.hash, 0, a.op_ts
+            FROM plan_to_beta_done d
             JOIN alpha_rel a USING (rpath);
           `);
         }
-        if (copyBetaAlphaOk && toAlpha.length) {
+        if (completedToAlpha.length) {
           db.exec(`
             INSERT OR REPLACE INTO base(path, hash, deleted, op_ts)
-            SELECT p.rpath, b.hash, 0, b.op_ts
-            FROM plan_to_alpha p
+            SELECT d.rpath, b.hash, 0, b.op_ts
+            FROM plan_to_alpha_done d
             JOIN beta_rel b USING (rpath);
           `);
         }

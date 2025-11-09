@@ -1159,7 +1159,7 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
+  const chunkArray = <T>(arr: T[], size: number): T[][] => {
     if (arr.length === 0) return [];
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {

@@ -413,9 +413,7 @@ export function registerSessionDaemon(program: Command) {
   addSessionDbOption(
     daemon
       .command("run")
-      .description(
-        "run the daemon in the foreground (if not already running)",
-      )
+      .description("run the daemon in the foreground (if not already running)")
       .action(async (opts: { sessionDb?: string }, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         try {
