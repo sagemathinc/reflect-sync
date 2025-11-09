@@ -82,5 +82,36 @@ export function spawnSchedulerForSession(
     env: process.env,
   });
   child.unref();
+
+  if (logger) {
+    const earlyMs = Number(
+      process.env.REFLECT_SCHEDULER_EARLY_EXIT_MS ?? 3000,
+    );
+    if (Number.isFinite(earlyMs) && earlyMs > 0) {
+      let timer: NodeJS.Timeout | null = null;
+      const onEarlyExit = (
+        code: number | null,
+        signal: NodeJS.Signals | null,
+      ) => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        logger.warn("scheduler exited shortly after launch", {
+          session: row.id,
+          pid: child.pid,
+          code,
+          signal,
+        });
+      };
+      timer = setTimeout(() => {
+        child.removeListener("exit", onEarlyExit);
+        timer = null;
+      }, earlyMs);
+      if (timer.unref) timer.unref();
+      child.once("exit", onEarlyExit);
+    }
+  }
+
   return child.pid ?? 0;
 }

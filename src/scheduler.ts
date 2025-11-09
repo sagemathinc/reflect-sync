@@ -171,7 +171,7 @@ export function configureSchedulerCommand(
       collectIgnoreOption,
       [] as string[],
     )
-    .option("--compress", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
+    .option("--compress <algo>", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
     .option(
       "--session-id <id>",
       "optional session id to enable heartbeats, report state, etc",
