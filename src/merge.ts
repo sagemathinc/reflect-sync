@@ -511,19 +511,6 @@ export async function runMerge({
   let alphaTempArg: string | undefined;
   let betaTempArg: string | undefined;
 
-  const requestRemoteBetaIgnore = async (paths: string[]) => {
-    if (!paths.length || !betaHost || !fetchRemoteBetaSignatures) return false;
-    await fetchRemoteBetaSignatures(paths, { ignore: true });
-    return true;
-  };
-
-  const requestRemoteAlphaIgnore = async (paths: string[]) => {
-    if (!paths.length || !alphaHost || !fetchRemoteAlphaSignatures)
-      return false;
-    await fetchRemoteAlphaSignatures(paths, { ignore: true });
-    return true;
-  };
-
   const noteBetaChange = async (paths: string[]) => {
     if (!paths.length) return;
   };
