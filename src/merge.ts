@@ -895,13 +895,17 @@ export async function runMerge({
     // ---------- deletions (files) with LWW ----------
     done = t("deletions");
 
+    // everything deleted in A but NOT changed in
+    // B and not deleted in B.  Definitely the thing
+    // to do is delete it in B.
     const delInBeta_noConflict = db
       .prepare(
         `
-        SELECT dA.rpath
-        FROM tmp_deletedA dA
-        LEFT JOIN tmp_changedB cB USING (rpath)
-        WHERE cB.rpath IS NULL
+        SELECT rpath FROM tmp_deletedA
+        EXCEPT
+        SELECT rpath FROM tmp_changedB
+        EXCEPT
+        SELECT rpath FROM tmp_deletedB
       `,
       )
       .all()
@@ -942,13 +946,16 @@ export async function runMerge({
     let delInBeta = uniq([...delInBeta_noConflict, ...delInBeta_conflict]);
     toAlpha = uniq([...toAlpha, ...toAlpha_conflict]);
 
+    // everything that was deleted in B, but NOT changed in A
+    // and also not deleted in A.
     const deletedOnlyInBeta = db
       .prepare(
         `
-        SELECT dB.rpath
-        FROM tmp_deletedB dB
-        LEFT JOIN tmp_changedA cA USING (rpath)
-        WHERE cA.rpath IS NULL
+        SELECT rpath FROM tmp_deletedB
+        EXCEPT
+        SELECT rpath FROM tmp_changedA
+        EXCEPT
+        SELECT rpath FROM tmp_deletedA
       `,
       )
       .all()
@@ -996,7 +1003,6 @@ export async function runMerge({
     } else {
       delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
     }
-    toBeta = uniq([...toBeta, ...toBeta_conflict]);
     toBeta = uniq([...toBeta, ...toBeta_conflict]);
     done();
 
