@@ -1,5 +1,35 @@
 #!/usr/bin/env node
 
+/**
+ * Merge strategy overview:
+ *
+ * 1. Build 3-way plans from alpha/beta/base (TMP tables). For every path we
+ *    decide whether it should be copied alpha→beta, beta→alpha, created,
+ *    or deleted. We also precompute delete plans and dir copies.
+ *
+ * 2. Execute rsync (or "cp --reflink" when enabled) in well defined phases:
+ *    delete file conflicts, cleanup dir→file cases, copy directories,
+ *    copy files/links, then delete empty directories.
+ *
+ * 3. After each transfer we determine exactly which paths actually completed.
+ *    For files/links we rely on rsync transfer logs; for directories we use
+ *    the per-dir rsync stream. We then:
+ *      • mirror the authoritative metadata from the source DB into the
+ *        destination DB (files/links). For directories we currently rely on
+ *        noteAlpha/BetaChange because their metadata is sparse.
+ *      • record the copies in recent_send via the scheduler so the next cycle
+ *        knows the destination is fresh.
+ *      • update base/base_dirs only for confirmed transfers/deletions.
+ *
+ * 4. The next scan reconciles any concurrent edits: if the source mutated while
+ *    rsync was running we will notice on the next merge because the source DB
+ *    changes again, while the destination DB remains at the mirrored state.
+ *
+ * This keeps the invariant that single-sided activity never causes a bounce
+ * in the opposite direction, while still allowing us to skip immediate re-scans
+ * after every transfer.
+ */
+
 // merge.ts
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -789,6 +819,15 @@ export async function runMerge({
       if (!paths.length) return;
       mirrorTableEntries(source, dest, "files", paths);
       mirrorTableEntries(source, dest, "links", paths);
+    };
+
+    const mirrorDirs = (
+      source: "alpha" | "beta",
+      dest: "alpha" | "beta",
+      paths: string[],
+    ) => {
+      if (!paths.length) return;
+      mirrorTableEntries(source, dest, "dirs", paths);
     };
 
 
@@ -1616,9 +1655,7 @@ export async function runMerge({
     };
 
     toBeta = filterBounceByRecent("alpha->beta", toBeta);
-    toBetaDirs = filterBounceByRecent("alpha->beta", toBetaDirs);
     toAlpha = filterBounceByRecent("beta->alpha", toAlpha);
-    toAlphaDirs = filterBounceByRecent("beta->alpha", toAlphaDirs);
 
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
@@ -2107,6 +2144,7 @@ export async function runMerge({
       );
       confirmedAlphaDeletes.forEach((p) => deletedFilesAlpha.add(p));
       if (confirmedAlphaDeletes.length) {
+        mirrorFilesAndLinks("beta", "alpha", confirmedAlphaDeletes);
         await noteAlphaChange(confirmedAlphaDeletes);
       }
       const delBetaRes = await rsyncDeleteChunked(
@@ -2130,6 +2168,7 @@ export async function runMerge({
       );
       confirmedBetaDeletes.forEach((p) => deletedFilesBeta.add(p));
       if (confirmedBetaDeletes.length) {
+        mirrorFilesAndLinks("alpha", "beta", confirmedBetaDeletes);
         await noteBetaChange(confirmedBetaDeletes);
       }
       done();
@@ -2172,32 +2211,54 @@ export async function runMerge({
 
       // 2) create dirs
       done = t("rsync: 2) create dirs");
-      copyDirsAlphaBetaOk = (
-        await rsyncCopyDirs(alpha, beta, listToBetaDirs, "alpha→beta", {
+      const alphaDirRes = await rsyncCopyDirs(
+        alpha,
+        beta,
+        listToBetaDirs,
+        "alpha→beta",
+        {
           ...rsyncOpts,
           tempDir: betaTempArg,
           direction: "alpha->beta",
-        })
-      ).ok;
-      copyDirsBetaAlphaOk = (
-        await rsyncCopyDirs(beta, alpha, listToAlphaDirs, "beta→alpha", {
+          captureDirs: true,
+        },
+      );
+      copyDirsAlphaBetaOk = alphaDirRes.ok;
+      if (alphaDirRes.transferred.length) {
+        mirrorDirs("alpha", "beta", alphaDirRes.transferred);
+        const betaDirEntries = await fetchSignaturesForTarget(
+          "beta",
+          alphaDirRes.transferred,
+        );
+        const betaDirHints = signatureEntriesToMap(betaDirEntries);
+        await noteBetaChange(alphaDirRes.transferred, {
+          signatures: betaDirHints,
+        });
+      }
+
+      const betaDirRes = await rsyncCopyDirs(
+        beta,
+        alpha,
+        listToAlphaDirs,
+        "beta→alpha",
+        {
           ...rsyncOpts,
           tempDir: alphaTempArg,
           direction: "beta->alpha",
-        })
-      ).ok;
-      if (copyDirsAlphaBetaOk && toBetaDirs.length) {
-        const betaDirEntries = await fetchSignaturesForTarget("beta", toBetaDirs);
-        const betaDirHints = signatureEntriesToMap(betaDirEntries);
-        await noteBetaChange(toBetaDirs, { signatures: betaDirHints });
-      }
-      if (copyDirsBetaAlphaOk && toAlphaDirs.length) {
+          captureDirs: true,
+        },
+      );
+      copyDirsBetaAlphaOk = betaDirRes.ok;
+      if (betaDirRes.transferred.length) {
+        mirrorDirs("beta", "alpha", betaDirRes.transferred);
         const alphaDirEntries = await fetchSignaturesForTarget(
           "alpha",
-          toAlphaDirs,
+          betaDirRes.transferred,
         );
         const alphaDirHints = signatureEntriesToMap(alphaDirEntries);
-        await noteAlphaChange(toAlphaDirs, { signatures: alphaDirHints });
+        await noteAlphaChange(betaDirRes.transferred, {
+          signatures: alphaDirHints,
+        });
       }
       done();
 
@@ -2377,8 +2438,20 @@ export async function runMerge({
       );
       confirmedDirDeletesBeta.forEach((p) => deletedDirsBeta.add(p));
       if (confirmedDirDeletesBeta.length) {
+        mirrorDirs("alpha", "beta", confirmedDirDeletesBeta);
         await noteBetaChange(confirmedDirDeletesBeta);
+        if (!betaHost) {
+          for (const rel of confirmedDirDeletesBeta) {
+            try {
+              await rm(path.join(betaRoot, rel), {
+                recursive: true,
+                force: true,
+              });
+            } catch {}
+          }
+        }
       }
+      console.log("delDirsInAlpha len", delDirsInAlpha.length);
       const dirBetaRes = await rsyncDeleteChunked(
         tmp,
         beta,
@@ -2400,7 +2473,18 @@ export async function runMerge({
       );
       confirmedDirDeletesAlpha.forEach((p) => deletedDirsAlpha.add(p));
       if (confirmedDirDeletesAlpha.length) {
+        mirrorDirs("beta", "alpha", confirmedDirDeletesAlpha);
         await noteAlphaChange(confirmedDirDeletesAlpha);
+        if (!alphaHost) {
+          for (const rel of confirmedDirDeletesAlpha) {
+            try {
+              await rm(path.join(alphaRoot, rel), {
+                recursive: true,
+                force: true,
+              });
+            } catch {}
+          }
+        }
       }
       done();
 

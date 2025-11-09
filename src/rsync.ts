@@ -968,12 +968,13 @@ export async function rsyncCopyDirs(
     tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
+    captureDirs?: boolean;
   } = {},
-): Promise<{ ok: boolean; zero: boolean }> {
+): Promise<{ ok: boolean; zero: boolean; transferred: string[] }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync ${label} (dirs): nothing to do`);
-    return { ok: true, zero: false };
+    return { ok: true, zero: false, transferred: [] };
   }
   if (debug) {
     logger.debug(`>>> rsync ${label} (dirs) (${fromRoot} -> ${toRoot})`);
@@ -1003,6 +1004,9 @@ export async function rsyncCopyDirs(
     onProgress: progressHandler,
     tempDir: opts.tempDir,
     direction: opts.direction,
+    captureTransfers: opts.captureDirs
+      ? { paths: [] }
+      : undefined,
   });
   assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
@@ -1011,7 +1015,13 @@ export async function rsyncCopyDirs(
       ok: res.ok,
     });
   }
-  return { ok: true, zero: res.zero };
+  const transfers =
+    opts.captureDirs && res.transfers?.length
+      ? res.transfers
+          .filter((entry) => entry.path)
+          .map((entry) => normalizeTransferPath(entry.path))
+      : [];
+  return { ok: true, zero: res.zero, transferred: transfers };
 }
 
 export async function rsyncFixMeta(
