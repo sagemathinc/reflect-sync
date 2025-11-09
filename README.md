@@ -9,7 +9,7 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 - **Rsync transport** \(latest rsync recommended\)
 - **SQLite indexes** per side \(alpha / beta\) \+ base snapshot for true 3\-way merges
 - **Incremental scans** with content hashes only when needed \(based on ctime\)
-- **Realtime micro\-sync** for hot files \(debounced, safe on partial edits\)
+- **Realtime restricted cycles** for hot files \(debounced, safe on partial edits\)
 - **SSH\-friendly**: stream remote deltas over stdin
 - **Copy on Write:** local sync on COW filesystems \(e.g., btrfs\) uses copy on write, for significant time/space savings, and also maintains sparse files.
 - **Very Lightweight:** The reflect-sync npm package is under 100KB compressed (about 300KB uncompressed), including all dependencies.
@@ -91,7 +91,7 @@ reflect create /path/to/alpha /path/to/beta --ignore=node_modules --ignore="*.lo
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
-- File changes are pushed in realtime via a micro-sync path while the main loop verifies and updates the base snapshot for last write wins 3-way merge semantics.
+- File changes are pushed in near-realtime by running a restricted scan+merge cycle while the main loop periodically verifies and updates the base snapshot for last write wins 3-way merge semantics.
 - Ignore rules can be provided at creation time with repeated `--ignore` flags (comma-separated or repeated). They’re stored in the session database and applied symmetrically to both sides (scans, merge planning, local/remote watchers, and rsync stages).
 
 ### 2) One side over SSH
@@ -198,7 +198,7 @@ The monitor command allows you to watch a potentially huge nested directory with
 - **Merge** builds temp tables with _relative_ paths, computes the 3\-way plan \(changed A, changed B, deleted A/B, resolve conflicts by `--prefer`\), then feeds rsync with NUL\-separated `--files-from` lists.
 - **Scheduler**:
   - shallow root watchers \+ bounded deep “hot” watchers \(recently touched subtrees\),
-  - **micro\-sync** a small list of hot files immediately,
+  - **restricted cycles** run the same scan/merge pipeline on the hot set immediately,
   - periodically run a full scan \+ merge; interval adapts to prior cycle time and recent rsync errors.
   - **Progress logging:** hashing and rsync stages emit logs tagged with `message="progress"` plus scopes in the metadata. Use `reflect logs <id> --message progress -f` to observe in real time.
 

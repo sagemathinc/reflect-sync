@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // - Commander-based CLI
 // - Exported runScheduler(opts) API for programmatic use
-// - Optional SSH micro-sync: remote watch -> demux remote stdout into ingest +
+// - Optional SSH watcher: remote watch -> demux remote stdout into ingest +
 //   realtime events
 //
 // Notes:
@@ -31,7 +31,6 @@ import {
   setActualState,
   getReflectSyncHome,
 } from "./session-db.js";
-import { makeMicroSync, PartialTransferError } from "./micro-sync.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
 import {
@@ -63,6 +62,7 @@ import {
 import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
+import { dedupeRestrictedList } from "./restrict.js";
 
 const DISABLE_SIGNATURES = true;
 
@@ -101,6 +101,12 @@ export type SchedulerOptions = {
   sessionDb?: string;
   sessionId?: number;
   logger?: Logger;
+};
+
+type CycleOptions = {
+  restrictedPaths?: string[];
+  restrictedDirs?: string[];
+  label?: string;
 };
 
 // ---------- CLI ----------
@@ -628,6 +634,8 @@ export async function runScheduler({
     localDb: string; // local mirror DB for ingest
     numericIds?: boolean;
     ignoreRules: string[];
+    restrictedPaths?: string[];
+    restrictedDirs?: string[];
   }): Promise<{
     code: number | null;
     ms: number;
@@ -671,6 +679,18 @@ export async function runScheduler({
       // so we do not miss data.
       sshArgs.push("--emit-since-ts");
       sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
+    }
+    if (params.restrictedPaths?.length) {
+      for (const rel of params.restrictedPaths) {
+        if (!rel) continue;
+        sshArgs.push("--restricted-path", rel);
+      }
+    }
+    if (params.restrictedDirs?.length) {
+      for (const rel of params.restrictedDirs) {
+        if (!rel) continue;
+        sshArgs.push("--restricted-dir", rel);
+      }
     }
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
@@ -1157,10 +1177,9 @@ export async function runScheduler({
   const hotAlpha = new Set<string>();
   const hotBeta = new Set<string>();
   let hotTimer: NodeJS.Timeout | null = null;
-  let microFlushPromise: Promise<void> | null = null;
+  let hotFlushPromise: Promise<void> | null = null;
   let flushQueuedWhileRunning = false;
 
-  let mergeActive = false;
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
@@ -1300,35 +1319,6 @@ export async function runScheduler({
       }
     : undefined;
 
-  // create the microSync closure
-  const microSync = makeMicroSync({
-    alphaRoot,
-    betaRoot,
-    alphaDbPath: alphaDb,
-    betaDbPath: betaDb,
-    alphaHost,
-    alphaPort,
-    betaHost,
-    betaPort,
-    prefer,
-    dryRun,
-    compress,
-    log,
-    logger,
-    isMergeActive: () => mergeActive,
-    fetchRemoteAlphaSignatures:
-      alphaIsRemote && !DISABLE_SIGNATURES
-        ? fetchAlphaRemoteSignatures
-        : undefined,
-    fetchRemoteBetaSignatures:
-      !betaIsRemote && !DISABLE_SIGNATURES
-        ? fetchBetaRemoteSignatures
-        : undefined,
-    alphaRemoteLock: alphaLockHandle,
-    betaRemoteLock: betaLockHandle,
-    numericIds,
-  });
-
   async function partitionStablePaths(side: "alpha" | "beta", paths: string[]) {
     if (!stabilityEnabled || !paths.length) {
       return { ready: paths, pending: [] as string[] };
@@ -1368,7 +1358,7 @@ export async function runScheduler({
   }
 
   function scheduleHotFlush() {
-    if (microFlushPromise) {
+    if (hotFlushPromise) {
       flushQueuedWhileRunning = true;
       return;
     }
@@ -1380,19 +1370,19 @@ export async function runScheduler({
   }
 
   function startHotFlush() {
-    if (microFlushPromise) {
+    if (hotFlushPromise) {
       flushQueuedWhileRunning = true;
       return;
     }
-    microFlushPromise = (async () => {
+    hotFlushPromise = (async () => {
       await flushHotOnce();
     })();
-    microFlushPromise
+    hotFlushPromise
       ?.then(() => {
         finalizeHotFlush();
       })
       .catch((err) => {
-        log("warn", "realtime", "micro flush failed", {
+        log("warn", "realtime", "hot flush failed", {
           err: String(err?.message || err),
         });
         finalizeHotFlush();
@@ -1400,9 +1390,9 @@ export async function runScheduler({
   }
 
   function finalizeHotFlush() {
-    microFlushPromise = null;
+    hotFlushPromise = null;
     if (fatalTriggered) return;
-    requestSoon("micro-sync complete");
+    requestSoon("restricted sync complete");
     const needsAnother =
       flushQueuedWhileRunning || hotAlpha.size > 0 || hotBeta.size > 0;
     flushQueuedWhileRunning = false;
@@ -1429,40 +1419,32 @@ export async function runScheduler({
       for (const p of betaPartition.pending) {
         hotBeta.add(p);
       }
-      if (!alphaPartition.ready.length && !betaPartition.ready.length) {
+      const readyAlpha = alphaPartition.ready;
+      const readyBeta = betaPartition.ready;
+      if (!readyAlpha.length && !readyBeta.length) {
         logger.debug("waiting for files to settle", {
           pendingAlpha: alphaPartition.pending.length,
           pendingBeta: betaPartition.pending.length,
         });
         return;
       }
-      await microSync(alphaPartition.ready, betaPartition.ready);
+      const readySet = new Set<string>([...readyAlpha, ...readyBeta]);
+      const readyPaths = Array.from(readySet);
+      await runCycle({
+        restrictedPaths: readyPaths,
+        label: "hot",
+      });
     } catch (e: any) {
-      if (e instanceof PartialTransferError) {
-        const retryAlpha = e.alphaPaths ?? [];
-        const retryBeta = e.betaPaths ?? [];
-        if (retryAlpha.length) {
-          for (const relPath of retryAlpha) {
-            if (!relPath) continue;
-            hotAlpha.add(relPath);
-            recordHotEvent(alphaDb, "alpha", relPath, "partial-retry");
-          }
-        }
-        if (retryBeta.length) {
-          for (const relPath of retryBeta) {
-            if (!relPath) continue;
-            hotBeta.add(relPath);
-            recordHotEvent(betaDb, "beta", relPath, "partial-retry");
-          }
-        }
-        log("warn", "realtime", "partial transfer detected; retry scheduled", {
-          retryAlpha: retryAlpha.length,
-          retryBeta: retryBeta.length,
-        });
-      } else if (isDiskFullCause(e)) {
+      for (const rel of rpathsAlpha) {
+        if (rel) hotAlpha.add(rel);
+      }
+      for (const rel of rpathsBeta) {
+        if (rel) hotBeta.add(rel);
+      }
+      if (isDiskFullCause(e)) {
         stopForDiskFull("disk full during realtime sync", e);
       } else {
-        log("warn", "realtime", "microSync failed", {
+        log("warn", "realtime", "restricted cycle failed", {
           err: String(e?.message || e),
         });
       }
@@ -1653,7 +1635,7 @@ export async function runScheduler({
   let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
   // ---------- full cycle ----------
-  async function oneCycle(): Promise<void> {
+  async function runCycle(options: CycleOptions = {}): Promise<void> {
     try {
       await ensureRootsExist();
     } catch (err) {
@@ -1667,6 +1649,11 @@ export async function runScheduler({
       }
       throw err;
     }
+
+    const restrictedPaths = dedupeRestrictedList(options.restrictedPaths);
+    const restrictedDirs = dedupeRestrictedList(options.restrictedDirs);
+    const hasRestrictions =
+      restrictedPaths.length > 0 || restrictedDirs.length > 0;
 
     running = true;
     const t0 = Date.now();
@@ -1690,6 +1677,8 @@ export async function runScheduler({
             remoteDb: alphaRemoteDb!,
             numericIds,
             ignoreRules,
+            restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+            restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
           })
         : await (async () => {
             try {
@@ -1702,6 +1691,8 @@ export async function runScheduler({
                 numericIds,
                 logger: scanLogger,
                 ignoreRules,
+                restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+                restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
               });
               return {
                 code: 0,
@@ -1723,13 +1714,15 @@ export async function runScheduler({
               };
             }
           })();
-      seedHotFromDb(
-        alphaDb,
-        hotAlphaMgr,
-        addRemoteAlphaHotDirs,
-        tAlphaStart,
-        MAX_WATCHERS,
-      );
+      if (!hasRestrictions) {
+        seedHotFromDb(
+          alphaDb,
+          hotAlphaMgr,
+          addRemoteAlphaHotDirs,
+          tAlphaStart,
+          MAX_WATCHERS,
+        );
+      }
     };
     const scanBeta = async () => {
       const tBetaStart = Date.now();
@@ -1748,6 +1741,8 @@ export async function runScheduler({
             remoteDb: betaRemoteDb!,
             numericIds,
             ignoreRules,
+            restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+            restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
           })
         : await (async () => {
             try {
@@ -1760,6 +1755,8 @@ export async function runScheduler({
                 numericIds,
                 logger: scanLogger,
                 ignoreRules,
+                restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+                restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
               });
               return {
                 code: 0,
@@ -1781,13 +1778,15 @@ export async function runScheduler({
               };
             }
           })();
-      seedHotFromDb(
-        betaDb,
-        hotBetaMgr,
-        addRemoteBetaHotDirs,
-        tBetaStart,
-        MAX_WATCHERS,
-      );
+      if (!hasRestrictions) {
+        seedHotFromDb(
+          betaDb,
+          hotBetaMgr,
+          addRemoteBetaHotDirs,
+          tBetaStart,
+          MAX_WATCHERS,
+        );
+      }
     };
     await Promise.all([scanAlpha(), scanBeta()]);
 
@@ -1827,7 +1826,6 @@ export async function runScheduler({
     const mergeStart = Date.now();
     let mergeOk = false;
     let mergeError: unknown = null;
-    mergeActive = true;
     try {
       await runMerge({
         alphaRoot,
@@ -1849,8 +1847,8 @@ export async function runScheduler({
         // if the session logger (to database) is enabled, then
         // ensure merge logs everything to our logger.
         verbose: !!sessionLogHandle,
-        markAlphaToBeta: microSync.markAlphaToBeta,
-        markBetaToAlpha: microSync.markBetaToAlpha,
+        restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+        restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
         fetchRemoteAlphaSignatures:
           alphaIsRemote && !DISABLE_SIGNATURES
             ? fetchAlphaRemoteSignatures
@@ -1871,7 +1869,6 @@ export async function runScheduler({
       });
     }
     const mergeMs = Date.now() - mergeStart;
-    mergeActive = false;
 
     const ms = Date.now() - t0;
     lastCycleMs = ms;
@@ -1926,32 +1923,17 @@ export async function runScheduler({
   }
 
   // --- Flush helpers ---
-  async function microFlushOnce(): Promise<boolean> {
+  async function processHotQueueOnce(): Promise<boolean> {
     if (hotAlpha.size === 0 && hotBeta.size === 0) return false;
-    const a = Array.from(hotAlpha);
-    const b = Array.from(hotBeta);
-    hotAlpha.clear();
-    hotBeta.clear();
-    try {
-      await microSync(a, b);
-    } catch (err) {
-      if (isDiskFullCause(err)) {
-        const fatalMessage = stopForDiskFull(
-          "disk full during micro flush",
-          err,
-        );
-        throw new FatalSchedulerError(fatalMessage);
-      }
-      log("warn", "flush", "microSync during flush failed", { err: `${err}` });
-    }
+    await flushHotOnce();
     return true;
   }
 
-  async function drainMicro(timeoutMs = 1500): Promise<void> {
+  async function drainHotQueue(timeoutMs = 1500): Promise<void> {
     const t0 = Date.now();
     scheduleHotFlush();
     while (Date.now() - t0 < timeoutMs) {
-      const did = await microFlushOnce();
+      const did = await processHotQueueOnce();
       if (!did) {
         await new Promise((r) => setTimeout(r, 50));
         if (hotAlpha.size === 0 && hotBeta.size === 0) break;
@@ -1979,10 +1961,10 @@ export async function runScheduler({
     } catch {}
 
     try {
-      await drainMicro(1500);
-      await oneCycle();
-      await drainMicro(500);
-      await oneCycle();
+      await drainHotQueue(1500);
+      await runCycle();
+      await drainHotQueue(500);
+      await runCycle();
 
       if (sessionDb && sessionId) {
         ensureSessionDb(sessionDb)
@@ -2063,7 +2045,7 @@ export async function runScheduler({
               : "sync command received";
           log("info", "scheduler", msg);
           try {
-            await oneCycle();
+            await runCycle();
             log("info", "scheduler", "sync cycle complete");
           } catch (e: any) {
             if (e instanceof FatalSchedulerError) throw e;
@@ -2143,7 +2125,7 @@ export async function runScheduler({
         const shouldRunCycle = !disableFullCycle || !initialCycleDone;
         if (shouldRunCycle) {
           try {
-            await oneCycle();
+            await runCycle();
             initialCycleDone = true;
           } catch (err) {
             if (err instanceof RemoteRootUnavailableError) {

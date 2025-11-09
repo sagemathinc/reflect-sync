@@ -22,7 +22,6 @@ import {
   rsyncDeleteChunked,
   ensureTempDir,
 } from "./rsync.js";
-import type { MarkDirectionOptions, RemoteLockHandle } from "./micro-sync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
 import {
   getRecentSendSignatures,
@@ -211,6 +210,17 @@ function join0(items: string[]) {
 type ReleaseEntry = {
   path: string;
   watermark?: number | null;
+};
+
+export type MarkDirectionOptions = {
+  remoteIgnoreHandled?: boolean;
+  signatures?: Map<string, SendSignature | null>;
+};
+
+export type RemoteLockHandle = {
+  lock: (paths: string[]) => Promise<void>;
+  release: (entries: ReleaseEntry[]) => Promise<void>;
+  unlock: (paths: string[]) => Promise<void>;
 };
 
 const buildReleaseEntries = (
