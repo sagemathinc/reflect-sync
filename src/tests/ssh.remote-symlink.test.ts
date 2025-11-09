@@ -77,7 +77,6 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       await expect(dirExists(join(betaRootRemote, "x")));
 
       await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
-      console.log("beta listing after rename", await fsp.readdir(betaRootRemote));
 
       await waitFor(
         () => countSchedulerCycles(baseDb),

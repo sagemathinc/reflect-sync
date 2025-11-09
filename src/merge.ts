@@ -17,8 +17,8 @@
  *      • mirror the authoritative metadata from the source DB into the
  *        destination DB (files/links). For directories we currently rely on
  *        noteAlpha/BetaChange because their metadata is sparse.
- *      • record the copies in recent_send via the scheduler so the next cycle
- *        knows the destination is fresh.
+ *      • update the destination DB immediately so the next cycle sees the same
+ *        metadata the source had when the copy completed.
  *      • update base/base_dirs only for confirmed transfers/deletions.
  *
  * 4. The next scan reconciles any concurrent edits: if the source mutated while
@@ -53,12 +53,7 @@ import {
   ensureTempDir,
 } from "./rsync.js";
 import { cpReflinkFromList, sameDevice } from "./reflink.js";
-import {
-  getRecentSendSignatures,
-  signatureEquals,
-  signatureFromStamp,
-  type SendSignature,
-} from "./recent-send.js";
+import { signatureFromStamp, type SendSignature } from "./recent-send.js";
 import { fetchOpStamps } from "./op-stamp.js";
 import { createHash } from "node:crypto";
 import { updateSession } from "./session-db.js";
@@ -74,8 +69,6 @@ import {
   collectListOption,
   dedupeRestrictedList,
 } from "./restrict.js";
-
-const VERY_VERBOSE = false;
 
 // if true immediately freeze if there is a plan to modify anything on alpha.
 // Obviously only for very low level debugging!
@@ -203,14 +196,6 @@ type MergeRsyncOptions = {
   logger?: Logger;
   logLevel?: LogLevel | string;
   ignoreRules?: string[];
-  markAlphaToBeta?: (
-    paths: string[],
-    opts?: MarkDirectionOptions,
-  ) => Promise<void> | void;
-  markBetaToAlpha?: (
-    paths: string[],
-    opts?: MarkDirectionOptions,
-  ) => Promise<void> | void;
   fetchRemoteAlphaSignatures?: (
     paths: string[],
     opts: { ignore: boolean; stable?: boolean },
@@ -237,11 +222,6 @@ function join0(items: string[]) {
 type ReleaseEntry = {
   path: string;
   watermark?: number | null;
-};
-
-export type MarkDirectionOptions = {
-  remoteIgnoreHandled?: boolean;
-  signatures?: Map<string, SendSignature | null>;
 };
 
 export type RemoteLockHandle = {
@@ -310,8 +290,6 @@ export async function runMerge({
   logLevel = "info",
   verbose,
   ignoreRules: rawIgnoreRules = [],
-  markAlphaToBeta,
-  markBetaToAlpha,
   fetchRemoteAlphaSignatures,
   fetchRemoteBetaSignatures,
   alphaRemoteLock,
@@ -379,65 +357,6 @@ export async function runMerge({
     return map;
   };
 
-  const signatureEntriesToMap = (entries: SignatureEntry[]) => {
-    const map = new Map<string, SendSignature | null>();
-    for (const entry of entries) {
-      map.set(entry.path, entry.signature ?? null);
-    }
-    return map;
-  };
-
-  const mergeSignatures = (
-    primary?: SendSignature | null,
-    fallback?: SendSignature | null,
-  ): SendSignature | null => {
-    if (!primary && !fallback) return null;
-    if (primary) {
-      const merged: SendSignature = {
-        kind: primary.kind ?? fallback?.kind ?? "file",
-        opTs: primary.opTs ?? fallback?.opTs ?? null,
-      };
-      const preferFields: Array<keyof SendSignature> = [
-        "size",
-        "mtime",
-        "ctime",
-        "hash",
-        "mode",
-        "uid",
-        "gid",
-      ];
-      for (const field of preferFields) {
-        const value = primary[field];
-        if (value != null) {
-          (merged as any)[field] = value;
-        }
-      }
-      if (fallback) {
-        for (const field of preferFields) {
-          if (merged[field] == null && fallback[field] != null) {
-            (merged as any)[field] = fallback[field];
-          }
-        }
-      }
-      return merged;
-    }
-    return fallback ?? null;
-  };
-
-  const mergeSignatureHints = (
-    paths: string[],
-    entries: SignatureEntry[],
-    fallback: Map<string, SendSignature | null>,
-  ): Map<string, SendSignature | null> => {
-    const entryMap = signatureEntriesToMap(entries);
-    const merged = new Map<string, SendSignature | null>();
-    for (const path of uniq(paths)) {
-      const sig = mergeSignatures(entryMap.get(path), fallback.get(path));
-      merged.set(path, sig ?? null);
-    }
-    return merged;
-  };
-
   const buildSignatureFromFs = (
     root: string,
     relPath: string,
@@ -502,20 +421,6 @@ export async function runMerge({
       }
     }
     return entries;
-  };
-
-  const buildPostCopyHints = (
-    targetPaths: string[],
-    remoteEntries: SignatureEntry[],
-    fallback: Map<string, SendSignature | null>,
-    destRoot: string,
-    destIsRemote: boolean,
-  ): Map<string, SendSignature | null> => {
-    if (!targetPaths.length) return new Map();
-    const entries = destIsRemote
-      ? remoteEntries
-      : collectLocalSignatureEntries(destRoot, targetPaths);
-    return mergeSignatureHints(targetPaths, entries, fallback);
   };
 
   const normalizeRpath = (input: string): string => {
@@ -619,32 +524,12 @@ export async function runMerge({
     return true;
   };
 
-  const noteBetaChange = async (
-    paths: string[],
-    opts?: MarkDirectionOptions,
-  ) => {
+  const noteBetaChange = async (paths: string[]) => {
     if (!paths.length) return;
-    const ignored = await requestRemoteBetaIgnore(paths);
-    if (markAlphaToBeta) {
-      await markAlphaToBeta(paths, {
-        ...opts,
-        remoteIgnoreHandled: ignored,
-      });
-    }
   };
 
-  const noteAlphaChange = async (
-    paths: string[],
-    opts?: MarkDirectionOptions,
-  ) => {
+  const noteAlphaChange = async (paths: string[]) => {
     if (!paths.length) return;
-    const ignored = await requestRemoteAlphaIgnore(paths);
-    if (markBetaToAlpha) {
-      await markBetaToAlpha(paths, {
-        ...opts,
-        remoteIgnoreHandled: ignored,
-      });
-    }
   };
 
   async function main() {
@@ -1618,44 +1503,6 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-    const filterBounceByRecent = (
-      direction: "alpha->beta" | "beta->alpha",
-      paths: string[],
-    ): string[] => {
-      if (!paths.length) return paths;
-      const unique = uniq(paths);
-      const dbPath = direction === "alpha->beta" ? alphaDb : betaDb;
-      const recentDirection =
-        direction === "alpha->beta" ? "beta->alpha" : "alpha->beta";
-      const stamps = fetchOpStamps(dbPath, unique);
-      const recent = getRecentSendSignatures(dbPath, recentDirection, unique);
-      const keep: string[] = [];
-      for (const path of paths) {
-        const sig = signatureFromStamp(stamps.get(path));
-        const last = recent.get(path);
-        if (sig && last && signatureEquals(sig, last)) {
-          if (VERY_VERBOSE && debug) {
-            logger.debug("merge bounce: skipping redundant copy", {
-              direction,
-              path,
-            });
-          }
-          continue;
-        }
-        if (VERY_VERBOSE && direction === "alpha->beta" && debug) {
-          logger.debug("merge bounce: plan copy (alpha→beta)", {
-            path,
-            sig,
-            last,
-          });
-        }
-        keep.push(path);
-      }
-      return keep;
-    };
-
-    toBeta = filterBounceByRecent("alpha->beta", toBeta);
-    toAlpha = filterBounceByRecent("beta->alpha", toAlpha);
 
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
@@ -2040,7 +1887,6 @@ export async function runMerge({
         transferred: string[];
       }> => {
         if (!paths.length) return { ok: true, signatures: [], transferred: [] };
-        paths = filterBounceByRecent(direction, paths);
         if (!paths.length) {
           return { ok: true, signatures: [], transferred: [] };
         }
@@ -2226,14 +2072,7 @@ export async function runMerge({
       copyDirsAlphaBetaOk = alphaDirRes.ok;
       if (alphaDirRes.transferred.length) {
         mirrorDirs("alpha", "beta", alphaDirRes.transferred);
-        const betaDirEntries = await fetchSignaturesForTarget(
-          "beta",
-          alphaDirRes.transferred,
-        );
-        const betaDirHints = signatureEntriesToMap(betaDirEntries);
-        await noteBetaChange(alphaDirRes.transferred, {
-          signatures: betaDirHints,
-        });
+        await noteBetaChange(alphaDirRes.transferred);
       }
 
       const betaDirRes = await rsyncCopyDirs(
@@ -2251,14 +2090,7 @@ export async function runMerge({
       copyDirsBetaAlphaOk = betaDirRes.ok;
       if (betaDirRes.transferred.length) {
         mirrorDirs("beta", "alpha", betaDirRes.transferred);
-        const alphaDirEntries = await fetchSignaturesForTarget(
-          "alpha",
-          betaDirRes.transferred,
-        );
-        const alphaDirHints = signatureEntriesToMap(alphaDirEntries);
-        await noteAlphaChange(betaDirRes.transferred, {
-          signatures: alphaDirHints,
-        });
+        await noteAlphaChange(betaDirRes.transferred);
       }
       done();
 
@@ -2286,13 +2118,8 @@ export async function runMerge({
         );
         if (betaCopied.length) {
           betaCopied.forEach((rel) => completedCopyToBeta.add(rel));
-          const betaHints = mergeSignatureHints(
-            betaCopied,
-            collectLocalSignatureEntries(betaRoot, betaCopied),
-            alphaSignatureHints,
-          );
-          await noteBetaChange(betaCopied, { signatures: betaHints });
           mirrorFilesAndLinks("alpha", "beta", betaCopied);
+          await noteBetaChange(betaCopied);
         }
 
         const alphaCopied = alphaReflink.copied.filter((rel) =>
@@ -2300,13 +2127,8 @@ export async function runMerge({
         );
         if (alphaCopied.length) {
           alphaCopied.forEach((rel) => completedCopyToAlpha.add(rel));
-          const alphaHints = mergeSignatureHints(
-            alphaCopied,
-            collectLocalSignatureEntries(alphaRoot, alphaCopied),
-            betaSignatureHints,
-          );
-          await noteAlphaChange(alphaCopied, { signatures: alphaHints });
           mirrorFilesAndLinks("beta", "alpha", alphaCopied);
+          await noteAlphaChange(alphaCopied);
         }
 
         const reflinkFailures = [
@@ -2359,33 +2181,15 @@ export async function runMerge({
           alphaCopyRes.transferred.forEach((rel) =>
             completedCopyToBeta.add(rel),
           );
-          const betaHints = buildPostCopyHints(
-            alphaCopyRes.transferred,
-            alphaCopyRes.signatures,
-            alphaSignatureHints,
-            betaRoot,
-            !!betaHost,
-          );
-          await noteBetaChange(alphaCopyRes.transferred, {
-            signatures: betaHints,
-          });
           mirrorFilesAndLinks("alpha", "beta", alphaCopyRes.transferred);
+          await noteBetaChange(alphaCopyRes.transferred);
         }
         if (betaCopyRes.transferred.length) {
           betaCopyRes.transferred.forEach((rel) =>
             completedCopyToAlpha.add(rel),
           );
-          const alphaHints = buildPostCopyHints(
-            betaCopyRes.transferred,
-            betaCopyRes.signatures,
-            betaSignatureHints,
-            alphaRoot,
-            !!alphaHost,
-          );
-          await noteAlphaChange(betaCopyRes.transferred, {
-            signatures: alphaHints,
-          });
           mirrorFilesAndLinks("beta", "alpha", betaCopyRes.transferred);
+          await noteAlphaChange(betaCopyRes.transferred);
         }
         done();
       }
@@ -2451,7 +2255,6 @@ export async function runMerge({
           }
         }
       }
-      console.log("delDirsInAlpha len", delDirsInAlpha.length);
       const dirBetaRes = await rsyncDeleteChunked(
         tmp,
         beta,

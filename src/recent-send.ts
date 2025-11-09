@@ -1,7 +1,4 @@
-import { getDb } from "./db.js";
 import type { OpStamp, EntryKind } from "./op-stamp.js";
-
-export type SyncDirection = "alpha->beta" | "beta->alpha";
 
 export type SendSignature = {
   kind: EntryKind;
@@ -14,17 +11,6 @@ export type SendSignature = {
   uid?: number | null;
   gid?: number | null;
 };
-
-const SQLITE_MAX_VARIABLE_NUMBER = 999;
-
-function chunkArray<T>(items: T[], chunkSize: number): T[][] {
-  if (items.length <= chunkSize) return [items];
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += chunkSize) {
-    out.push(items.slice(i, i + chunkSize));
-  }
-  return out;
-}
 
 function compactSignature(sig: SendSignature | null): SendSignature | null {
   if (!sig) return null;
@@ -83,90 +69,4 @@ export function signatureEquals(
     same(a.uid, b.uid) &&
     same(a.gid, b.gid)
   );
-}
-
-export function recordRecentSend(
-  dbPath: string,
-  direction: SyncDirection,
-  entries: Array<{ path: string; signature: SendSignature | null }>,
-): void {
-  if (!entries.length) return;
-  const db = getDb(dbPath);
-  try {
-    const stmt = db.prepare(`
-      INSERT INTO recent_send(path, direction, op_ts, signature, sent_at)
-      VALUES(?, ?, ?, ?, ?)
-      ON CONFLICT(path, direction)
-        DO UPDATE SET op_ts = excluded.op_ts,
-                      signature = excluded.signature,
-                      sent_at = excluded.sent_at
-    `);
-    const now = Date.now();
-    const tx = db.transaction((items: typeof entries) => {
-      for (const item of items) {
-        const sig = compactSignature(item.signature);
-        stmt.run(
-          item.path,
-          direction,
-          sig?.opTs ?? null,
-          sig ? JSON.stringify(sig) : null,
-          now,
-        );
-      }
-    });
-    tx(entries);
-  } finally {
-    db.close();
-  }
-}
-
-export function getRecentSendSignatures(
-  dbPath: string,
-  direction: SyncDirection,
-  paths: string[],
-): Map<string, SendSignature | null> {
-  const result = new Map<string, SendSignature | null>();
-  if (!paths.length) return result;
-  const db = getDb(dbPath);
-  try {
-    const batches = chunkArray(paths, SQLITE_MAX_VARIABLE_NUMBER - 1);
-    for (const batch of batches) {
-      const placeholders = batch.map(() => "?").join(",");
-      const stmt = db.prepare(
-        `SELECT path, signature FROM recent_send WHERE direction = ? AND path IN (${placeholders})`,
-      );
-      for (const row of stmt.iterate(direction, ...batch)) {
-        const raw = row.signature as string | null;
-        result.set(row.path as string, raw ? JSON.parse(raw) : null);
-      }
-    }
-  } finally {
-    db.close();
-  }
-  return result;
-}
-
-export function purgeRecentSend(
-  dbPath: string,
-  direction: SyncDirection,
-  paths: string[],
-): void {
-  if (!paths.length) return;
-  const db = getDb(dbPath);
-  try {
-    const stmt = db.prepare(
-      `DELETE FROM recent_send WHERE direction = ? AND path = ?`,
-    );
-    const tx = db.transaction((items: string[]) => {
-      for (const p of items) {
-        stmt.run(direction, p);
-      }
-    });
-    const batches = chunkArray(paths, SQLITE_MAX_VARIABLE_NUMBER - 1);
-    for (const batch of batches) {
-      tx(batch);
-    }
-  } finally {
-    db.close();
-  }
 }

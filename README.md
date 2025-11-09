@@ -43,7 +43,7 @@ Reflect’s realtime path treats each rsync as a small transaction: before we co
 Tradeoffs:
 
 - We still rely on rsync’s “copy to temp, rename into place” model. If a file mutates mid-transfer, rsync exits with code 23, we keep the lock, and the scheduler retries once the file settles.
-- When we copy from beta→alpha (or vice versa) we immediately record the hash we actually transferred (`recent_send` table). If the file changes again after the lock is released, the next rsync will pick up the new hash before recording it. This prevents stale hashes from bouncing back during the merge pass.
+- We trust the database snapshots we just wrote: after each copy/delete we mirror alpha’s metadata into beta’s DB (and vice versa) so the next cycle sees the same state without having to rescan immediately.
 - We do **not** try to solve the general case of simultaneous edits on both sides; those devolve to last-write-wins with `--prefer` as the tie breaker. The guarantee above simply ensures that editing only one side cannot regress the other.
 
 
