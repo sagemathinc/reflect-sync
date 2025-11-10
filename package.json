@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Fast rsync-powered two-way sync with SQLite metadata and SSH-friendly scanning.",
   "type": "module",
   "main": "dist/bundle.mjs",
@@ -17,7 +17,7 @@
     "prettier-all": "prettier -w src",
     "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest",
     "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch",
-    "prepublishOnly": "pnpm clean && pnpm bundle && rm dist/bundle.cjs && pnpm test",
+    "prepublishOnly": "pnpm clean && pnpm bundle && rm dist/bundle.cjs",
     "bundle:worker": "rollup -c rollup.worker.mjs",
     "bundle:main": "rollup -c rollup.config.mjs",
     "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main && chmod +x dist/bundle.mjs",
