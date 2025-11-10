@@ -41,6 +41,32 @@ import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
 import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
+type StopResult = "stopped" | "failed" | "not-running";
+
+function stopSessionRow(sessionDb: string, row: SessionRow): StopResult {
+  let status: StopResult;
+  if (row.scheduler_pid) {
+    const ok = stopPid(row.scheduler_pid);
+    status = ok ? "stopped" : "failed";
+  } else {
+    status = "not-running";
+  }
+  setDesiredState(sessionDb, row.id, "stopped");
+  setActualState(sessionDb, row.id, "stopped");
+  return status;
+}
+
+function startSessionRow(sessionDb: string, row: SessionRow): number | null {
+  const pid = spawnSchedulerForSession(sessionDb, row);
+  setDesiredState(sessionDb, row.id, "running");
+  setActualState(sessionDb, row.id, pid ? "running" : "error");
+  if (pid) {
+    recordHeartbeat(sessionDb, row.id, "running", pid);
+    return pid;
+  }
+  return null;
+}
+
 // Collect `-l/--label k=v` repeatables
 function collectLabels(val: string, acc: string[]) {
   acc.push(val);
@@ -832,14 +858,17 @@ export function registerSessionCommands(program: Command) {
               console.error((err as Error).message);
               continue;
             }
-            const ok = row.scheduler_pid ? stopPid(row.scheduler_pid) : false;
-            setDesiredState(sessionDb, row.id, "stopped");
-            setActualState(sessionDb, row.id, "stopped");
-            console.log(
-              ok
-                ? `stopped session ${row.name ?? row.id} (pid ${row.scheduler_pid})`
-                : `session ${row.name ?? row.id} was not running`,
-            );
+            const status = stopSessionRow(sessionDb, row);
+            const label = row.name ?? row.id;
+            let message: string;
+            if (status === "stopped") {
+              message = `stopped session ${label} (pid ${row.scheduler_pid})`;
+            } else if (status === "failed") {
+              message = `failed to stop session ${label} (pid ${row.scheduler_pid})`;
+            } else {
+              message = `session ${label} was not running`;
+            }
+            console.log(message);
           }
         },
       ),
@@ -861,16 +890,60 @@ export function registerSessionCommands(program: Command) {
               console.error((err as Error).message);
               continue;
             }
-            const pid = spawnSchedulerForSession(sessionDb, row);
-            setDesiredState(sessionDb, row.id, "running");
-            setActualState(sessionDb, row.id, pid ? "running" : "error");
-            if (pid) {
-              recordHeartbeat(sessionDb, row.id, "running", pid);
-            }
+            const pid = startSessionRow(sessionDb, row);
             console.log(
               pid
                 ? `started session ${row.name ?? row.id} (pid ${pid})`
                 : `failed to start session ${row.name ?? row.id}`,
+            );
+          }
+        },
+      ),
+  );
+
+  addSessionDbOption(
+    program
+      .command("restart")
+      .description("Restart one or more sync sessions")
+      .argument("<id-or-name...>", "session id(s) or name(s)")
+      .action(
+        async (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+          const sessionDb = resolveSessionDb(opts, command);
+          for (const ref of refs) {
+            let row: SessionRow;
+            try {
+              row = requireSessionRow(sessionDb, ref);
+            } catch (err) {
+              console.error((err as Error).message);
+              continue;
+            }
+            const label = row.name ?? String(row.id);
+            const status = stopSessionRow(sessionDb, row);
+            if (status === "stopped") {
+              console.log(`stopped session ${label} (pid ${row.scheduler_pid})`);
+            } else if (status === "failed") {
+              console.log(
+                `failed to stop session ${label} (pid ${row.scheduler_pid}); attempting restart`,
+              );
+            } else {
+              console.log(`session ${label} was not running`);
+            }
+
+            let latestRow: SessionRow;
+            try {
+              latestRow = requireSessionRow(sessionDb, String(row.id));
+            } catch (err) {
+              console.error(
+                `unable to reload session ${label} for restart: ${(err as Error).message}`,
+              );
+              continue;
+            }
+
+            const pid = startSessionRow(sessionDb, latestRow);
+            console.log(
+              pid
+                ? `restarted session ${label} (pid ${pid})`
+                : `failed to restart session ${label}`,
             );
           }
         },
