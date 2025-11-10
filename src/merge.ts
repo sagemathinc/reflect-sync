@@ -625,7 +625,7 @@ export async function runMerge({
           "hashed_ctime",
         ],
         select:
-          "path, size, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen, hashed_ctime",
+          "path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime",
       },
       dirs: {
         columns: [
@@ -638,7 +638,7 @@ export async function runMerge({
           "last_seen",
         ],
         select:
-          "path, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+          "path, ctime, mtime, op_ts, hash, deleted, last_seen",
       },
       links: {
         columns: [
@@ -652,7 +652,7 @@ export async function runMerge({
           "last_seen",
         ],
         select:
-          "path, target, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+          "path, target, ctime, mtime, op_ts, hash, deleted, last_seen",
       },
     };
 
