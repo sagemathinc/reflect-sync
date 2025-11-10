@@ -79,8 +79,13 @@ export function configureScanCommand(
     .requiredOption("--root <path>", "directory to scan")
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
     .option(
-      "--emit-since-ts <milliseconds>",
-      "when used with --emit-delta, first replay all rows (files/dirs/links) with op_ts >= this timestamp",
+      "--emit-since-age <milliseconds>",
+      "when used with --emit-delta, first replay all rows (files/dirs/links) that are at most this old, so op_ts >= now - age",
+    )
+    .option(
+      "--emit-all",
+      "when used with --emit-delta, first replay all rows (files/dirs/links)",
+      false,
     )
     .addOption(
       new Option("--hash <algorithm>", "content hash algorithm")
@@ -120,7 +125,8 @@ function buildProgram(): Command {
 type ScanOptions = {
   db: string;
   emitDelta: boolean;
-  emitRecentMs?: string;
+  emitSinceAge?: string;
+  emitAll?: boolean;
   hash: string;
   root: string;
   vacuum?: boolean;
@@ -141,7 +147,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     root,
     db: DB_PATH,
     emitDelta,
-    emitRecentMs,
+    emitSinceAge,
+    emitAll,
     hash,
     vacuum,
     pruneMs,
@@ -195,10 +202,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   let restrictedPathList = dedupeRestrictedList(restrictedPathRaw);
   let restrictedDirList = dedupeRestrictedList(restrictedDirRaw);
-  if (
-    restrictedPathList.includes("") ||
-    restrictedDirList.includes("")
-  ) {
+  if (restrictedPathList.includes("") || restrictedDirList.includes("")) {
     restrictedPathList = [];
     restrictedDirList = [];
   }
@@ -331,10 +335,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         insertRestricted.run(relPath);
       }
     });
-    insertRestrictedBatch([
-      ...restrictedPathList,
-      ...restrictedDirList,
-    ]);
+    insertRestrictedBatch([...restrictedPathList, ...restrictedDirList]);
     if (restrictedDirList.length) {
       const tables = ["files", "dirs", "links"];
       const dirStmts = tables.map((tbl) =>
@@ -736,14 +737,17 @@ ON CONFLICT(path) DO UPDATE SET
 
     // If requested, first replay a bounded window from the DB,
     // then proceed to the actual filesystem walk (which will emit new changes).
-    if (emitDelta && emitRecentMs) {
-      const ms = Number(emitRecentMs);
-      if (Number.isFinite(ms) && ms > 0) {
-        const since = Date.now() - ms;
-        await emitReplaySinceTs(since);
+    if (emitDelta) {
+      if (emitAll) {
+        await emitReplaySinceTs(0);
+      } else if (emitSinceAge) {
+        const age = Number(emitSinceAge);
+        if (Number.isFinite(age) && age > 0) {
+          const since = Date.now() - age;
+          await emitReplaySinceTs(since);
+        }
       }
     }
-
     // Load per-root ignore matcher (gitignore semantics)
     const ig = createIgnorer(ignoreRules);
 

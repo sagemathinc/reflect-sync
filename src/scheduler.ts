@@ -64,7 +64,6 @@ import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList } from "./restrict.js";
 
-
 class FatalSchedulerError extends Error {
   constructor(message: string) {
     super(message);
@@ -117,77 +116,83 @@ export function configureSchedulerCommand(
   if (standalone) {
     command.name(`${CLI_NAME}-scheduler`);
   }
-  return command
-    .description("Orchestration of scanning, watching, syncing")
-    .requiredOption("--alpha-root <path>", "path to root of alpha sync tree")
-    .requiredOption("--beta-root <path>", "path to root of beta sync tree")
-    .option("--alpha-db <file>", "path to alpha sqlite database", "alpha.db")
-    .option("--beta-db <file>", "path to beta sqlite database", "beta.db")
-    .option("--base-db <file>", "path to base sqlite database", "base.db")
-    .addOption(
-      new Option(
-        "--prefer <side>",
-        "conflict preference: all conflicts are resolved in favor of this side",
+  return (
+    command
+      .description("Orchestration of scanning, watching, syncing")
+      .requiredOption("--alpha-root <path>", "path to root of alpha sync tree")
+      .requiredOption("--beta-root <path>", "path to root of beta sync tree")
+      .option("--alpha-db <file>", "path to alpha sqlite database", "alpha.db")
+      .option("--beta-db <file>", "path to beta sqlite database", "beta.db")
+      .option("--base-db <file>", "path to base sqlite database", "base.db")
+      .addOption(
+        new Option(
+          "--prefer <side>",
+          "conflict preference: all conflicts are resolved in favor of this side",
+        )
+          .choices(["alpha", "beta"])
+          .default("alpha"),
       )
-        .choices(["alpha", "beta"])
-        .default("alpha"),
-    )
-    .addOption(
-      new Option("--hash <algorithm>", "content hash algorithm")
-        .choices(listSupportedHashes())
-        .default(defaultHashAlg()),
-    )
-    .option("--dry-run", "simulate without changing files", false)
-    // optional SSH endpoints (only one side may be remote)
-    .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
-    .option("--alpha-port <n>", "SSH port for alpha", (v) =>
-      Number.parseInt(v, 10),
-    )
-    .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
-    .option("--beta-port <n>", "SSH port for beta", (v) =>
-      Number.parseInt(v, 10),
-    )
-    .option(
-      "--alpha-remote-db <file>",
-      "remote path to alpha sqlite db (on the SSH host)",
-      `~/.local/share/${CLI_NAME}/alpha.db`,
-    )
-    .option(
-      "--beta-remote-db <file>",
-      "remote path to beta sqlite db (on the SSH host)",
-      `~/.local/share/${CLI_NAME}/beta.db`,
-    )
-    .option(
-      "--remote-command <cmd>",
-      "absolute path to remote reflect-sync command",
-    )
-    .option(
-      "--disable-hot-watch",
-      "only sync during the full sync cycle",
-      false,
-    )
-    .option("--disable-hot-sync", "disable realtime hot-sync cycles")
-    .option(
-      "--disable-full-cycle",
-      "disable automatic periodic full sync cycles",
-    )
-    .option(
-      "--enable-reflink",
-      "use reflink copies when both roots are local",
-      false,
-    )
-    .option(
-      "-i, --ignore <pattern>",
-      "gitignore-style ignore rule (repeat or comma-separated)",
-      collectIgnoreOption,
-      [] as string[],
-    )
-    .option("--compress <algo>", "[auto|zstd|lz4|zlib|zlibx|none][:level]", "auto")
-    .option(
-      "--session-id <id>",
-      "optional session id to enable heartbeats, report state, etc",
-    )
-    .option("--session-db <path>", "path to session database");
+      .addOption(
+        new Option("--hash <algorithm>", "content hash algorithm")
+          .choices(listSupportedHashes())
+          .default(defaultHashAlg()),
+      )
+      .option("--dry-run", "simulate without changing files", false)
+      // optional SSH endpoints (only one side may be remote)
+      .option("--alpha-host <ssh>", "SSH host for alpha (e.g. user@host)")
+      .option("--alpha-port <n>", "SSH port for alpha", (v) =>
+        Number.parseInt(v, 10),
+      )
+      .option("--beta-host <ssh>", "SSH host for beta (e.g. user@host)")
+      .option("--beta-port <n>", "SSH port for beta", (v) =>
+        Number.parseInt(v, 10),
+      )
+      .option(
+        "--alpha-remote-db <file>",
+        "remote path to alpha sqlite db (on the SSH host)",
+        `~/.local/share/${CLI_NAME}/alpha.db`,
+      )
+      .option(
+        "--beta-remote-db <file>",
+        "remote path to beta sqlite db (on the SSH host)",
+        `~/.local/share/${CLI_NAME}/beta.db`,
+      )
+      .option(
+        "--remote-command <cmd>",
+        "absolute path to remote reflect-sync command",
+      )
+      .option(
+        "--disable-hot-watch",
+        "only sync during the full sync cycle",
+        false,
+      )
+      .option("--disable-hot-sync", "disable realtime hot-sync cycles")
+      .option(
+        "--disable-full-cycle",
+        "disable automatic periodic full sync cycles",
+      )
+      .option(
+        "--enable-reflink",
+        "use reflink copies when both roots are local",
+        false,
+      )
+      .option(
+        "-i, --ignore <pattern>",
+        "gitignore-style ignore rule (repeat or comma-separated)",
+        collectIgnoreOption,
+        [] as string[],
+      )
+      .option(
+        "--compress <algo>",
+        "[auto|zstd|lz4|zlib|zlibx|none][:level]",
+        "auto",
+      )
+      .option(
+        "--session-id <id>",
+        "optional session id to enable heartbeats, report state, etc",
+      )
+      .option("--session-db <path>", "path to session database")
+  );
 }
 
 function buildProgram(): Command {
@@ -697,7 +702,7 @@ export async function runScheduler({
     if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
       // last time wasn't ok, so emit *everything* since last time it worked,
       // so we do not miss data.
-      sshArgs.push("--emit-since-ts");
+      sshArgs.push("--emit-since-age");
       sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
     }
     if (params.restrictedPaths?.length) {
@@ -725,10 +730,7 @@ export async function runScheduler({
       }
       return trimmed;
     };
-    remoteLog.debug("ssh scan", {
-      host: params.host,
-      args: argsJoin(sshArgs),
-    });
+    remoteLog.debug(`ssh scan: "ssh ${argsJoin(sshArgs)}"`);
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -1203,7 +1205,7 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T>(arr: T[], size: number): T[][] => {
+  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
     if (arr.length === 0) return [];
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {
