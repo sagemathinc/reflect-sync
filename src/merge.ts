@@ -2389,11 +2389,13 @@ export async function runMerge({
         db.pragma("incremental_vacuum");
         db.pragma("optimize");
         done();
-        // for now do a more expensive full vacuum;
-        // this can save a LOT more space than incremental vacuum
-        done = t("sqlite full vacuum");
-        db.exec("vacuum; vacuum alpha; vacuum beta;");
-        done();
+        if (Math.random() <= 0.05) {
+          // Do a more expensive full vacuum sometimes;
+          // this can save a LOT of space, but is very expensive
+          done = t("sqlite full vacuum");
+          db.exec("vacuum; vacuum alpha; vacuum beta;");
+          done();
+        }
       } catch (err) {
         // harmless if fails -- may happen if locked
         logger.warn("sqlite hygiene issue", { error: String(err) });
