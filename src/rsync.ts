@@ -1004,9 +1004,7 @@ export async function rsyncCopyDirs(
     onProgress: progressHandler,
     tempDir: opts.tempDir,
     direction: opts.direction,
-    captureTransfers: opts.captureDirs
-      ? { paths: [] }
-      : undefined,
+    captureTransfers: opts.captureDirs ? { paths: [] } : undefined,
   });
   assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {

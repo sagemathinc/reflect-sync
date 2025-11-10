@@ -38,10 +38,7 @@ import { diffSession } from "./session-diff.js";
 import { getDb } from "./db.js";
 import type { Database } from "./db.js";
 import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
-import {
-  parseLogLevelOption,
-  renderLogRows,
-} from "./cli-log-output.js";
+import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
 // Collect `-l/--label k=v` repeatables

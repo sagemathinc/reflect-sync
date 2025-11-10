@@ -19,10 +19,7 @@ describe("restricted scan and merge", () => {
     const r = await mkCase(tmp, "restricted-scan");
     await fsp.writeFile(path.join(r.aRoot, "include.txt"), "alpha-include");
     await fsp.mkdir(path.join(r.aRoot, "dirA"), { recursive: true });
-    await fsp.writeFile(
-      path.join(r.aRoot, "dirA/fileA.txt"),
-      "alpha-dir-file",
-    );
+    await fsp.writeFile(path.join(r.aRoot, "dirA/fileA.txt"), "alpha-dir-file");
     await fsp.mkdir(path.join(r.aRoot, "dirB"), { recursive: true });
     await fsp.writeFile(path.join(r.aRoot, "dirB/skip.txt"), "skip-me");
     await fsp.writeFile(path.join(r.aRoot, "excluded.txt"), "exclude");
@@ -41,17 +38,13 @@ describe("restricted scan and merge", () => {
     const db = new Database(r.aDb);
     try {
       const files = db
-        .prepare(
-          `SELECT path FROM files WHERE deleted = 0 ORDER BY path`,
-        )
+        .prepare(`SELECT path FROM files WHERE deleted = 0 ORDER BY path`)
         .all()
         .map((row: { path: string }) => row.path);
       expect(files).toEqual(["dirA/fileA.txt", "include.txt"]);
 
       const dirs = db
-        .prepare(
-          `SELECT path FROM dirs WHERE deleted = 0 ORDER BY path`,
-        )
+        .prepare(`SELECT path FROM dirs WHERE deleted = 0 ORDER BY path`)
         .all()
         .map((row: { path: string }) => row.path);
       expect(dirs).toEqual(["dirA"]);
@@ -72,10 +65,7 @@ describe("restricted scan and merge", () => {
     // Alpha has new content we want to sync selectively
     await fsp.writeFile(path.join(r.aRoot, "include.txt"), "alpha-include");
     await fsp.mkdir(path.join(r.aRoot, "dirA"), { recursive: true });
-    await fsp.writeFile(
-      path.join(r.aRoot, "dirA/fileA.txt"),
-      "alpha-dir-file",
-    );
+    await fsp.writeFile(path.join(r.aRoot, "dirA/fileA.txt"), "alpha-dir-file");
     await fsp.writeFile(path.join(r.aRoot, "excluded.txt"), "alpha-excluded");
 
     // Full scans to seed DBs

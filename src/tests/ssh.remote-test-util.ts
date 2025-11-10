@@ -38,11 +38,7 @@ type SchedulerOpts = {
 };
 
 export function startSchedulerRemote(opts: SchedulerOpts): ChildProcess {
-  const betaRemoteDb = join(
-    opts.betaRootRemote,
-    "..",
-    "beta.remote.db",
-  );
+  const betaRemoteDb = join(opts.betaRootRemote, "..", "beta.remote.db");
   const args = [
     SCHED,
     "--alpha-root",

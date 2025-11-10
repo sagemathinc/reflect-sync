@@ -593,7 +593,7 @@ export async function runMerge({
       ? " WHERE path IN (SELECT rpath FROM restricted_paths)"
       : "";
 
-    const chunkPaths = <T,>(items: T[], size = 200): T[][] => {
+    const chunkPaths = <T>(items: T[], size = 200): T[][] => {
       if (items.length <= size) return [items];
       const chunks: T[][] = [];
       for (let i = 0; i < items.length; i += size) {
@@ -1196,10 +1196,7 @@ export async function runMerge({
       .all(prefer)
       .map((r) => r.rpath as string);
 
-    let delInAlpha = uniq([
-      ...deletedOnlyInBeta,
-      ...delInAlpha_conflict,
-    ]);
+    let delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
     toBeta = uniq([...toBeta, ...toBeta_conflict]);
     done();
 

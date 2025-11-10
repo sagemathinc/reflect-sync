@@ -121,7 +121,10 @@ export async function cpReflinkFromList(
       const dstPath = path.join(dstRoot, rel);
       try {
         const st = await lstat(dstPath);
-        if (Number.isFinite(st.ctimeMs) && st.ctimeMs >= startedAt - CLOCK_SLOP_MS) {
+        if (
+          Number.isFinite(st.ctimeMs) &&
+          st.ctimeMs >= startedAt - CLOCK_SLOP_MS
+        ) {
           successes.add(rel);
           continue;
         }

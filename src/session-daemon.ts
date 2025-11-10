@@ -29,14 +29,8 @@ import {
   type Logger,
 } from "./logger.js";
 import { resolveSelfLaunch } from "./self-launch.js";
-import {
-  createDaemonLogger,
-  fetchDaemonLogs,
-} from "./daemon-logs.js";
-import {
-  parseLogLevelOption,
-  renderLogRows,
-} from "./cli-log-output.js";
+import { createDaemonLogger, fetchDaemonLogs } from "./daemon-logs.js";
+import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 
 const DAEMON_DIR = join(getReflectSyncHome(), "daemon");
 const PID_FILE = join(DAEMON_DIR, "reflect.pid");
@@ -303,12 +297,9 @@ async function runDaemonForeground(
   try {
     if (isPidAlive(existing)) {
       if (options.stopExisting) {
-        daemonLogger.info(
-          "stopping existing daemon before foreground start",
-          {
-            pid: existing,
-          },
-        );
+        daemonLogger.info("stopping existing daemon before foreground start", {
+          pid: existing,
+        });
         if (existing) await stopDaemonProcess(existing, daemonLogger);
       } else {
         throw new Error(`daemon already running (pid ${existing})`);

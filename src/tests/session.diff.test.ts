@@ -38,7 +38,8 @@ function baseSessionRow(
     beta_host: "localhost",
     beta_port: null,
     alpha_remote_db: null,
-    beta_remote_db: "~/.local/share/reflect-sync/by-origin/test/sessions/1/beta.db",
+    beta_remote_db:
+      "~/.local/share/reflect-sync/by-origin/test/sessions/1/beta.db",
     remote_scan_cmd: null,
     remote_watch_cmd: null,
     base_db: null,
@@ -89,7 +90,9 @@ describe("session diff restrictions", () => {
 
   it("filters diffs by restricted paths and directories", () => {
     const session = baseSessionRow(alphaDb, betaDb);
-    const allDiffs = diffSession(session).map((entry) => entry.path).sort();
+    const allDiffs = diffSession(session)
+      .map((entry) => entry.path)
+      .sort();
     expect(allDiffs).toEqual([
       "dirA/file.txt",
       "dirB/other.txt",

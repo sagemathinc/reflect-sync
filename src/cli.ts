@@ -17,10 +17,7 @@ import pkg from "../package.json" with { type: "json" };
 import { registerInstallCommand } from "./install-cli.js";
 import { configureScanCommand } from "./scan.js";
 import { configureSchedulerCommand } from "./scheduler.js";
-import {
-  configureMergeCommand,
-  normalizeMergeCliOptions,
-} from "./merge.js";
+import { configureMergeCommand, normalizeMergeCliOptions } from "./merge.js";
 import { configureWatchCommand } from "./watch.js";
 
 if (!process.env.REFLECT_ENTRY) {
@@ -115,26 +112,26 @@ program.addHelpText(
 );
 
 configureScanCommand(program.command("scan")).action(
-    async (
-      opts: {
-        root: string;
-        db: string;
-        emitDelta: boolean;
-        emitSinceTs: string;
-        hash: string;
-        listHashes: boolean;
-        vacume: boolean;
-        pruneMs: string;
-        numericIds: boolean;
-        ignore?: string[];
-      },
-      command,
-    ) => {
-      const { runScan } = await import("./scan.js");
-      const params = mergeOptsWithLogger(command, opts);
-      await runScan(params as any);
+  async (
+    opts: {
+      root: string;
+      db: string;
+      emitDelta: boolean;
+      emitSinceTs: string;
+      hash: string;
+      listHashes: boolean;
+      vacume: boolean;
+      pruneMs: string;
+      numericIds: boolean;
+      ignore?: string[];
     },
-  );
+    command,
+  ) => {
+    const { runScan } = await import("./scan.js");
+    const params = mergeOptsWithLogger(command, opts);
+    await runScan(params as any);
+  },
+);
 
 program
   .command("ingest")
@@ -167,17 +164,19 @@ configureSchedulerCommand(program.command("scheduler")).action(
   },
 );
 
-configureWatchCommand(program.command("watch")).action(async (opts, command) => {
-  const { runWatch } = await import("./watch.js");
-  const merged = {
-    ...command.optsWithGlobals(),
-    ...opts,
-  } as any;
-  if (Array.isArray(merged.ignore)) {
-    merged.ignoreRules = merged.ignore;
-  }
-  await runWatch(merged);
-});
+configureWatchCommand(program.command("watch")).action(
+  async (opts, command) => {
+    const { runWatch } = await import("./watch.js");
+    const merged = {
+      ...command.optsWithGlobals(),
+      ...opts,
+    } as any;
+    if (Array.isArray(merged.ignore)) {
+      merged.ignoreRules = merged.ignore;
+    }
+    await runWatch(merged);
+  },
+);
 
 // Default help when no subcommand given
 if (process.argv.length <= 2) {

@@ -91,7 +91,13 @@ class DaemonLogStore {
     if (entry.meta) {
       metaJson = safeStringify(entry.meta);
     }
-    this.insertStmt.run(ts, entry.level, entry.scope ?? null, entry.message, metaJson);
+    this.insertStmt.run(
+      ts,
+      entry.level,
+      entry.scope ?? null,
+      entry.message,
+      metaJson,
+    );
     this.prune(ts);
   }
 

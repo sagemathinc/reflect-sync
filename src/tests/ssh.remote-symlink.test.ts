@@ -92,21 +92,14 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
 
       const expectedListing = [".reflect-rsync-tmp", "x.link", "x2"];
       await waitFor(
-        async () =>
-          (await fsp.readdir(alphaRoot))
-            .slice()
-            .sort()
-            .join("|"),
+        async () => (await fsp.readdir(alphaRoot)).slice().sort().join("|"),
         (listing) => listing === expectedListing.slice().sort().join("|"),
         20_000,
         100,
       );
       await waitFor(
         async () =>
-          (await fsp.readdir(betaRootRemote))
-            .slice()
-            .sort()
-            .join("|"),
+          (await fsp.readdir(betaRootRemote)).slice().sort().join("|"),
         (listing) => listing === expectedListing.slice().sort().join("|"),
         20_000,
         100,
