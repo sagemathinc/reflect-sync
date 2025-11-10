@@ -89,7 +89,7 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       await expect(dirExists(join(betaRootRemote, "x")));
 
       // prefer is alpha, so don't immediately do the rename:
-      await wait(3000);
+      await wait(5000);
       await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
 
       m = countSchedulerCycles(baseDb);

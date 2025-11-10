@@ -366,7 +366,7 @@ export async function rsyncCopyChunked(
       for (const entry of result.transfers) {
         const normalized = normalizeTransferPath(entry.path);
         if (!normalized) continue;
-        if (plannedSet && !plannedSet.has(normalized) && debug) {
+        if (REFLECT_RSYNC_VERY_VERBOSE && plannedSet && !plannedSet.has(normalized) && debug) {
           logger.debug("rsync transfer outside planned chunk", {
             label,
             path: entry.path,

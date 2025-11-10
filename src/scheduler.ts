@@ -66,6 +66,10 @@ import { dedupeRestrictedList } from "./restrict.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30 * 60_000;
 
+// never sync more than this many files at once using hot sync
+// (discards more)
+const MAX_HOT_SYNC = 200;
+
 class FatalSchedulerError extends Error {
   constructor(message: string) {
     super(message);
@@ -734,7 +738,9 @@ export async function runScheduler({
       }
       return trimmed;
     };
-    remoteLog.debug(`ssh scan: "ssh ${argsJoin(sshArgs)}"`);
+    remoteLog.debug(
+      `ssh scan: "ssh ${argsJoin(sshArgs.slice(0, 100))}" ${sshArgs.length >= 100 ? "truncated" : ""}`,
+    );
 
     const sshP = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -1455,7 +1461,7 @@ export async function runScheduler({
         return;
       }
       const readySet = new Set<string>([...readyAlpha, ...readyBeta]);
-      const readyPaths = Array.from(readySet);
+      const readyPaths = Array.from(readySet).slice(0, MAX_HOT_SYNC);
       await runCycle({
         restrictedPaths: readyPaths,
         label: "hot",
