@@ -65,10 +65,7 @@ import {
   parseLogLevel,
 } from "./logger.js";
 import type { SignatureEntry } from "./signature-store.js";
-import {
-  collectListOption,
-  dedupeRestrictedList,
-} from "./restrict.js";
+import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
 // if true immediately freeze if there is a plan to modify anything on alpha.
 // Obviously only for very low level debugging!
@@ -625,7 +622,7 @@ export async function runMerge({
           "hashed_ctime",
         ],
         select:
-          "path, size, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen, hashed_ctime",
+          "path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime",
       },
       dirs: {
         columns: [
@@ -650,8 +647,7 @@ export async function runMerge({
           "deleted",
           "last_seen",
         ],
-        select:
-          "path, target, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+        select: "path, target, ctime, mtime, op_ts, hash, deleted, last_seen",
       },
     };
 
@@ -700,8 +696,6 @@ export async function runMerge({
       if (!paths.length) return;
       mirrorTableEntries(source, dest, "dirs", paths);
     };
-
-
 
     // ---------- EARLY-OUT FAST PATH ----------
     // Hash live (non-deleted) catalogs of both sides. If unchanged vs last time → skip planning/rsync.
@@ -1489,7 +1483,6 @@ export async function runMerge({
     delDirsInBeta = uniq(delDirsInBeta);
     delDirsInAlpha = uniq(delDirsInAlpha);
 
-
     // --- helpers: POSIX-y parent and normalization
     const posixParent = (p: string) => {
       if (!p) return "";
@@ -1651,9 +1644,12 @@ export async function runMerge({
       const beforeN = toBetaDirs.length;
       toBetaDirs = toBetaDirs.filter((r) => !delSet.has(r));
       if (debug && beforeN !== toBetaDirs.length) {
-        logger.warn("planner safety: prefer dir deletion over alpha→beta copy", {
-          dropped: beforeN - toBetaDirs.length,
-        });
+        logger.warn(
+          "planner safety: prefer dir deletion over alpha→beta copy",
+          {
+            dropped: beforeN - toBetaDirs.length,
+          },
+        );
       }
     }
     if (toAlphaDirs.length && delDirsInBeta.length) {
@@ -1661,9 +1657,12 @@ export async function runMerge({
       const beforeN = toAlphaDirs.length;
       toAlphaDirs = toAlphaDirs.filter((r) => !delSet.has(r));
       if (debug && beforeN !== toAlphaDirs.length) {
-        logger.warn("planner safety: prefer dir deletion over beta→alpha copy", {
-          dropped: beforeN - toAlphaDirs.length,
-        });
+        logger.warn(
+          "planner safety: prefer dir deletion over beta→alpha copy",
+          {
+            dropped: beforeN - toAlphaDirs.length,
+          },
+        );
       }
     }
 
