@@ -14,7 +14,7 @@ import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // if true, logs every file sent over rsync
-const REFLECT_RSYNC_VERY_VERBOSE = !!process.env.REFLECT_VERY_VERBOSE;
+const REFLECT_RSYNC_VERY_VERBOSE = true; //!!process.env.REFLECT_VERY_VERBOSE;
 const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = Number(
   process.env.REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES ?? 1000,
 );
@@ -1168,10 +1168,17 @@ export async function rsyncDelete(
     const deleted: string[] =
       opts.captureDeletes && res.transfers?.length
         ? res.transfers
-            .filter((entry) => entry.itemized.startsWith("*deleting"))
+            .filter((entry) => entry.itemized.includes("*del"))
             .map((entry) => normalizeTransferPath(entry.path))
             .filter((p) => (plannedSet ? plannedSet.has(p) : true))
         : [];
+    if (REFLECT_RSYNC_VERY_VERBOSE) {
+      logger.debug(`rsync.rsyncDelete ${opts.direction ?? ""}`, {
+        deleted,
+        transfers: res.transfers,
+      });
+    }
+
     return { deleted, zero: res.zero };
   } finally {
     if (tmpEmptyDir) {

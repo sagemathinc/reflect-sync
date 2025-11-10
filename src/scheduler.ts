@@ -64,6 +64,8 @@ import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList } from "./restrict.js";
 
+const PRUNE_REMOTE_DATABASE_MS = 30 * 60_000;
+
 class FatalSchedulerError extends Error {
   constructor(message: string) {
     super(message);
@@ -697,7 +699,9 @@ export async function runScheduler({
     }
     if (lastRemoteScan.ok && lastRemoteScan.start) {
       sshArgs.push("--prune-ms");
-      sshArgs.push(`${Date.now() - lastRemoteScan.start}`);
+      sshArgs.push(
+        `${Date.now() - lastRemoteScan.start - PRUNE_REMOTE_DATABASE_MS}`,
+      );
     }
     if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
       // last time wasn't ok, so emit *everything* since last time it worked,
@@ -1205,7 +1209,7 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T>(arr: T[], size: number): T[][] => {
+  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
     if (arr.length === 0) return [];
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {

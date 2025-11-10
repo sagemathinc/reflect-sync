@@ -33,7 +33,6 @@
 // merge.ts
 import { tmpdir } from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { lstatSync } from "node:fs";
 import path from "node:path";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
@@ -72,10 +71,11 @@ import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 const TERMINATE_ON_CHANGE_ALPHA =
   !!process.env.REFLECT_TERMINATE_ON_CHANGE_ALPHA;
 
+// DEBUG FLAGS THAT WILL WASTE LOTS OF SPACE:
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
-
 const LOG_ALL_FILES = true;
+const NEVER_PRUNE_TOMBSTONES = true;
 
 function toBoolVerbose(v?: boolean | string): boolean {
   if (typeof v === "string") {
@@ -356,155 +356,6 @@ export async function runMerge({
     return map;
   };
 
-  const buildSignatureFromFs = (
-    root: string,
-    relPath: string,
-  ): SendSignature | null => {
-    try {
-      const abs = path.join(root, relPath);
-      const st = lstatSync(abs);
-      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
-      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
-      if (st.isSymbolicLink()) {
-        return {
-          kind: "link",
-          opTs: mtime,
-          mtime,
-          ctime,
-        };
-      }
-      if (st.isDirectory()) {
-        return {
-          kind: "dir",
-          opTs: mtime,
-          mtime,
-          ctime,
-        };
-      }
-      if (st.isFile()) {
-        return {
-          kind: "file",
-          opTs: mtime,
-          mtime,
-          ctime,
-          size: st.size,
-        };
-      }
-      return {
-        kind: "file",
-        opTs: mtime,
-        mtime,
-        ctime,
-        size: st.size,
-      };
-    } catch (err: any) {
-      if (err?.code === "ENOENT") {
-        return {
-          kind: "missing",
-          opTs: Date.now(),
-        };
-      }
-      return null;
-    }
-  };
-
-  const collectLocalSignatureEntries = (
-    root: string,
-    paths: string[],
-  ): SignatureEntry[] => {
-    const entries: SignatureEntry[] = [];
-    for (const path of uniq(paths)) {
-      const sig = buildSignatureFromFs(root, path);
-      if (sig) {
-        entries.push({ path, signature: sig });
-      }
-    }
-    return entries;
-  };
-
-  const normalizeRpath = (input: string): string => {
-    if (!input) return input;
-    let out = input;
-    if (out.startsWith("./")) out = out.slice(2);
-    while (out.length > 1 && out.endsWith("/")) {
-      out = out.slice(0, -1);
-    }
-    return out;
-  };
-
-  const fetchSignaturesForTarget = async (
-    target: "alpha" | "beta",
-    paths: string[],
-  ): Promise<SignatureEntry[]> => {
-    if (!paths.length) return [];
-    if (target === "alpha") {
-      if (alphaHost) {
-        if (!fetchRemoteAlphaSignatures) return [];
-        const res =
-          (await fetchRemoteAlphaSignatures(paths, {
-            ignore: false,
-            stable: false,
-          })) ?? [];
-        return res;
-      }
-      return collectLocalSignatureEntries(alphaRoot, paths);
-    } else {
-      if (betaHost) {
-        if (!fetchRemoteBetaSignatures) return [];
-        const res =
-          (await fetchRemoteBetaSignatures(paths, {
-            ignore: false,
-            stable: false,
-          })) ?? [];
-        return res;
-      }
-      return collectLocalSignatureEntries(betaRoot, paths);
-    }
-  };
-
-  const confirmDeletions = async (
-    target: "alpha" | "beta",
-    planned: string[],
-    explicit: string[],
-  ): Promise<string[]> => {
-    if (!planned.length) return [];
-    const plannedEntries = planned.map((raw) => ({
-      raw,
-      norm: normalizeRpath(raw),
-    }));
-    const canonical = new Map<string, string>();
-    for (const entry of plannedEntries) {
-      if (!canonical.has(entry.norm)) {
-        canonical.set(entry.norm, entry.raw);
-      }
-    }
-    const confirmed = new Set<string>();
-    for (const p of explicit) {
-      const norm = normalizeRpath(p);
-      if (!norm) continue;
-      confirmed.add(norm);
-      if (!canonical.has(norm)) {
-        canonical.set(norm, p);
-      }
-    }
-    const remaining = plannedEntries
-      .filter((entry) => !confirmed.has(entry.norm))
-      .map((entry) => entry.raw);
-    if (remaining.length) {
-      const sigs = await fetchSignaturesForTarget(target, remaining);
-      for (const entry of sigs) {
-        if (entry.signature.kind === "missing") {
-          const norm = normalizeRpath(entry.path);
-          confirmed.add(norm);
-          if (!canonical.has(norm)) {
-            canonical.set(norm, entry.path);
-          }
-        }
-      }
-    }
-    return Array.from(confirmed).map((norm) => canonical.get(norm) ?? norm);
-  };
-
   let alphaTempDir: string | undefined;
   let betaTempDir: string | undefined;
   let alphaTempArg: string | undefined;
@@ -587,7 +438,7 @@ export async function runMerge({
       ? " WHERE path IN (SELECT rpath FROM restricted_paths)"
       : "";
 
-    const chunkPaths = <T>(items: T[], size = 200): T[][] => {
+    const chunkPaths = <T,>(items: T[], size = 200): T[][] => {
       if (items.length <= size) return [items];
       const chunks: T[][] = [];
       for (let i = 0; i < items.length; i += size) {
@@ -1970,15 +1821,11 @@ export async function runMerge({
           captureDeletes: true,
         },
       );
-      const confirmedAlphaDeletes = await confirmDeletions(
-        "alpha",
-        delInAlpha,
-        delAlphaRes.deleted,
-      );
-      confirmedAlphaDeletes.forEach((p) => deletedFilesAlpha.add(p));
-      if (confirmedAlphaDeletes.length) {
-        mirrorFilesAndLinks("beta", "alpha", confirmedAlphaDeletes);
+      if (delAlphaRes.deleted?.length) {
+        delAlphaRes.deleted.forEach((p) => deletedFilesAlpha.add(p));
+        mirrorFilesAndLinks("beta", "alpha", delAlphaRes.deleted);
       }
+
       const delBetaRes = await rsyncDeleteChunked(
         tmp,
         alpha,
@@ -1993,15 +1840,11 @@ export async function runMerge({
           captureDeletes: true,
         },
       );
-      const confirmedBetaDeletes = await confirmDeletions(
-        "beta",
-        delInBeta,
-        delBetaRes.deleted,
-      );
-      confirmedBetaDeletes.forEach((p) => deletedFilesBeta.add(p));
-      if (confirmedBetaDeletes.length) {
-        mirrorFilesAndLinks("alpha", "beta", confirmedBetaDeletes);
+      if (delBetaRes.deleted?.length) {
+        delBetaRes.deleted.forEach((p) => deletedFilesBeta.add(p));
+        mirrorFilesAndLinks("alpha", "beta", delBetaRes.deleted);
       }
+
       done();
 
       // 1b) dir→file cleanup
@@ -2216,26 +2059,12 @@ export async function runMerge({
           captureDeletes: true,
         },
       );
-      const confirmedDirDeletesBeta = await confirmDeletions(
-        "beta",
-        delDirsInBeta,
-        dirDelBetaRes.deleted,
-      );
-      confirmedDirDeletesBeta.forEach((p) => deletedDirsBeta.add(p));
-      if (confirmedDirDeletesBeta.length) {
-        mirrorDirs("alpha", "beta", confirmedDirDeletesBeta);
-        if (!betaHost) {
-          for (const rel of confirmedDirDeletesBeta) {
-            try {
-              await rm(path.join(betaRoot, rel), {
-                recursive: true,
-                force: true,
-              });
-            } catch {}
-          }
-        }
+      if (dirDelBetaRes.deleted?.length) {
+        dirDelBetaRes.deleted.forEach((path) => deletedDirsBeta.add(path));
+        mirrorDirs("alpha", "beta", dirDelBetaRes.deleted);
       }
-      const dirBetaRes = await rsyncDeleteChunked(
+
+      const dirDelAlphaRes = await rsyncDeleteChunked(
         tmp,
         beta,
         alpha,
@@ -2249,24 +2078,9 @@ export async function runMerge({
           captureDeletes: true,
         },
       );
-      const confirmedDirDeletesAlpha = await confirmDeletions(
-        "alpha",
-        delDirsInAlpha,
-        dirBetaRes.deleted,
-      );
-      confirmedDirDeletesAlpha.forEach((p) => deletedDirsAlpha.add(p));
-      if (confirmedDirDeletesAlpha.length) {
-        mirrorDirs("beta", "alpha", confirmedDirDeletesAlpha);
-        if (!alphaHost) {
-          for (const rel of confirmedDirDeletesAlpha) {
-            try {
-              await rm(path.join(alphaRoot, rel), {
-                recursive: true,
-                force: true,
-              });
-            } catch {}
-          }
-        }
+      if (dirDelAlphaRes.deleted?.length) {
+        dirDelAlphaRes.deleted.forEach((path) => deletedDirsAlpha.add(path));
+        mirrorDirs("beta", "alpha", dirDelAlphaRes.deleted);
       }
       done();
 
@@ -2474,7 +2288,7 @@ export async function runMerge({
           db.exec(`
             INSERT OR REPLACE INTO base_dirs(path, deleted, op_ts, hash)
             SELECT d.rpath, 0, b.op_ts, b.hash
-            FROM plan_dirs_to_beta_done d
+            FROM plan_dirs_to_alpha_done d
             JOIN beta_dirs_rel b USING (rpath);
           `);
         }
@@ -2501,7 +2315,7 @@ export async function runMerge({
       })();
       done();
 
-      if (0) {
+      if (NEVER_PRUNE_TOMBSTONES) {
         // ---------- prune tombstones ----------
         done = t("drop tombstones in alpha and beta");
         db.exec(`
