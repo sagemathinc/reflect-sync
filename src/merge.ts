@@ -637,8 +637,7 @@ export async function runMerge({
           "deleted",
           "last_seen",
         ],
-        select:
-          "path, ctime, mtime, op_ts, hash, 0 AS deleted, last_seen",
+        select: "path, ctime, mtime, op_ts, hash, deleted, last_seen",
       },
       links: {
         columns: [
@@ -1628,22 +1627,42 @@ export async function runMerge({
     const delInAlphaSet = asSet(delInAlpha);
 
     if (toBeta.length && delInBeta.length) {
-      const toBetaSet = new Set(toBeta);
-      const beforeN = delInBeta.length;
-      delInBeta = delInBeta.filter((r) => !toBetaSet.has(r));
-      if (debug && beforeN !== delInBeta.length) {
-        logger.warn("planner safety: alpha→beta file overlap", {
-          dropped: beforeN - delInBeta.length,
+      const delSet = new Set(delInBeta);
+      const beforeN = toBeta.length;
+      toBeta = toBeta.filter((r) => !delSet.has(r));
+      if (debug && beforeN !== toBeta.length) {
+        logger.warn("planner safety: prefer deletion over alpha→beta copy", {
+          dropped: beforeN - toBeta.length,
         });
       }
     }
     if (toAlpha.length && delInAlpha.length) {
-      const toAlphaSet = new Set(toAlpha);
-      const beforeN = delInAlpha.length;
-      delInAlpha = delInAlpha.filter((r) => !toAlphaSet.has(r));
-      if (debug && beforeN !== delInAlpha.length) {
-        logger.warn("planner safety: beta→alpha file overlap", {
-          dropped: beforeN - delInAlpha.length,
+      const delSet = new Set(delInAlpha);
+      const beforeN = toAlpha.length;
+      toAlpha = toAlpha.filter((r) => !delSet.has(r));
+      if (debug && beforeN !== toAlpha.length) {
+        logger.warn("planner safety: prefer deletion over beta→alpha copy", {
+          dropped: beforeN - toAlpha.length,
+        });
+      }
+    }
+    if (toBetaDirs.length && delDirsInAlpha.length) {
+      const delSet = new Set(delDirsInAlpha);
+      const beforeN = toBetaDirs.length;
+      toBetaDirs = toBetaDirs.filter((r) => !delSet.has(r));
+      if (debug && beforeN !== toBetaDirs.length) {
+        logger.warn("planner safety: prefer dir deletion over alpha→beta copy", {
+          dropped: beforeN - toBetaDirs.length,
+        });
+      }
+    }
+    if (toAlphaDirs.length && delDirsInBeta.length) {
+      const delSet = new Set(delDirsInBeta);
+      const beforeN = toAlphaDirs.length;
+      toAlphaDirs = toAlphaDirs.filter((r) => !delSet.has(r));
+      if (debug && beforeN !== toAlphaDirs.length) {
+        logger.warn("planner safety: prefer dir deletion over beta→alpha copy", {
+          dropped: beforeN - toAlphaDirs.length,
         });
       }
     }

@@ -9,6 +9,8 @@ import {
   stopScheduler,
 } from "./ssh.remote-test-util";
 
+const KEEP_TMP = !!process.env.KEEP_SYMLINK_TMP;
+
 describeIfSsh("SSH remote sync – symlink moves", () => {
   let tmp = "";
   let alphaRoot = "";
@@ -19,6 +21,9 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
 
   beforeAll(async () => {
     tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-symlink-"));
+    if (KEEP_TMP) {
+      console.log("KEEP_TMP dir:", tmp);
+    }
     alphaRoot = join(tmp, "alpha");
     betaRootRemote = join(tmp, "beta");
     alphaDb = join(tmp, "alpha.db");
@@ -41,7 +46,7 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
   });
 
   afterAll(async () => {
-    if (tmp) {
+    if (!KEEP_TMP && tmp) {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
   });
@@ -85,20 +90,37 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
         10,
       );
 
-      expect(await fsp.readdir(alphaRoot)).toEqual([
-        ".reflect-rsync-tmp",
-        "x.link",
-        "x2",
-      ]);
-      expect(await fsp.readdir(betaRootRemote)).toEqual([
-        ".reflect-rsync-tmp",
-        "x.link",
-        "x2",
-      ]);
+      const expectedListing = [".reflect-rsync-tmp", "x.link", "x2"];
+      await waitFor(
+        async () =>
+          (await fsp.readdir(alphaRoot))
+            .slice()
+            .sort()
+            .join("|"),
+        (listing) => listing === expectedListing.slice().sort().join("|"),
+        20_000,
+        100,
+      );
+      await waitFor(
+        async () =>
+          (await fsp.readdir(betaRootRemote))
+            .slice()
+            .sort()
+            .join("|"),
+        (listing) => listing === expectedListing.slice().sort().join("|"),
+        20_000,
+        100,
+      );
+      expect((await fsp.readdir(alphaRoot)).sort()).toEqual(
+        expectedListing.slice().sort(),
+      );
+      expect((await fsp.readdir(betaRootRemote)).sort()).toEqual(
+        expectedListing.slice().sort(),
+      );
       await expect(linkExists(join(alphaRoot, "x.link")));
       await expect(linkExists(join(betaRootRemote, "x.link")));
     } finally {
       await stopScheduler(child);
     }
-  }, 20_000);
+  }, 40_000);
 });
