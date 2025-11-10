@@ -14,10 +14,8 @@ import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 
 // if true, logs every file sent over rsync
-const REFLECT_RSYNC_VERY_VERBOSE = true; //!!process.env.REFLECT_VERY_VERBOSE;
-const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = Number(
-  process.env.REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES ?? 1000,
-);
+const REFLECT_RSYNC_VERY_VERBOSE = false;
+const REFLECT_RSYNC_VERY_VERBOSE_MAX_FILES = 1000;
 
 const REFLECT_COPY_CHUNK = Number(process.env.REFLECT_COPY_CHUNK ?? 10_000);
 const REFLECT_COPY_CONCURRENCY = Number(

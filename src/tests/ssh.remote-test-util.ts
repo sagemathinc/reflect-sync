@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
+import { argsJoin } from "../remote.js";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees
 export const SCHED = resolve(__dirname, "../../dist/scheduler.js");
@@ -72,8 +73,14 @@ export function startSchedulerRemote(opts: SchedulerOpts): ChildProcess {
     MAX_HOT_WATCHERS: "32",
   };
 
+  if (process.env.DEBUG_TESTS) {
+    (env as any).REFLECT_DISABLE_LOG_ECHO = "";
+    console.log(`${process.execPath} ${argsJoin(args)}`);
+  }
   return spawn(process.execPath, args, {
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: process.env.DEBUG_TESTS
+      ? ["inherit", "inherit", "inherit"]
+      : ["ignore", "ignore", "inherit"],
     env,
   });
 }

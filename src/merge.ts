@@ -68,14 +68,13 @@ import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
 // if true immediately freeze if there is a plan to modify anything on alpha.
 // Obviously only for very low level debugging!
-const TERMINATE_ON_CHANGE_ALPHA =
-  !!process.env.REFLECT_TERMINATE_ON_CHANGE_ALPHA;
+const TERMINATE_ON_CHANGE_ALPHA = false;
 
 // DEBUG FLAGS THAT WILL WASTE LOTS OF SPACE:
 // set to true for debugging
 const LEAVE_TEMP_FILES = false;
-const LOG_ALL_FILES = true;
-const NEVER_PRUNE_TOMBSTONES = true;
+const LOG_ALL_FILES = false;
+const NEVER_PRUNE_TOMBSTONES = false;
 
 function toBoolVerbose(v?: boolean | string): boolean {
   if (typeof v === "string") {

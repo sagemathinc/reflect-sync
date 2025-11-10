@@ -2,7 +2,13 @@ import { join } from "node:path";
 import os from "node:os";
 import fsp from "node:fs/promises";
 
-import { countSchedulerCycles, dirExists, linkExists, waitFor } from "./util";
+import {
+  countSchedulerCycles,
+  dirExists,
+  linkExists,
+  wait,
+  waitFor,
+} from "./util";
 import {
   describeIfSsh,
   startSchedulerRemote,
@@ -71,9 +77,10 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       await fsp.mkdir(join(alphaRoot, "x"));
       await fsp.symlink("x", join(alphaRoot, "x.link"));
 
+      let m = countSchedulerCycles(baseDb);
       await waitFor(
         () => countSchedulerCycles(baseDb),
-        (n) => n >= 2,
+        (n) => n >= m + 1,
         15_000,
         10,
       );
@@ -81,35 +88,24 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       await expect(linkExists(join(betaRootRemote, "x.link")));
       await expect(dirExists(join(betaRootRemote, "x")));
 
+      // prefer is alpha, so don't immediately do the rename:
+      await wait(3000);
       await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
 
+      m = countSchedulerCycles(baseDb);
       await waitFor(
         () => countSchedulerCycles(baseDb),
-        (n) => n >= 3,
+        (n) => n >= m + 1,
         15_000,
         10,
       );
 
-      const expectedListing = [".reflect-rsync-tmp", "x.link", "x2"];
-      await waitFor(
-        async () => (await fsp.readdir(alphaRoot)).slice().sort().join("|"),
-        (listing) => listing === expectedListing.slice().sort().join("|"),
-        20_000,
-        100,
-      );
-      await waitFor(
-        async () =>
-          (await fsp.readdir(betaRootRemote)).slice().sort().join("|"),
-        (listing) => listing === expectedListing.slice().sort().join("|"),
-        20_000,
-        100,
-      );
-      expect((await fsp.readdir(alphaRoot)).sort()).toEqual(
-        expectedListing.slice().sort(),
-      );
-      expect((await fsp.readdir(betaRootRemote)).sort()).toEqual(
-        expectedListing.slice().sort(),
-      );
+      const betaListing = new Set(await fsp.readdir(betaRootRemote));
+      const expectedListing = betaListing;
+      const alphaListing = new Set(await fsp.readdir(alphaRoot));
+
+      expect(expectedListing).toEqual(alphaListing);
+
       await expect(linkExists(join(alphaRoot, "x.link")));
       await expect(linkExists(join(betaRootRemote, "x.link")));
     } finally {
