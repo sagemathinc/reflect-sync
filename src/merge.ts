@@ -1196,16 +1196,10 @@ export async function runMerge({
       .all(prefer)
       .map((r) => r.rpath as string);
 
-    let delInAlpha: string[];
-    const betaAddedContent = toAlpha.length > 0;
-    if (prefer === "beta") {
-      delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
-    } else if (!betaAddedContent) {
-      delInAlpha = uniq([...delInAlpha_conflict]);
-      toBeta = uniq([...toBeta, ...deletedOnlyInBeta]);
-    } else {
-      delInAlpha = uniq([...deletedOnlyInBeta, ...delInAlpha_conflict]);
-    }
+    let delInAlpha = uniq([
+      ...deletedOnlyInBeta,
+      ...delInAlpha_conflict,
+    ]);
     toBeta = uniq([...toBeta, ...toBeta_conflict]);
     done();
 
@@ -1377,22 +1371,10 @@ export async function runMerge({
       ...delDirsInBeta_noConflict,
       ...delDirsInBeta_conflict,
     ]);
-    let delDirsInAlpha: string[];
-    const betaAddedDirs = toAlphaDirs.length > 0;
-    if (prefer === "beta") {
-      delDirsInAlpha = uniq([
-        ...deletedDirsOnlyInBeta,
-        ...delDirsInAlpha_conflict,
-      ]);
-    } else if (!betaAddedDirs) {
-      delDirsInAlpha = uniq([...delDirsInAlpha_conflict]);
-      toBetaDirs = uniq([...toBetaDirs, ...deletedDirsOnlyInBeta]);
-    } else {
-      delDirsInAlpha = uniq([
-        ...deletedDirsOnlyInBeta,
-        ...delDirsInAlpha_conflict,
-      ]);
-    }
+    let delDirsInAlpha = uniq([
+      ...deletedDirsOnlyInBeta,
+      ...delDirsInAlpha_conflict,
+    ]);
     toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
     toBetaDirs = uniq([...toBetaDirs, ...toBetaDirs_conflict]);
     toAlphaDirs = uniq([...toAlphaDirs, ...toAlphaDirs_conflict]);
