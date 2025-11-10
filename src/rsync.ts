@@ -1013,13 +1013,13 @@ export async function rsyncCopyDirs(
       ok: res.ok,
     });
   }
-  const transfers =
+  const transferred =
     opts.captureDirs && res.transfers?.length
       ? res.transfers
           .filter((entry) => entry.path)
           .map((entry) => normalizeTransferPath(entry.path))
       : [];
-  return { ok: true, zero: res.zero, transferred: transfers };
+  return { ok: true, zero: res.zero, transferred };
 }
 
 export async function rsyncFixMeta(
