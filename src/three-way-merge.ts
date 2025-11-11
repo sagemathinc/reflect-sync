@@ -19,6 +19,11 @@ import {
   type MergeSide,
 } from "./merge-strategies.js";
 import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
+import {
+  TraceWriter,
+  describeOperation,
+  type TracePlanEntry,
+} from "./trace.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
 
 const VERY_VERBOSE = false;
@@ -31,6 +36,8 @@ export type ThreeWayMergeOptions = {
   strategyName?: string | null;
   restrictedPaths?: string[];
   logger?: Logger;
+  traceLabel?: string;
+  traceDbPath?: string;
 };
 
 export type ThreeWayMergeResult = {
@@ -49,6 +56,8 @@ export type ExecuteThreeWayMergeOptions = ThreeWayMergeOptions & {
   verbose?: boolean | string;
   logLevel?: LogLevel;
   compress?: RsyncCompressSpec;
+  traceLabel?: string;
+  traceDbPath?: string;
 };
 
 export type ExecuteThreeWayMergeResult = {
@@ -123,9 +132,29 @@ export async function executeThreeWayMerge(
   opts: ExecuteThreeWayMergeOptions,
 ): Promise<ExecuteThreeWayMergeResult> {
   const plan = planThreeWayMerge(opts);
+  const tracer =
+    TraceWriter.maybeCreate({
+      baseDb: opts.baseDb,
+      traceDb: opts.traceDbPath,
+      context: {
+        label:
+          opts.traceLabel ??
+          (opts.restrictedPaths && opts.restrictedPaths.length
+            ? "restricted"
+            : "full"),
+        strategy: opts.strategyName ?? "lww-mtime",
+        prefer: opts.prefer,
+        restrictedCount: opts.restrictedPaths?.length ?? 0,
+      },
+    }) ?? null;
+  if (tracer) {
+    const entries = buildTraceEntries(plan.diffs, plan.operations);
+    tracer.recordPlan(entries, plan.diffs.length);
+  }
   const { logger } = opts;
   if (!plan.operations.length) {
     logger?.debug("node-merge: no operations to perform");
+    tracer?.close();
     return { plan, ok: true };
   }
 
@@ -177,6 +206,8 @@ export async function executeThreeWayMerge(
       rsyncOpts: rsyncBase,
       targetDb: alphaConn,
       baseDb: baseConn,
+      tracer,
+      opName: operationName({ op: "delete", side: "alpha" }),
     });
     await performDeletes({
       paths: buckets.deleteBeta,
@@ -189,6 +220,8 @@ export async function executeThreeWayMerge(
       rsyncOpts: rsyncBase,
       targetDb: betaConn,
       baseDb: baseConn,
+      tracer,
+      opName: operationName({ op: "delete", side: "beta" }),
     });
 
     await performDirCopies({
@@ -202,6 +235,8 @@ export async function executeThreeWayMerge(
       sourceDb: alphaConn,
       destDb: betaConn,
       baseDb: baseConn,
+      tracer,
+      opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
     });
     await performDirCopies({
       paths: buckets.copyBetaAlphaDirs,
@@ -214,6 +249,8 @@ export async function executeThreeWayMerge(
       sourceDb: betaConn,
       destDb: alphaConn,
       baseDb: baseConn,
+      tracer,
+      opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
     });
 
     await performFileCopies({
@@ -229,6 +266,8 @@ export async function executeThreeWayMerge(
       baseDb: baseConn,
       sourceSide: "alpha",
       logger,
+      tracer,
+      opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
     });
     await performFileCopies({
       paths: buckets.copyBetaAlphaFiles,
@@ -243,6 +282,8 @@ export async function executeThreeWayMerge(
       baseDb: baseConn,
       sourceSide: "beta",
       logger,
+      tracer,
+      opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
     });
 
     return { plan, ok: true };
@@ -251,6 +292,7 @@ export async function executeThreeWayMerge(
     alphaConn.close();
     betaConn.close();
     baseConn.close();
+    tracer?.close();
   }
 }
 
@@ -431,26 +473,46 @@ async function performDeletes(params: {
   rsyncOpts: RsyncBaseOptions;
   targetDb: ReturnType<typeof getDb>;
   baseDb: ReturnType<typeof getDb>;
+  tracer?: TraceWriter | null;
+  opName?: string;
 }) {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
-  const res = await rsyncDeleteChunked(
-    params.workDir,
-    params.fromRoot,
-    params.toRoot,
-    unique,
-    params.label,
-    {
-      ...params.rsyncOpts,
-      direction: params.direction,
-      tempDir: params.tempDir,
-      forceEmptySource: true,
-      captureDeletes: true,
-    },
-  );
+  let res;
+  try {
+    res = await rsyncDeleteChunked(
+      params.workDir,
+      params.fromRoot,
+      params.toRoot,
+      unique,
+      params.label,
+      {
+        ...params.rsyncOpts,
+        direction: params.direction,
+        tempDir: params.tempDir,
+        forceEmptySource: true,
+        captureDeletes: true,
+      },
+    );
+  } catch (err) {
+    if (params.tracer && params.opName) {
+      for (const path of unique) {
+        params.tracer.recordResult(path, params.opName, "failure", {
+          error: err instanceof Error ? err.message : String(err),
+          phase: "delete",
+        });
+      }
+    }
+    throw err;
+  }
   const deleted = res.deleted?.length ? res.deleted : unique;
   markNodesDeletedBatch(params.targetDb, deleted);
   markNodesDeletedBatch(params.baseDb, deleted);
+  if (params.tracer && params.opName) {
+    for (const path of deleted) {
+      params.tracer.recordResult(path, params.opName, "success");
+    }
+  }
 }
 
 async function performDirCopies(params: {
@@ -464,6 +526,8 @@ async function performDirCopies(params: {
   sourceDb: ReturnType<typeof getDb>;
   destDb: ReturnType<typeof getDb>;
   baseDb: ReturnType<typeof getDb>;
+  tracer?: TraceWriter | null;
+  opName?: string;
 }) {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
@@ -493,16 +557,29 @@ async function performDirCopies(params: {
     );
     mirrorNodesFromSourceBatch(
       params.sourceDb,
-      params.destDb,
-      params.baseDb,
-      unique,
-    );
-  } catch (err) {
-    const message = `rsync dir copy failed: ${err instanceof Error ? err.message : String(err)}`;
-    recordNodeErrorsBatch(params.destDb, unique, message);
-    recordNodeErrorsBatch(params.baseDb, unique, message);
-    throw err;
-  }
+        params.destDb,
+        params.baseDb,
+        unique,
+      );
+      if (params.tracer && params.opName) {
+        for (const path of unique) {
+          params.tracer.recordResult(path, params.opName, "success");
+        }
+      }
+    } catch (err) {
+      const message = `rsync dir copy failed: ${err instanceof Error ? err.message : String(err)}`;
+      recordNodeErrorsBatch(params.destDb, unique, message);
+      recordNodeErrorsBatch(params.baseDb, unique, message);
+      if (params.tracer && params.opName) {
+        for (const path of unique) {
+          params.tracer.recordResult(path, params.opName, "failure", {
+            error: err instanceof Error ? err.message : String(err),
+            phase: "dir-copy",
+          });
+        }
+      }
+      throw err;
+    }
 }
 
 async function performFileCopies(params: {
@@ -518,6 +595,8 @@ async function performFileCopies(params: {
   baseDb: ReturnType<typeof getDb>;
   sourceSide: MergeSide;
   logger?: Logger;
+  tracer?: TraceWriter | null;
+  opName?: string;
 }) {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
@@ -562,11 +641,24 @@ async function performFileCopies(params: {
     params.baseDb,
     succeeded,
   );
+  if (params.tracer && params.opName) {
+    for (const path of succeeded) {
+      params.tracer.recordResult(path, params.opName, "success");
+    }
+  }
   if (failed.size) {
     const message = `rsync reported partial failures for ${params.direction}`;
     const failedList = Array.from(failed);
     recordNodeErrorsBatch(params.destDb, failedList, message);
     recordNodeErrorsBatch(params.baseDb, failedList, message);
+    if (params.tracer && params.opName) {
+      for (const path of failedList) {
+        params.tracer.recordResult(path, params.opName, "failure", {
+          error: message,
+          phase: "file-copy",
+        });
+      }
+    }
     throw new Error(message);
   }
 }
@@ -724,6 +816,76 @@ function recordNodeErrorsBatch(
     for (const entry of entries) upsertNode(db, entry);
   });
   apply(rows);
+}
+
+function operationName(op: { op: "copy" | "delete" | "noop"; from?: string; to?: string; side?: string }) {
+  return describeOperation(op);
+}
+
+function buildTraceEntries(
+  rows: MergeDiffRow[],
+  operations: PlannedOperation[],
+): TracePlanEntry[] {
+  const opsByPath = new Map<string, PlannedOperation[]>();
+  for (const op of operations) {
+    const arr = opsByPath.get(op.path);
+    if (arr) arr.push(op);
+    else opsByPath.set(op.path, [op]);
+  }
+  const entries: TracePlanEntry[] = [];
+  for (const row of rows) {
+    const alpha = snapshotState(row, "a");
+    const beta = snapshotState(row, "b");
+    const base = snapshotState(row, "base");
+    const ops = opsByPath.get(row.path);
+    if (!ops || !ops.length) {
+      entries.push({
+        path: row.path,
+        operation: "noop",
+        alpha,
+        beta,
+        base,
+      });
+      continue;
+    }
+    for (const op of ops) {
+      entries.push({
+        path: row.path,
+        operation: describeOperation(op),
+        alpha,
+        beta,
+        base,
+      });
+    }
+  }
+  return entries;
+}
+
+function snapshotState(
+  row: MergeDiffRow,
+  prefix: "a" | "b" | "base",
+): Record<string, unknown> | null {
+  const suffix = (key: string) =>
+    prefix === "base" ? `base_${key}` : `${prefix}_${key}`;
+  const kind = (row as any)[suffix("kind")] ?? null;
+  const hash = (row as any)[suffix("hash")] ?? null;
+  const mtime = (row as any)[suffix("mtime")] ?? null;
+  const updated = (row as any)[suffix("updated")] ?? null;
+  const size = (row as any)[suffix("size")] ?? null;
+  const deleted = (row as any)[suffix("deleted")] ?? null;
+  const error = (row as any)[suffix("error")] ?? null;
+  if (
+    kind === null &&
+    hash === null &&
+    mtime === null &&
+    updated === null &&
+    size === null &&
+    deleted === null &&
+    error === null
+  ) {
+    return null;
+  }
+  return { kind, hash, mtime, updated, size, deleted, error };
 }
 
 function isVanishedWarning(stderr?: string | null): boolean {

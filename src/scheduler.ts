@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// src/scheduler.ts
 // - Commander-based CLI
 // - Exported runScheduler(opts) API for programmatic use
 // - Optional SSH watcher: remote watch -> demux remote stdout into ingest +
@@ -1584,6 +1585,7 @@ export async function runScheduler({
       dryRun,
       compress,
       logger: hotLogger,
+      traceLabel: "hot",
     });
     hotLogger.info("hot merge complete", {
       strategy: mergeStrategy,
@@ -1997,6 +1999,7 @@ export async function runScheduler({
         dryRun,
         compress,
         logger: mergeLogger,
+        traceLabel: options?.label ?? (hasRestrictions ? "restricted" : "full"),
       });
       fullMergeResult = execResult;
       mergeOk = execResult.ok;

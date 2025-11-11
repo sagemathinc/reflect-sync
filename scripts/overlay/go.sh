@@ -18,6 +18,9 @@ sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,workdir=$
 cp -v run.sh stress.sh $root/
 
 reflect terminate o || true
+export REFLECT_TRACE_ALL=1
+reflect daemon stop
+reflect daemon start
 reflect create --name=o localhost:$upperdir2 $upperdir
 
 #podman run -it --rm --rootfs "$root" bash /stress.sh
