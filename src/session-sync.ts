@@ -5,20 +5,16 @@ import {
   ensureSessionDb,
   getSessionDbPath,
   resolveSessionRow,
+  materializeSessionPaths,
 } from "./session-db.js";
 import type { Database } from "./db.js";
+import { planThreeWayMerge } from "./three-way-merge.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_CYCLES = 3;
 const PROGRESS_MESSAGE_FILTER = "progress";
-
-type DigestSnapshot = {
-  timestamp: number | null;
-  alpha: string | null;
-  beta: string | null;
-};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,22 +39,6 @@ function parsePositiveInt(
       : Number.parseInt(raw, 10);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return value;
-}
-
-function getDigestSnapshot(db: Database, sessionId: number): DigestSnapshot {
-  const row = db
-    .prepare(
-      `SELECT last_digest AS timestamp, alpha_digest AS alpha, beta_digest AS beta
-         FROM sessions WHERE id = ?`,
-    )
-    .get(sessionId) as DigestSnapshot | undefined;
-  return (
-    row ?? {
-      timestamp: null,
-      alpha: null,
-      beta: null,
-    }
-  );
 }
 
 function checkSessionRunning(
@@ -136,6 +116,17 @@ function drainProgressLogs(state: ProgressState): void {
   }
 }
 
+function getPlanTargets(sessionRow: any) {
+  const derived = materializeSessionPaths(sessionRow.id);
+  return {
+    alphaDb: sessionRow.alpha_db ?? derived.alpha_db,
+    betaDb: sessionRow.beta_db ?? derived.beta_db,
+    baseDb: sessionRow.base_db ?? derived.base_db,
+    prefer: (sessionRow.prefer ?? "alpha") as "alpha" | "beta",
+    strategy: sessionRow.merge_strategy ?? "lww-mtime",
+  };
+}
+
 function enqueueSyncCommand(
   db: Database,
   sessionId: number,
@@ -188,12 +179,6 @@ async function waitForCommandAck(
   }
 }
 
-function formatDigestLabel(alpha: string | null, beta: string | null): string {
-  const truncate = (value: string | null) =>
-    value ? value.slice(0, 12) + (value.length > 12 ? "..." : "") : "null";
-  return `alpha=${truncate(alpha)} beta=${truncate(beta)}`;
-}
-
 async function runSyncForSession(
   db: Database,
   sessionDbPath: string,
@@ -215,7 +200,6 @@ async function runSyncForSession(
     );
   }
 
-  let previousDigests: DigestSnapshot | null = null;
   const progressState: ProgressState | undefined = progress?.enabled
     ? {
         enabled: true,
@@ -236,15 +220,16 @@ async function runSyncForSession(
       drainProgressLogs(progressState);
     }
 
-    const snapshot = getDigestSnapshot(db, sessionRow.id);
-    const { alpha, beta } = snapshot;
-    if (alpha == null || beta == null) {
-      throw new Error(
-        `session ${label}: missing digest data after attempt ${attempt}`,
-      );
-    }
+    const planTargets = getPlanTargets(sessionRow);
+    const plan = planThreeWayMerge({
+      alphaDb: planTargets.alphaDb,
+      betaDb: planTargets.betaDb,
+      baseDb: planTargets.baseDb,
+      prefer: planTargets.prefer,
+      strategyName: planTargets.strategy,
+    });
 
-    if (alpha === beta) {
+    if (plan.diffs.length === 0 && plan.operations.length === 0) {
       console.log(
         `session ${label} synchronized after ${attempt} ${
           attempt === 1 ? "cycle" : "cycles"
@@ -253,26 +238,18 @@ async function runSyncForSession(
       return 0;
     }
 
-    if (
-      previousDigests &&
-      previousDigests.alpha === alpha &&
-      previousDigests.beta === beta
-    ) {
-      throw new Error(
-        `session ${label}: digests unchanged after attempt ${attempt} (${formatDigestLabel(alpha, beta)})`,
-      );
-    }
+    const sample = plan.diffs.slice(0, 5).map((row) => row.path);
+    console.log(
+      `session ${label}: ${plan.diffs.length} paths still differ (examples: ${sample.join(
+        ", ",
+      ) || "n/a"})`,
+    );
 
     if (attempt === maxCycles) {
       throw new Error(
-        `session ${label}: digests still differ after ${maxCycles} cycles (${formatDigestLabel(alpha, beta)})`,
+        `session ${label}: still has ${plan.diffs.length} differing paths after ${maxCycles} cycles`,
       );
     }
-
-    console.log(
-      `session ${label}: digests differ (${formatDigestLabel(alpha, beta)}); retrying`,
-    );
-    previousDigests = snapshot;
   }
 
   // Should never reach here.
@@ -282,7 +259,7 @@ async function runSyncForSession(
 export function registerSessionSync(sessionCmd: Command) {
   sessionCmd
     .command("sync")
-    .description("trigger immediate sync cycle(s) and verify digests converge")
+    .description("trigger immediate sync cycle(s) and verify no differences remain")
     .argument("<id-or-name...>", "session id(s) or name(s)")
     .option(
       "--session-db <file>",
