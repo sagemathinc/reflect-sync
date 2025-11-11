@@ -16,6 +16,16 @@ const HOT_EVENT_TTL_MS = Number(
 const dbCache = new Map<string, Database>();
 const lastCleanup = new Map<string, number>();
 
+export function resetHotEventCache(): void {
+  for (const handle of dbCache.values()) {
+    try {
+      handle.close();
+    } catch {}
+  }
+  dbCache.clear();
+  lastCleanup.clear();
+}
+
 function getHandle(dbPath: string): Database {
   let handle = dbCache.get(dbPath);
   if (!handle) {

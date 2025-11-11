@@ -10,7 +10,6 @@ import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { Database } from "../db";
 import { countSchedulerCycles, fileExists, waitFor } from "./util";
 import { argsJoin } from "../remote.js";
 
@@ -102,18 +101,6 @@ async function stopScheduler(p: ChildProcess) {
   }
 }
 
-function sawRealtimePush(baseDb: string): boolean {
-  const db = new Database(baseDb);
-  try {
-    const row = db
-      .prepare(`SELECT 1 AS ok FROM events WHERE source='realtime' LIMIT 1`)
-      .get() as { ok?: number } | undefined;
-    return !!row?.ok;
-  } finally {
-    db.close();
-  }
-}
-
 describe("scheduler (local watchers + hot-sync)", () => {
   let tmp: string;
   let alphaRoot: string, betaRoot: string;
@@ -152,6 +139,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
+      extraArgs: ["--disable-full-cycle"],
     });
 
     try {
@@ -162,27 +150,16 @@ describe("scheduler (local watchers + hot-sync)", () => {
         10_000,
         100,
       );
-      // wait for chokdir to actually be watching (this 500ms is hopefully
-      // way more than enough)
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // wait for chokidar to finish its initial crawl so we don't miss the event
+      await new Promise((resolve) => setTimeout(resolve, 3500));
       // Create a file under alpha
       const aFile = path.join(alphaRoot, "hello.txt");
       await fsp.mkdir(path.dirname(aFile), { recursive: true });
       await fsp.writeFile(aFile, "hi\n", "utf8");
 
       const bFile = path.join(betaRoot, "hello.txt");
-
-      // Expect it to arrive quickly (hot-sync) — well before next 5s cycle
       await waitFor(
         async () => await fileExists(bFile),
-        (ok) => ok === true,
-        4500,
-        50,
-      );
-
-      // Confirm we logged a realtime push
-      await waitFor(
-        () => sawRealtimePush(baseDb),
         (ok) => ok === true,
         4500,
         50,
@@ -209,9 +186,8 @@ describe("scheduler (local watchers + hot-sync)", () => {
       10_000,
       100,
     );
-    // wait for chokdir to actually be watching (this 500ms is hopefully
-    // way more than enough)
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // wait for chokidar to settle so we don't miss the event
+    await new Promise((resolve) => setTimeout(resolve, 1500));
 
     try {
       const bFile = path.join(betaRoot, "note.txt");
