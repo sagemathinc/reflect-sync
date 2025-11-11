@@ -138,9 +138,6 @@ export interface SessionPatch {
   actual_state?: ActualState;
   scheduler_pid?: number | null;
   last_heartbeat?: number | null;
-  last_digest?: number | null;
-  alpha_digest?: string | null;
-  beta_digest?: string | null;
   compress?: string | null;
   hash_alg?: string | null;
   ignore_rules?: string | null;
@@ -148,6 +145,7 @@ export interface SessionPatch {
   enable_reflink?: boolean | number | null;
   disable_full_cycle?: boolean | number | null;
   merge_strategy?: string | null;
+  last_clean_sync_at?: number | null;
 }
 
 export interface SessionRow {
@@ -175,15 +173,13 @@ export interface SessionRow {
   actual_state: ActualState;
   last_heartbeat: number | null;
   scheduler_pid: number | null;
-  last_digest?: number | null;
-  alpha_digest?: string | null;
-  beta_digest?: string | null;
   compress?: string | null;
   ignore_rules?: string | null;
   disable_hot_sync: number;
   enable_reflink: number;
   disable_full_cycle: number;
   merge_strategy: string | null;
+  last_clean_sync_at: number | null;
 }
 
 export interface ForwardCreateInput {
@@ -282,11 +278,9 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         actual_state     TEXT NOT NULL DEFAULT 'stopped',
         last_heartbeat   INTEGER,
 
-        last_digest      INTEGER,
-        alpha_digest     TEXT,
-        beta_digest      TEXT,
+        scheduler_pid    INTEGER,
 
-        scheduler_pid    INTEGER
+        last_clean_sync_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(desired_state, actual_state);
@@ -417,6 +411,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "enable_reflink", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "disable_full_cycle", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "merge_strategy", "TEXT");
+  ensureColumn("sessions", "last_clean_sync_at", "INTEGER");
   ensureColumn("ssh_sessions", "ssh_args", "TEXT");
 
   return db;
@@ -829,6 +824,39 @@ export function setActualState(
     db.prepare(
       `UPDATE sessions SET actual_state=?, updated_at=? WHERE id=?`,
     ).run(actual, Date.now(), id);
+  } finally {
+    db.close();
+  }
+}
+
+export function markSessionCleanSync(
+  sessionDbPath: string,
+  id: number,
+  timestamp = Date.now(),
+): void {
+  const db = open(sessionDbPath);
+  try {
+    db.prepare(
+      `UPDATE sessions
+         SET last_clean_sync_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(timestamp, Date.now(), id);
+  } finally {
+    db.close();
+  }
+}
+
+export function clearSessionCleanSync(
+  sessionDbPath: string,
+  id: number,
+): void {
+  const db = open(sessionDbPath);
+  try {
+    db.prepare(
+      `UPDATE sessions
+         SET last_clean_sync_at = NULL, updated_at = ?
+       WHERE id = ?`,
+    ).run(Date.now(), id);
   } finally {
     db.close();
   }

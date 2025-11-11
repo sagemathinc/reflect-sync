@@ -46,6 +46,15 @@ import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
 type StopResult = "stopped" | "failed" | "not-running";
 
+const COLOR_OK =
+  Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
+const GREEN_CHECK = COLOR_OK ? "\x1b[32m✓\x1b[0m" : "✓";
+
+function fmtCleanMarker(ts?: number | null): string {
+  if (!ts) return "-";
+  return `${GREEN_CHECK} ${fmtAgo(ts)}`;
+}
+
 function stopSessionRow(sessionDb: string, row: SessionRow): StopResult {
   let status: StopResult;
   if (row.scheduler_pid) {
@@ -314,6 +323,7 @@ export function registerSessionCommands(program: Command) {
             "ID",
             "Name",
             "State (actual/desired)",
+            "Sync",
             "Prefer",
             "Alpha",
             "Beta",
@@ -324,6 +334,7 @@ export function registerSessionCommands(program: Command) {
           .setStyle("unicode-round");
 
         const alignments = [
+          AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
@@ -359,6 +370,7 @@ export function registerSessionCommands(program: Command) {
             String(r.id),
             r.name ?? "-",
             `${r.actual_state}/${r.desired_state}`,
+            fmtCleanMarker(r.last_clean_sync_at),
             r.prefer,
             alphaPath,
             betaPath,

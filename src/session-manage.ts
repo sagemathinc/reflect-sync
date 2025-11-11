@@ -200,9 +200,6 @@ export async function resetSession({
     ...paths,
     scheduler_pid: null,
     last_heartbeat: null,
-    last_digest: null,
-    alpha_digest: null,
-    beta_digest: null,
     actual_state: "stopped",
     desired_state: "stopped",
   });

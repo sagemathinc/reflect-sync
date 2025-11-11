@@ -22,6 +22,9 @@ function fmtMs(ms?: number | null): string {
 }
 
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+const COLOR_OK =
+  Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
+const GREEN_CHECK = COLOR_OK ? "\x1b[32m✓\x1b[0m" : "✓";
 
 export function fmtAgo(
   input: Date | number | string,
@@ -53,6 +56,11 @@ export function fmtLocalPath(path: string) {
     return `~${path.slice(home.length)}`;
   }
   return path;
+}
+
+function fmtCleanMarker(ts?: number | null): string {
+  if (!ts) return "-";
+  return `${GREEN_CHECK} ${fmtAgo(ts)}`;
 }
 
 function hostWithPort(
@@ -189,6 +197,7 @@ function tableOutput(
     add("hot-sync", sess.disable_hot_sync ? "disabled" : "enabled");
     add("reflink", sess.enable_reflink ? "enabled" : "disabled");
     add("full cycle", sess.disable_full_cycle ? "disabled" : "enabled");
+    add("last clean sync", fmtCleanMarker(sess.last_clean_sync_at));
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));
     if (sess.beta_db) add("beta db", fmtLocalPath(sess.beta_db));
@@ -211,14 +220,6 @@ function tableOutput(
         "created",
         `${fmtAgo(sess.created_at)} on ${new Date(sess.created_at)}`,
       );
-    if (sess.last_digest)
-      add(
-        "[digest]",
-        fmtAgo(sess.last_digest) +
-          (sess.alpha_digest == sess.beta_digest ? " ✅  (synchronized)" : ""),
-      );
-    if (sess.alpha_digest) add("[digest] alpha ", sess.alpha_digest);
-    if (sess.beta_digest) add("[digest] beta", sess.beta_digest);
     if (sess.actual_state && sess.desired_state)
       add(
         "State (actual/desired)",
@@ -308,6 +309,9 @@ export function registerSessionStatus(sessionCmd: Command) {
                 prefer: sess.prefer ?? null,
                 createdAt: sess.created_at ?? null,
                 ignoreRules,
+              },
+              sync: {
+                lastCleanAt: sess.last_clean_sync_at ?? null,
               },
             },
             state: state ?? null,

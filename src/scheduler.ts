@@ -30,6 +30,8 @@ import {
   setDesiredState,
   setActualState,
   getReflectSyncHome,
+  markSessionCleanSync,
+  clearSessionCleanSync,
 } from "./session-db.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
@@ -1977,6 +1979,8 @@ export async function runScheduler({
     const mergeStart = Date.now();
     let mergeOk = false;
     let mergeError: unknown = null;
+    let fullMergeResult: Awaited<ReturnType<typeof executeThreeWayMerge>> | null =
+      null;
     try {
       const execResult = await executeThreeWayMerge({
         alphaDb,
@@ -1994,6 +1998,7 @@ export async function runScheduler({
         compress,
         logger: mergeLogger,
       });
+      fullMergeResult = execResult;
       mergeOk = execResult.ok;
     } catch (err) {
       mergeError = err;
@@ -2003,6 +2008,19 @@ export async function runScheduler({
       });
     }
     const mergeMs = Date.now() - mergeStart;
+
+    const canUpdateCleanState =
+      !hasRestrictions &&
+      sessionDb &&
+      Number.isFinite(sessionId) &&
+      !dryRun;
+    if (canUpdateCleanState) {
+      if (fullMergeResult?.ok) {
+        markSessionCleanSync(sessionDb!, sessionId!);
+      } else if (!fullMergeResult?.ok) {
+        clearSessionCleanSync(sessionDb!, sessionId!);
+      }
+    }
 
     const ms = Date.now() - t0;
     lastCycleMs = ms;

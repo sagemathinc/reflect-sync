@@ -69,9 +69,6 @@ describe("reflect reset CLI", () => {
       actual_state: "running",
       desired_state: "running",
       last_heartbeat: now,
-      last_digest: now,
-      alpha_digest: "aaa",
-      beta_digest: "bbb",
     });
 
     const db = ensureSessionDb(sessionDbPath);
@@ -115,9 +112,6 @@ describe("reflect reset CLI", () => {
     expect(row.desired_state).toBe("stopped");
     expect(row.scheduler_pid).toBeNull();
     expect(row.last_heartbeat).toBeNull();
-    expect(row.last_digest).toBeNull();
-    expect(row.alpha_digest).toBeNull();
-    expect(row.beta_digest).toBeNull();
 
     const dbAfter = ensureSessionDb(sessionDbPath);
     try {
