@@ -20,6 +20,7 @@ export type MergeDiffRow = {
   base_hash?: string | null;
   base_mtime?: number | null;
   base_updated?: number | null;
+  base_size?: number | null;
   base_deleted?: number | null;
   base_error?: string | null;
 };
@@ -87,4 +88,3 @@ function planPreferSide(rows: MergeDiffRow[], prefer: MergeSide) {
   }
   return operations;
 }
-
