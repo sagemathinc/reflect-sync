@@ -52,7 +52,7 @@ import {
   type SessionLoggerHandle,
 } from "./session-logs.js";
 import { runMerge } from "./merge.js";
-import { planThreeWayMerge } from "./three-way-merge.js";
+import { executeThreeWayMerge } from "./three-way-merge.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 import {
@@ -1885,65 +1885,61 @@ export async function runScheduler({
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
     const mergeLogger = scoped("merge");
-    if (mergeStrategy) {
-      try {
-        const { diffs, operations } = planThreeWayMerge({
+    const mergeStart = Date.now();
+    let mergeOk = false;
+    let mergeError: unknown = null;
+    try {
+      if (mergeStrategy) {
+        const execResult = await executeThreeWayMerge({
           alphaDb,
           betaDb,
           baseDb,
           prefer,
           strategyName: mergeStrategy,
+          alphaRoot,
+          betaRoot,
+          alphaHost,
+          alphaPort,
+          betaHost,
+          betaPort,
+          dryRun,
+          compress,
           logger: mergeLogger,
         });
-        mergeLogger.info("node-merge plan", {
-          strategy: mergeStrategy,
-          diffCount: diffs.length,
-          operations: operations.length,
+        mergeOk = execResult.ok;
+      } else {
+        await runMerge({
+          alphaRoot,
+          betaRoot,
+          alphaDb,
+          betaDb,
+          baseDb,
+          alphaHost,
+          alphaPort,
+          betaHost,
+          betaPort,
+          prefer,
+          dryRun,
+          compress,
+          sessionDb,
+          sessionId,
+          logger: mergeLogger,
+          ignoreRules,
+          verbose: !!sessionLogHandle,
+          restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+          restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+          enableReflink,
+          fetchRemoteAlphaSignatures: alphaIsRemote
+            ? fetchAlphaRemoteSignatures
+            : undefined,
+          fetchRemoteBetaSignatures: betaIsRemote
+            ? fetchBetaRemoteSignatures
+            : undefined,
+          alphaRemoteLock: alphaLockHandle,
+          betaRemoteLock: betaLockHandle,
         });
-      } catch (err) {
-        mergeLogger.error("node-merge planning failed", {
-          strategy: mergeStrategy,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        mergeOk = true;
       }
-    }
-    const mergeStart = Date.now();
-    let mergeOk = false;
-    let mergeError: unknown = null;
-    try {
-      await runMerge({
-        alphaRoot,
-        betaRoot,
-        alphaDb,
-        betaDb,
-        baseDb,
-        alphaHost,
-        alphaPort,
-        betaHost,
-        betaPort,
-        prefer,
-        dryRun,
-        compress,
-        sessionDb,
-        sessionId,
-        logger: mergeLogger,
-        ignoreRules,
-        // if the session logger (to database) is enabled, then
-        // ensure merge logs everything to our logger.
-        verbose: !!sessionLogHandle,
-        restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-        restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-        enableReflink,
-        fetchRemoteAlphaSignatures: alphaIsRemote
-          ? fetchAlphaRemoteSignatures
-          : undefined,
-        fetchRemoteBetaSignatures: betaIsRemote
-          ? fetchBetaRemoteSignatures
-          : undefined,
-        alphaRemoteLock: alphaLockHandle,
-        betaRemoteLock: betaLockHandle,
-      });
-      mergeOk = true;
     } catch (err) {
       mergeError = err;
       mergeLogger.error("merge failed", {
