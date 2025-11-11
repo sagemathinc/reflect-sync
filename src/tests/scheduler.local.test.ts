@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { Database } from "../db";
 import { countSchedulerCycles, fileExists, waitFor } from "./util";
+import { argsJoin } from "../remote.js";
 
 // Resolve SCHED once (safer than relying on PATH)
 const SCHED = path.resolve(__dirname, "../../dist/scheduler.js");
@@ -44,11 +45,20 @@ function startScheduler(opts: {
   if (opts.extraArgs?.length) {
     args.push(...opts.extraArgs);
   }
+
+  const env = { ...process.env };
+  if (env.DEBUG_TESTS) {
+    env.REFLECT_DISABLE_LOG_ECHO = "";
+    console.log(`${process.execPath} ${argsJoin(args)}`);
+  }
+
   // Use node to run the ESM CLI directly
   const child = spawn(process.execPath, args, {
-    stdio: ["ignore", "inherit", "inherit"],
+    stdio: process.env.DEBUG_TESTS
+      ? ["inherit", "inherit", "inherit"]
+      : ["ignore", "inherit", "inherit"],
     env: {
-      ...process.env,
+      ...env,
       // Make the loop slow, but hot-sync fast.
       SCHED_MIN_MS: "5000",
       SCHED_MAX_MS: "5000",
