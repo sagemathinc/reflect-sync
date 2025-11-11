@@ -96,18 +96,20 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     mtime: number;
     size: number;
     deleted: 0 | 1;
+    last_error?: string | null;
   };
   const nodeUpsertStmt = useNodeWriter
     ? db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted)
-        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted)
+        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
           mtime=excluded.mtime,
           updated=excluded.updated,
           size=excluded.size,
-          deleted=excluded.deleted
+          deleted=excluded.deleted,
+          last_error=excluded.last_error
       `)
     : null;
   const nodeSelectStmt = useNodeWriter
@@ -115,7 +117,12 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     : null;
   const writeNode = useNodeWriter
     ? (params: NodeWriteParams) => {
-        nodeUpsertStmt!.run({ ...params, updated: Date.now() });
+        nodeUpsertStmt!.run({
+          ...params,
+          updated: Date.now(),
+          last_error:
+            params.last_error === undefined ? null : params.last_error,
+        });
       }
     : null;
   const markNodeDeleted = useNodeWriter
@@ -130,6 +137,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           mtime: Date.now(),
           size: existing?.size ?? 0,
           deleted: 1,
+          last_error: null,
         });
       }
     : null;
@@ -262,6 +270,7 @@ ON CONFLICT(path) DO UPDATE SET
               mtime: r.mtime ?? op_ts,
               size: 0,
               deleted: 0,
+              last_error: null,
             });
           }
         }
@@ -287,6 +296,7 @@ ON CONFLICT(path) DO UPDATE SET
               mtime: r.mtime ?? op_ts,
               size: Buffer.byteLength(r.target ?? "", "utf8"),
               deleted: 0,
+              last_error: null,
             });
           }
         }
@@ -336,6 +346,7 @@ ON CONFLICT(path) DO UPDATE SET
               mtime: r.mtime ?? op_ts,
               size: r.size ?? 0,
               deleted: 0,
+              last_error: null,
             });
           }
         }

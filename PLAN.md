@@ -19,6 +19,7 @@ Each SQLite database (alpha, beta, base) exposes one table covering every filesy
 | `updated` | REAL NOT NULL    | logical timestamp we control (e.g., scan time) |
 | `size`    | INTEGER NOT NULL | informational only |
 | `deleted` | INTEGER NOT NULL | 0/1 tombstone |
+| `last_error` | TEXT | JSON blob describing the last failed merge op (null on success) |
 
 No `ctime` column—we can’t reproduce it faithfully after copy, so we rely on `updated` instead. Base uses the same schema, so mirroring rows between DBs is trivial.
 
@@ -37,12 +38,14 @@ pairs AS (
     a.updated AS a_updated,
     a.size    AS a_size,
     a.deleted AS a_deleted,
+    a.last_error AS a_error,
     b.kind    AS b_kind,
     b.hash    AS b_hash,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
     b.size    AS b_size,
     b.deleted AS b_deleted
+    b.last_error AS b_error
   FROM alpha.nodes a
   LEFT JOIN beta.nodes b ON b.path = a.path
   WHERE b.path IS NULL              -- only on alpha
@@ -81,13 +84,16 @@ SELECT
   diff.path,
   diff.a_kind,    diff.a_hash,    diff.a_mtime,
   diff.a_updated, diff.a_size,    diff.a_deleted,
+  diff.a_error,
   diff.b_kind,    diff.b_hash,    diff.b_mtime,
   diff.b_updated, diff.b_size,    diff.b_deleted,
-  base.kind    AS base_kind,
-  base.hash    AS base_hash,
-  base.mtime   AS base_mtime,
-  base.updated AS base_updated,
-  base.deleted AS base_deleted
+  diff.b_error,
+  base.kind       AS base_kind,
+  base.hash       AS base_hash,
+  base.mtime      AS base_mtime,
+  base.updated    AS base_updated,
+  base.deleted    AS base_deleted,
+  base.last_error AS base_error
 FROM diff
 LEFT JOIN base.nodes AS base ON base.path = diff.path
 ORDER BY diff.path;
@@ -132,4 +138,3 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 7. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
-

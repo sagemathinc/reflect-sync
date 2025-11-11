@@ -129,17 +129,21 @@ CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
   // --- Node schema (new implementation) -----------------------------------
   db.exec(`
   CREATE TABLE IF NOT EXISTS nodes (
-    path     TEXT PRIMARY KEY NOT NULL,
-    kind     TEXT NOT NULL,        -- 'f', 'd', or 'l'
-    hash     TEXT NOT NULL,        -- sha256 (files), symlink target, or '' for dirs
-    mtime    REAL NOT NULL,
-    updated  REAL NOT NULL,        -- logical timestamp we control
-    size     INTEGER NOT NULL DEFAULT 0,
-    deleted  INTEGER NOT NULL DEFAULT 0
+    path       TEXT PRIMARY KEY NOT NULL,
+    kind       TEXT NOT NULL,        -- 'f', 'd', or 'l'
+    hash       TEXT NOT NULL,        -- sha256 (files), symlink target, or '' for dirs
+    mtime      REAL NOT NULL,
+    updated    REAL NOT NULL,        -- logical timestamp we control
+    size       INTEGER NOT NULL DEFAULT 0,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
   );
   CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
   `);
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN last_error TEXT`);
+  } catch {}
 
   return db;
 }
@@ -180,17 +184,21 @@ export function getBaseDb(dbPath: string): Database {
 
      -- Node schema for base db mirrors alpha/beta
      CREATE TABLE IF NOT EXISTS nodes (
-       path     TEXT PRIMARY KEY NOT NULL,
-       kind     TEXT NOT NULL,
-       hash     TEXT NOT NULL,
-       mtime    REAL NOT NULL,
-       updated  REAL NOT NULL,
-       size     INTEGER NOT NULL DEFAULT 0,
-       deleted  INTEGER NOT NULL DEFAULT 0
+       path       TEXT PRIMARY KEY NOT NULL,
+       kind       TEXT NOT NULL,
+       hash       TEXT NOT NULL,
+       mtime      REAL NOT NULL,
+       updated    REAL NOT NULL,
+       size       INTEGER NOT NULL DEFAULT 0,
+       deleted    INTEGER NOT NULL DEFAULT 0,
+       last_error TEXT
      );
      CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
     `);
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN last_error TEXT`);
+  } catch {}
 
   return db;
 }
