@@ -117,9 +117,9 @@ export function configureScanCommand(
       [] as string[],
     )
     .addOption(
-      new Option("--writer <mode>", "legacy tables (default) or nodes")
+      new Option("--writer <mode>", "writer mode (nodes only; legacy ignored)")
         .choices(["legacy", "nodes"])
-        .default("legacy"),
+        .default("nodes"),
     );
 }
 
@@ -322,8 +322,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
-  const writerMode = writer ?? "legacy";
-  const useNodeWriter = writerMode === "nodes";
+  const writerMode = writer ?? "nodes";
+  if (writerMode !== "nodes") {
+    logger?.warn?.(
+      "legacy writer mode is no longer supported; using nodes output",
+    );
+  }
   type NodeKind = "f" | "d" | "l";
   type NodeWriteParams = {
     path: string;
@@ -339,8 +343,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     last_error?: string | null;
     updated?: number;
   };
-  const nodeUpsertStmt = useNodeWriter
-    ? db.prepare(`
+  const nodeUpsertStmt = db.prepare(`
         INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
         VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
@@ -355,63 +358,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
-      `)
-    : null;
-  const nodeSelectStmt = useNodeWriter
-    ? db.prepare(
-        `SELECT kind, hash, size, ctime, hashed_ctime, link_target FROM nodes WHERE path = ?`,
-      )
-    : null;
-  const writeNode = useNodeWriter
-    ? (params: NodeWriteParams) => {
-        const updated = params.updated ?? Date.now();
-        const ctime = params.ctime ?? params.mtime;
-        nodeUpsertStmt!.run({
-          path: params.path,
-          kind: params.kind,
-          hash: params.hash,
-          mtime: params.mtime,
-          ctime,
-          hashed_ctime: params.hashed_ctime ?? null,
-          updated,
-          size: params.size,
-          deleted: params.deleted,
-          last_seen: params.last_seen ?? null,
-          link_target: params.link_target ?? null,
-          last_error:
-            params.last_error === undefined ? null : params.last_error,
-        });
-      }
-    : null;
-  const markNodeDeleted = useNodeWriter
-    ? (path: string, observed?: number) => {
-        const now = observed ?? Date.now();
-        const existing = nodeSelectStmt!.get(path) as
-          | {
-              kind: NodeKind;
-              hash: string;
-              size: number;
-              ctime: number;
-              hashed_ctime: number | null;
-              link_target?: string | null;
-            }
-          | undefined;
-        writeNode!({
-          path,
-          kind: existing?.kind ?? "f",
-          hash: existing?.hash ?? "",
-          mtime: now,
-          ctime: existing?.ctime ?? now,
-          hashed_ctime: existing?.hashed_ctime ?? null,
-          size: existing?.size ?? 0,
-          deleted: 1,
-          updated: now,
-          last_seen: now,
-          link_target: existing?.link_target ?? null,
-          last_error: null,
-        });
-      }
-    : null;
+      `);
+  const writeNode = (params: NodeWriteParams) => {
+    const updated = params.updated ?? Date.now();
+    const ctime = params.ctime ?? params.mtime;
+    nodeUpsertStmt.run({
+      path: params.path,
+      kind: params.kind,
+      hash: params.hash,
+      mtime: params.mtime,
+      ctime,
+      hashed_ctime: params.hashed_ctime ?? null,
+      updated,
+      size: params.size,
+      deleted: params.deleted,
+      last_seen: params.last_seen ?? null,
+      link_target: params.link_target ?? null,
+      last_error: params.last_error === undefined ? null : params.last_error,
+    });
+  };
 
   const restrictedClause =
     hasRestrictions && !restrictedDirSet.has("")
@@ -434,37 +399,30 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     });
     insertRestrictedBatch([...restrictedPathList, ...restrictedDirList]);
     if (restrictedDirList.length) {
-      const tables = ["files", "dirs", "links"];
-      const dirStmts = tables.map((tbl) =>
-        db.prepare(
-          `
-            INSERT OR IGNORE INTO restricted_paths(rpath)
-            SELECT path FROM ${tbl}
-            WHERE path = @dir
-               OR (path >= @prefix AND path < @upper)
-          `,
-        ),
+      const insertExisting = db.prepare(
+        `
+        INSERT OR IGNORE INTO restricted_paths(rpath)
+        SELECT path FROM nodes
+        WHERE path = @dir
+           OR (path >= @prefix AND path < @upper)
+      `,
       );
-      const insertExisting = db.transaction((dirs: string[]) => {
+      const insertExistingTxn = db.transaction((dirs: string[]) => {
         for (const dir of dirs) {
           const prefix = dir ? `${dir}/` : "";
           const upper = dir ? `${dir}/\uffff` : "\uffff";
-          for (const stmt of dirStmts) {
-            stmt.run({ dir, prefix, upper });
-          }
+          insertExisting.run({ dir, prefix, upper });
         }
       });
-      insertExisting(restrictedDirList);
+      insertExistingTxn(restrictedDirList);
     }
   }
 
   if (pruneMs) {
     const olderThanTs = Date.now() - Number(pruneMs);
-    for (const table of ["files", "dirs", "links"]) {
-      db.prepare(`DELETE FROM ${table} WHERE deleted=1 AND op_ts < ?`).run(
-        olderThanTs,
-      );
-    }
+    db.prepare(`DELETE FROM nodes WHERE deleted = 1 AND updated < ?`).run(
+      olderThanTs,
+    );
   }
 
   const insTouch = db.prepare(
@@ -481,23 +439,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     touchBatch.length = 0;
   }
 
-  // for directory metadata (paths are rpaths)
-  const upsertDir = db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (@path, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
-ON CONFLICT(path) DO UPDATE SET
-  ctime     = excluded.ctime,
-  mtime     = excluded.mtime,
-  deleted   = 0,
-  last_seen = excluded.last_seen,
-  hash      = excluded.hash,
-  -- Preserve current op_ts unless we are resurrecting a previously-deleted dir
-  op_ts     = CASE
-                WHEN dirs.deleted = 1 THEN excluded.op_ts
-                ELSE dirs.op_ts
-              END
-`);
-
   type DirRow = {
     path: string; // rpath
     ctime: number;
@@ -509,30 +450,26 @@ ON CONFLICT(path) DO UPDATE SET
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
     for (const r of rows) {
-      upsertDir.run(r);
-      if (useNodeWriter) {
-        writeNode!({
-          path: r.path,
-          kind: "d",
-          hash: r.hash ?? "",
-          mtime: r.mtime,
-          ctime: r.ctime,
-          size: 0,
-          deleted: 0,
-          last_seen: r.scan_id,
-          updated: r.op_ts,
-          link_target: null,
-          last_error: null,
-        });
-      }
+      writeNode({
+        path: r.path,
+        kind: "d",
+        hash: r.hash ?? "",
+        mtime: r.mtime,
+        ctime: r.ctime,
+        size: 0,
+        deleted: 0,
+        last_seen: r.scan_id,
+        updated: r.op_ts,
+        link_target: null,
+        last_error: null,
+      });
     }
   });
 
   // Files meta (paths are rpaths)
   const applyMetaBatch = db.transaction((rows: Row[]) => {
-    if (!useNodeWriter) return;
     for (const r of rows) {
-      writeNode!({
+      writeNode({
         path: r.path,
         kind: "f",
         hash: r.hash ?? "",
@@ -552,10 +489,9 @@ ON CONFLICT(path) DO UPDATE SET
   // Hashes (paths are rpaths)
   const applyHashBatch = db.transaction(
     (rows: { path: string; hash: string; ctime: number }[]) => {
-      if (!useNodeWriter) return;
       for (const r of rows) {
-        const meta = fileNodeMeta?.get(r.path);
-        writeNode!({
+        const meta = fileNodeMeta.get(r.path);
+        writeNode({
           path: r.path,
           kind: "f",
           hash: r.hash,
@@ -569,7 +505,7 @@ ON CONFLICT(path) DO UPDATE SET
           link_target: null,
           last_error: null,
         });
-        fileNodeMeta?.delete(r.path);
+        fileNodeMeta.delete(r.path);
       }
     },
   );
@@ -585,37 +521,21 @@ ON CONFLICT(path) DO UPDATE SET
     scan_id: number;
   };
 
-  const upsertLink = db.prepare(`
-INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (@path, @target, @ctime, @mtime, @op_ts, @hash, 0, @scan_id)
-ON CONFLICT(path) DO UPDATE SET
-  target=excluded.target,
-  ctime=excluded.ctime,
-  mtime=excluded.mtime,
-  op_ts=excluded.op_ts,
-  hash=excluded.hash,
-  deleted=0,
-  last_seen=excluded.last_seen
-`);
-
   const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
     for (const r of rows) {
-      upsertLink.run(r);
-      if (useNodeWriter) {
-        writeNode!({
-          path: r.path,
-          kind: "l",
-          hash: r.hash ?? "",
-          mtime: r.mtime,
-          ctime: r.ctime,
-          size: Buffer.byteLength(r.target ?? "", "utf8"),
-          deleted: 0,
-          last_seen: r.scan_id,
-          link_target: r.target ?? "",
-          updated: r.op_ts,
-          last_error: null,
-        });
-      }
+      writeNode({
+        path: r.path,
+        kind: "l",
+        hash: r.hash ?? "",
+        mtime: r.mtime,
+        ctime: r.ctime,
+        size: Buffer.byteLength(r.target ?? "", "utf8"),
+        deleted: 0,
+        last_seen: r.scan_id,
+        link_target: r.target ?? "",
+        updated: r.op_ts,
+        last_error: null,
+      });
     }
   });
 
@@ -719,100 +639,38 @@ ON CONFLICT(path) DO UPDATE SET
   async function emitReplaySinceTs(dbSince: number) {
     if (!emitDelta) return;
 
-    // Files (changed or deleted)
-    const files = db
+    const nodes = db
       .prepare(
         `
-    SELECT path, size, ctime, mtime, op_ts, hash, deleted
-    FROM files
-    WHERE op_ts >= ?${restrictedClause}
-    ORDER BY op_ts ASC, path ASC
+    SELECT path, kind, size, ctime, mtime, updated AS op_ts, hash, link_target, deleted
+      FROM nodes
+     WHERE updated >= ?${restrictedClause}
+     ORDER BY op_ts ASC, path ASC
   `,
       )
       .all(dbSince) as {
       path: string;
-      size: number;
-      ctime: number;
-      mtime: number;
+      kind: string;
+      size: number | null;
+      ctime: number | null;
+      mtime: number | null;
       op_ts: number;
       hash: string | null;
+      link_target: string | null;
       deleted: number;
     }[];
 
-    for (const r of files) {
+    for (const r of nodes) {
+      const kind = r.kind;
       emitObj({
+        kind: kind === "d" ? "dir" : kind === "l" ? "link" : undefined,
         path: r.path,
-        size: r.size,
-        ctime: r.ctime,
-        mtime: r.mtime,
+        size: kind === "f" ? r.size ?? 0 : undefined,
+        ctime: r.ctime ?? undefined,
+        mtime: r.mtime ?? undefined,
         op_ts: r.op_ts,
         hash: r.hash ?? undefined,
-        deleted: r.deleted,
-      });
-    }
-    flushDeltaBuf();
-
-    // Dirs
-    const dirs = db
-      .prepare(
-        `
-    SELECT path, ctime, mtime, op_ts, hash, deleted
-    FROM dirs
-    WHERE op_ts >= ?${restrictedClause}
-    ORDER BY op_ts ASC, path ASC
-  `,
-      )
-      .all(dbSince) as {
-      path: string;
-      ctime: number;
-      mtime: number;
-      op_ts: number;
-      hash: string;
-      deleted: number;
-    }[];
-
-    for (const r of dirs) {
-      emitObj({
-        kind: "dir",
-        path: r.path,
-        ctime: r.ctime,
-        mtime: r.mtime,
-        op_ts: r.op_ts,
-        hash: r.hash,
-        deleted: r.deleted,
-      });
-    }
-    flushDeltaBuf();
-
-    // Links
-    const links = db
-      .prepare(
-        `
-    SELECT path, target, ctime, mtime, op_ts, hash, deleted
-    FROM links
-    WHERE op_ts >= ?${restrictedClause}
-    ORDER BY op_ts ASC, path ASC
-  `,
-      )
-      .all(dbSince) as {
-      path: string;
-      target: string;
-      ctime: number;
-      mtime: number;
-      op_ts: number;
-      hash: string;
-      deleted: number;
-    }[];
-
-    for (const r of links) {
-      emitObj({
-        kind: "link",
-        path: r.path,
-        target: r.target,
-        ctime: r.ctime,
-        mtime: r.mtime,
-        op_ts: r.op_ts,
-        hash: r.hash,
+        target: kind === "l" ? r.link_target ?? undefined : undefined,
         deleted: r.deleted,
       });
     }
@@ -825,9 +683,10 @@ ON CONFLICT(path) DO UPDATE SET
     string, // ABS
     { size: number; ctime: number; mtime: number }
   >();
-  const fileNodeMeta = useNodeWriter
-    ? new Map<string, { size: number; mtime: number; ctime: number; last_seen: number }>()
-    : null;
+  const fileNodeMeta = new Map<
+    string,
+    { size: number; mtime: number; ctime: number; last_seen: number }
+  >();
 
   // Handle worker replies (batched)
   for (const w of workers) {
@@ -847,7 +706,7 @@ ON CONFLICT(path) DO UPDATE SET
         const rpath = toRel(r.path, absRoot);
         if ("error" in r) {
           pendingMeta.delete(r.path);
-          fileNodeMeta?.delete(rpath);
+          fileNodeMeta.delete(rpath);
           emitHashProgress();
           continue;
         }
@@ -948,17 +807,21 @@ ON CONFLICT(path) DO UPDATE SET
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
-      `SELECT size, ctime, mtime, hashed_ctime, hash FROM files WHERE path = ?`,
+      `SELECT size, ctime, mtime, hashed_ctime, hash
+         FROM nodes
+        WHERE path = ? AND kind = 'f'`,
     );
 
-    // Existing-dir lookup by rpath (to decide whether to emit NDJSON)
     const getExistingDir = db.prepare(
-      `SELECT ctime, mtime, hash, deleted FROM dirs WHERE path = ?`,
+      `SELECT ctime, mtime, hash, deleted
+         FROM nodes
+        WHERE path = ? AND kind = 'd'`,
     );
 
-    // Existing-link lookup by rpath (to decide whether to emit NDJSON)
     const getExistingLink = db.prepare(
-      `SELECT ctime, mtime, hash, target, deleted FROM links WHERE path = ?`,
+      `SELECT ctime, mtime, hash, link_target AS target, deleted
+         FROM nodes
+        WHERE path = ? AND kind = 'l'`,
     );
 
     for await (const entry of stream as AsyncIterable<{
@@ -1071,7 +934,7 @@ ON CONFLICT(path) DO UPDATE SET
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
           hashTotalBytes += size;
-          fileNodeMeta?.set(rpath, {
+          fileNodeMeta.set(rpath, {
             size,
             mtime,
             ctime,
@@ -1162,79 +1025,37 @@ ON CONFLICT(path) DO UPDATE SET
     flushDeltaBuf();
 
     // Compute deletions (anything not seen this pass and not already deleted)
-    const toDelete = db
+    const toDeleteNodes = db
       .prepare(
-        `SELECT path FROM files WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
+        `SELECT path, kind
+           FROM nodes
+          WHERE last_seen <> ?
+            AND deleted = 0${restrictedClause}`,
       )
-      .all(scan_id) as { path: string }[];
+      .all(scan_id) as { path: string; kind: NodeKind }[];
 
-    const op_ts = Date.now();
-    db.prepare(
-      `UPDATE files
-       SET deleted = 1, op_ts = ?
-       WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
-    ).run(op_ts, scan_id);
+    if (toDeleteNodes.length) {
+      const deleteTs = Date.now();
+      db.prepare(
+        `UPDATE nodes
+            SET deleted = 1,
+                updated = @ts,
+                mtime = @ts,
+                last_error = NULL
+          WHERE last_seen <> @scan
+            AND deleted = 0${restrictedClause}`,
+      ).run({ ts: deleteTs, scan: scan_id });
 
-    // emit-delta: file deletions
-    if (emitDelta && toDelete.length) {
-      for (const r of toDelete) {
-        emitObj({ path: r.path, deleted: 1, op_ts });
-      }
-      flushDeltaBuf();
-    }
-    if (useNodeWriter && toDelete.length) {
-      for (const r of toDelete) {
-        markNodeDeleted!(r.path);
-      }
-    }
-
-    // Mark deletions: dirs
-    const toDeleteDirs = db
-      .prepare(
-        `SELECT path FROM dirs WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
-      )
-      .all(scan_id) as { path: string }[];
-
-    const op_ts_dirs = Date.now();
-
-    db.prepare(
-      `UPDATE dirs SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
-    ).run(op_ts_dirs, scan_id);
-
-    // emit-delta: Emit dir deletions (use the snapshot we captured BEFORE the update)
-    if (emitDelta && toDeleteDirs.length) {
-      for (const r of toDeleteDirs) {
-        emitObj({ kind: "dir", path: r.path, deleted: 1, op_ts: op_ts_dirs });
-      }
-      flushDeltaBuf();
-    }
-    if (useNodeWriter && toDeleteDirs.length) {
-      for (const r of toDeleteDirs) {
-        markNodeDeleted!(r.path);
-      }
-    }
-
-    // Mark deletions: links
-    const toDeleteLinks = db
-      .prepare(
-        `SELECT path FROM links WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
-      )
-      .all(scan_id) as { path: string }[];
-
-    const op_ts_links = Date.now();
-    db.prepare(
-      `UPDATE links SET deleted=1, op_ts=? WHERE last_seen <> ? AND deleted = 0${restrictedClause}`,
-    ).run(op_ts_links, scan_id);
-
-    if (emitDelta && toDeleteLinks.length) {
-      for (const r of toDeleteLinks) {
-        emitObj({ kind: "link", path: r.path, deleted: 1, op_ts: op_ts_links });
-      }
-      flushDeltaBuf();
-    }
-    if (useNodeWriter && toDeleteLinks.length) {
-      for (const r of toDeleteLinks) {
-        markNodeDeleted!(r.path);
+      if (emitDelta) {
+        for (const r of toDeleteNodes) {
+          emitObj({
+            kind: r.kind === "d" ? "dir" : r.kind === "l" ? "link" : undefined,
+            path: r.path,
+            deleted: 1,
+            op_ts: deleteTs,
+          });
+        }
+        flushDeltaBuf();
       }
     }
 
