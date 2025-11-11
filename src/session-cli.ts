@@ -48,11 +48,13 @@ type StopResult = "stopped" | "failed" | "not-running";
 
 const COLOR_OK =
   Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
-const GREEN_CHECK = COLOR_OK ? "\x1b[32m✓\x1b[0m" : "✓";
+const CHECK_CHAR = "✓";
+const GREEN_CHECK = COLOR_OK ? `\x1b[32m${CHECK_CHAR}\x1b[0m` : CHECK_CHAR;
 
-function fmtCleanMarker(ts?: number | null): string {
+function fmtCleanMarker(ts?: number | null, useColor = COLOR_OK): string {
   if (!ts) return "-";
-  return `${GREEN_CHECK} ${fmtAgo(ts)}`;
+  const marker = useColor ? GREEN_CHECK : CHECK_CHAR;
+  return `${marker} ${fmtAgo(ts)}`;
 }
 
 function stopSessionRow(sessionDb: string, row: SessionRow): StopResult {

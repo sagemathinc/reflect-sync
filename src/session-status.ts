@@ -22,9 +22,6 @@ function fmtMs(ms?: number | null): string {
 }
 
 const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-const COLOR_OK =
-  Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
-const GREEN_CHECK = COLOR_OK ? "\x1b[32m✓\x1b[0m" : "✓";
 
 export function fmtAgo(
   input: Date | number | string,
@@ -60,7 +57,7 @@ export function fmtLocalPath(path: string) {
 
 function fmtCleanMarker(ts?: number | null): string {
   if (!ts) return "-";
-  return `${GREEN_CHECK} ${fmtAgo(ts)}`;
+  return `✓ ${fmtAgo(ts)}`;
 }
 
 function hostWithPort(
