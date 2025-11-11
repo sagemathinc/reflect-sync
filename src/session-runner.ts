@@ -79,6 +79,9 @@ export function spawnSchedulerForSession(
   if (row.disable_full_cycle) {
     args.push("--disable-full-cycle");
   }
+  if (row.merge_strategy) {
+    args.push("--merge-strategy", row.merge_strategy);
+  }
 
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);

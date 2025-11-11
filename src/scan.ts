@@ -115,6 +115,11 @@ export function configureScanCommand(
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
       [] as string[],
+    )
+    .addOption(
+      new Option("--writer <mode>", "legacy tables (default) or nodes")
+        .choices(["legacy", "nodes"])
+        .default("legacy"),
     );
 }
 
@@ -140,6 +145,7 @@ type ScanOptions = {
   restrictedDirs?: string[];
   restrictedPath?: string[] | string;
   restrictedDir?: string[] | string;
+  writer?: "legacy" | "nodes";
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -161,6 +167,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     restrictedDirs: restrictedDirsOpt = [],
     restrictedPath: restrictedPathOpt = [],
     restrictedDir: restrictedDirOpt = [],
+    writer = "legacy",
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const ignoreRaw: string[] = [];
@@ -315,6 +322,58 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
+  const writerMode = writer ?? "legacy";
+  const useNodeWriter = writerMode === "nodes";
+  type NodeKind = "f" | "d" | "l";
+  type NodeWriteParams = {
+    path: string;
+    kind: NodeKind;
+    hash: string;
+    mtime: number;
+    size: number;
+    deleted: 0 | 1;
+  };
+  const nodeUpsertStmt = useNodeWriter
+    ? db.prepare(`
+        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted)
+        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted)
+        ON CONFLICT(path) DO UPDATE SET
+          kind=excluded.kind,
+          hash=excluded.hash,
+          mtime=excluded.mtime,
+          updated=excluded.updated,
+          size=excluded.size,
+          deleted=excluded.deleted
+      `)
+    : null;
+  const nodeSelectStmt = useNodeWriter
+    ? db.prepare(
+        `SELECT kind, hash, size FROM nodes WHERE path = ?`,
+      )
+    : null;
+  const writeNode = useNodeWriter
+    ? (params: NodeWriteParams) => {
+        nodeUpsertStmt!.run({
+          ...params,
+          updated: Date.now(),
+        });
+      }
+    : null;
+  const markNodeDeleted = useNodeWriter
+    ? (path: string) => {
+        const existing = nodeSelectStmt!.get(path) as
+          | { kind: NodeKind; hash: string; size: number }
+          | undefined;
+        writeNode!({
+          path,
+          kind: existing?.kind ?? "f",
+          hash: existing?.hash ?? "",
+          mtime: Date.now(),
+          size: existing?.size ?? 0,
+          deleted: 1,
+        });
+      }
+    : null;
 
   const restrictedClause =
     hasRestrictions && !restrictedDirSet.has("")
@@ -411,7 +470,19 @@ ON CONFLICT(path) DO UPDATE SET
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
-    for (const r of rows) upsertDir.run(r);
+    for (const r of rows) {
+      upsertDir.run(r);
+      if (useNodeWriter) {
+        writeNode!({
+          path: r.path,
+          kind: "d",
+          hash: r.hash ?? "",
+          mtime: r.mtime,
+          size: 0,
+          deleted: 0,
+        });
+      }
+    }
   });
 
   // Files meta (paths are rpaths)
@@ -440,7 +511,21 @@ ON CONFLICT(path) DO UPDATE SET
          SET hash = ?, hashed_ctime = ?, deleted = 0
          WHERE path = ?`,
       );
-      for (const r of rows) stmt.run(r.hash, r.ctime, r.path);
+      for (const r of rows) {
+        stmt.run(r.hash, r.ctime, r.path);
+        if (useNodeWriter) {
+          const meta = fileNodeMeta?.get(r.path);
+          writeNode!({
+            path: r.path,
+            kind: "f",
+            hash: r.hash,
+            mtime: meta?.mtime ?? r.ctime ?? Date.now(),
+            size: meta?.size ?? 0,
+            deleted: 0,
+          });
+          fileNodeMeta?.delete(r.path);
+        }
+      }
     },
   );
 
@@ -469,7 +554,19 @@ ON CONFLICT(path) DO UPDATE SET
 `);
 
   const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
-    for (const r of rows) upsertLink.run(r);
+    for (const r of rows) {
+      upsertLink.run(r);
+      if (useNodeWriter) {
+        writeNode!({
+          path: r.path,
+          kind: "l",
+          hash: r.target,
+          mtime: r.mtime,
+          size: Buffer.byteLength(r.target ?? "", "utf8"),
+          deleted: 0,
+        });
+      }
+    }
   });
 
   // ----------------- Worker pool ------------------
@@ -678,6 +775,9 @@ ON CONFLICT(path) DO UPDATE SET
     string, // ABS
     { size: number; ctime: number; mtime: number }
   >();
+  const fileNodeMeta = useNodeWriter
+    ? new Map<string, { size: number; mtime: number }>()
+    : null;
 
   // Handle worker replies (batched)
   for (const w of workers) {
@@ -694,13 +794,13 @@ ON CONFLICT(path) DO UPDATE SET
         if (metaToday) {
           hashCompletedBytes += metaToday.size;
         }
+        const rpath = toRel(r.path, absRoot);
         if ("error" in r) {
           pendingMeta.delete(r.path);
+          fileNodeMeta?.delete(rpath);
           emitHashProgress();
           continue;
         }
-
-        const rpath = toRel(r.path, absRoot);
         hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
         if (await isRecent(r.path, undefined, r.mtime)) {
           touchBatch.push([rpath, Date.now()]);
@@ -921,6 +1021,7 @@ ON CONFLICT(path) DO UPDATE SET
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
           hashTotalBytes += size;
+          fileNodeMeta?.set(rpath, { size, mtime });
         }
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";
@@ -1026,6 +1127,11 @@ ON CONFLICT(path) DO UPDATE SET
       }
       flushDeltaBuf();
     }
+    if (useNodeWriter && toDelete.length) {
+      for (const r of toDelete) {
+        markNodeDeleted!(r.path);
+      }
+    }
 
     // Mark deletions: dirs
     const toDeleteDirs = db
@@ -1047,6 +1153,11 @@ ON CONFLICT(path) DO UPDATE SET
       }
       flushDeltaBuf();
     }
+    if (useNodeWriter && toDeleteDirs.length) {
+      for (const r of toDeleteDirs) {
+        markNodeDeleted!(r.path);
+      }
+    }
 
     // Mark deletions: links
     const toDeleteLinks = db
@@ -1065,6 +1176,11 @@ ON CONFLICT(path) DO UPDATE SET
         emitObj({ kind: "link", path: r.path, deleted: 1, op_ts: op_ts_links });
       }
       flushDeltaBuf();
+    }
+    if (useNodeWriter && toDeleteLinks.length) {
+      for (const r of toDeleteLinks) {
+        markNodeDeleted!(r.path);
+      }
     }
 
     await Promise.all(workers.map((w) => w.terminate()));

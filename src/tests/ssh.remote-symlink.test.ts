@@ -91,19 +91,21 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       // prefer is alpha, so don't immediately do the rename:
       await wait(5000);
       await fsp.rename(join(betaRootRemote, "x"), join(betaRootRemote, "x2"));
+      const betaListing = (await fsp.readdir(betaRootRemote)).sort();
 
-      m = countSchedulerCycles(baseDb);
       await waitFor(
         () => countSchedulerCycles(baseDb),
-        (n) => n >= m + 1,
+        async () => {
+          return (
+            (await fsp.readdir(alphaRoot)).join("|") == betaListing.join("|")
+          );
+        },
         15_000,
         10,
       );
 
-      const betaListing = new Set(await fsp.readdir(betaRootRemote));
-      const expectedListing = betaListing;
       const alphaListing = new Set(await fsp.readdir(alphaRoot));
-
+      const expectedListing = new Set(betaListing);
       expect(expectedListing).toEqual(alphaListing);
 
       await expect(linkExists(join(alphaRoot, "x.link")));

@@ -59,6 +59,7 @@ function baseSessionRow(
     disable_hot_sync: 0,
     enable_reflink: 0,
     disable_full_cycle: 0,
+    merge_strategy: null,
     ...overrides,
   };
 }

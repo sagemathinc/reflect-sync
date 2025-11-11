@@ -15,7 +15,7 @@
 
 import readline from "node:readline";
 import { getDb } from "./db.js";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { CLI_NAME } from "./constants.js";
 import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
@@ -32,6 +32,11 @@ function buildProgram(): Command {
     .description("Ingest NDJSON deltas from stdin into a local sqlite db");
 
   program.requiredOption("--db <path>", "sqlite db file");
+  program.addOption(
+    new Option("--writer <mode>", "legacy tables (default) or nodes")
+      .choices(["legacy", "nodes"])
+      .default("legacy"),
+  );
 
   return program;
 }
@@ -42,6 +47,7 @@ export interface IngestDeltaOptions {
   logLevel?: LogLevel;
   input?: NodeJS.ReadableStream;
   abortSignal?: AbortSignal;
+  writer?: "legacy" | "nodes";
 }
 
 export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
@@ -51,6 +57,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     logLevel = "info",
     input = process.stdin,
     abortSignal,
+    writer = "legacy",
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
 
@@ -79,6 +86,53 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 
   // ---------- db ----------
   const db = getDb(dbPath);
+  const writerMode = writer ?? "legacy";
+  const useNodeWriter = writerMode === "nodes";
+  type NodeKind = "f" | "d" | "l";
+  type NodeWriteParams = {
+    path: string;
+    kind: NodeKind;
+    hash: string;
+    mtime: number;
+    size: number;
+    deleted: 0 | 1;
+  };
+  const nodeUpsertStmt = useNodeWriter
+    ? db.prepare(`
+        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted)
+        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted)
+        ON CONFLICT(path) DO UPDATE SET
+          kind=excluded.kind,
+          hash=excluded.hash,
+          mtime=excluded.mtime,
+          updated=excluded.updated,
+          size=excluded.size,
+          deleted=excluded.deleted
+      `)
+    : null;
+  const nodeSelectStmt = useNodeWriter
+    ? db.prepare(`SELECT kind, hash, size FROM nodes WHERE path = ?`)
+    : null;
+  const writeNode = useNodeWriter
+    ? (params: NodeWriteParams) => {
+        nodeUpsertStmt!.run({ ...params, updated: Date.now() });
+      }
+    : null;
+  const markNodeDeleted = useNodeWriter
+    ? (path: string) => {
+        const existing = nodeSelectStmt!.get(path) as
+          | { kind: NodeKind; hash: string; size: number }
+          | undefined;
+        writeNode!({
+          path,
+          kind: existing?.kind ?? "f",
+          hash: existing?.hash ?? "",
+          mtime: Date.now(),
+          size: existing?.size ?? 0,
+          deleted: 1,
+        });
+      }
+    : null;
   let processedRows = 0;
   let closed = false;
   logger.info("ingest start", { db: dbPath });
@@ -197,6 +251,20 @@ ON CONFLICT(path) DO UPDATE SET
           deleted: isDelete ? 1 : 0,
           now,
         });
+        if (useNodeWriter) {
+          if (isDelete) {
+            markNodeDeleted!(r.path);
+          } else {
+            writeNode!({
+              path: r.path,
+              kind: "d",
+              hash: r.hash ?? "",
+              mtime: r.mtime ?? op_ts,
+              size: 0,
+              deleted: 0,
+            });
+          }
+        }
       } else if (r.kind === "link") {
         upsertLink.run({
           path: r.path,
@@ -208,6 +276,20 @@ ON CONFLICT(path) DO UPDATE SET
           deleted: isDelete ? 1 : 0,
           now,
         });
+        if (useNodeWriter) {
+          if (isDelete) {
+            markNodeDeleted!(r.path);
+          } else {
+            writeNode!({
+              path: r.path,
+              kind: "l",
+              hash: r.target ?? "",
+              mtime: r.mtime ?? op_ts,
+              size: Buffer.byteLength(r.target ?? "", "utf8"),
+              deleted: 0,
+            });
+          }
+        }
       } else {
         // default: file row
         if (isDelete) {
@@ -224,6 +306,9 @@ ON CONFLICT(path) DO UPDATE SET
             hashed_ctime: null,
           });
           insTouch.run(r.path, now);
+          if (useNodeWriter) {
+            markNodeDeleted!(r.path);
+          }
         } else if (r.hash == null) {
           // came from watch without a hash: don't poison the DB with NULL hashes
           // still mark as touched so hot watching favors this area
@@ -243,6 +328,16 @@ ON CONFLICT(path) DO UPDATE SET
             hashed_ctime: r.ctime ?? null,
           });
           insTouch.run(r.path, now);
+          if (useNodeWriter) {
+            writeNode!({
+              path: r.path,
+              kind: "f",
+              hash: r.hash,
+              mtime: r.mtime ?? op_ts,
+              size: r.size ?? 0,
+              deleted: 0,
+            });
+          }
         }
       }
     }

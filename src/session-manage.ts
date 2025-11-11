@@ -352,6 +352,12 @@ function combineCompress(
   return explicitLevel ? `${base}:${explicitLevel}` : base;
 }
 
+function normalizeMergeStrategyInput(value?: string | null): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed ? trimmed : null;
+}
+
 export async function newSession({
   alphaSpec,
   betaSpec,
@@ -367,6 +373,7 @@ export async function newSession({
   disableHotSync = false,
   enableReflink = false,
   disableFullCycle = false,
+  mergeStrategy = null,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
 
@@ -402,6 +409,8 @@ export async function newSession({
   }
 
   let id = 0;
+  const normalizedMergeStrategy = normalizeMergeStrategyInput(mergeStrategy);
+
   try {
     id = createSession(
       sessionDb,
@@ -420,6 +429,7 @@ export async function newSession({
         disable_hot_sync: !!disableHotSync,
         enable_reflink: !!enableReflink,
         disable_full_cycle: !!disableFullCycle,
+        merge_strategy: normalizedMergeStrategy,
       },
       parseLabelPairs(label || []),
     );
@@ -493,6 +503,7 @@ export interface SessionEditOptions {
   logger?: Logger;
   disableHotSync?: boolean;
   disableFullCycle?: boolean;
+  mergeStrategy?: string | null;
 }
 
 export async function editSession(options: SessionEditOptions) {
@@ -512,6 +523,7 @@ export async function editSession(options: SessionEditOptions) {
     logger,
     disableHotSync,
     disableFullCycle,
+    mergeStrategy,
   } = options;
 
   ensureSessionDb(sessionDb);
@@ -591,6 +603,15 @@ export async function editSession(options: SessionEditOptions) {
     if (!!row.disable_full_cycle !== desired) {
       updates.disable_full_cycle = desired;
       changes.push(`full-cycle=${desired ? "disabled" : "enabled"}`);
+      needRestart = true;
+    }
+  }
+
+  if (mergeStrategy !== undefined) {
+    const normalized = normalizeMergeStrategyInput(mergeStrategy);
+    if ((row.merge_strategy ?? null) !== normalized) {
+      updates.merge_strategy = normalized;
+      changes.push(`merge-strategy=${normalized ?? "-"}`);
       needRestart = true;
     }
   }

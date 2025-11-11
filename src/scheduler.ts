@@ -99,6 +99,7 @@ export type SchedulerOptions = {
   disableHotSync?: boolean;
   disableFullCycle?: boolean;
   enableReflink?: boolean;
+  mergeStrategy?: string | null;
 
   compress?: string;
   ignoreRules: string[];
@@ -183,6 +184,10 @@ export function configureSchedulerCommand(
         false,
       )
       .option(
+        "--merge-strategy <name>",
+        "use experimental node-based merge strategy identifier",
+      )
+      .option(
         "-i, --ignore <pattern>",
         "gitignore-style ignore rule (repeat or comma-separated)",
         collectIgnoreOption,
@@ -211,6 +216,10 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
   if (opts.enableHotSync === true) {
     disableHotSync = false;
   }
+  const mergeStrategy =
+    typeof opts.mergeStrategy === "string" && opts.mergeStrategy.trim()
+      ? opts.mergeStrategy.trim()
+      : undefined;
   const out: SchedulerOptions = {
     alphaRoot: String(opts.alphaRoot),
     betaRoot: String(opts.betaRoot),
@@ -241,6 +250,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
     enableReflink: opts.enableReflink === true,
+    mergeStrategy: mergeStrategy ?? null,
   };
 
   if (out.alphaHost && out.betaHost) {
@@ -305,6 +315,7 @@ export async function runScheduler({
   sessionDb,
   sessionId,
   logger: providedLogger,
+  mergeStrategy = null,
 }: SchedulerOptions): Promise<void> {
   if (!alphaRoot || !betaRoot)
     throw new Error("Need --alpha-root and --beta-root");
@@ -348,6 +359,7 @@ export async function runScheduler({
   if (!alphaHost) autoIgnores.push(...autoIgnoreForRoot(alphaRoot, syncHome));
   if (!betaHost) autoIgnores.push(...autoIgnoreForRoot(betaRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns([...baseIgnore, ...autoIgnores]);
+  const nodeWriterEnabled = !!mergeStrategy;
 
   // ---------- scheduler state ----------
   let running = false,
@@ -667,6 +679,7 @@ export async function runScheduler({
     ignoreRules: string[];
     restrictedPaths?: string[];
     restrictedDirs?: string[];
+    writerMode?: "legacy" | "nodes";
   }): Promise<{
     code: number | null;
     ms: number;
@@ -725,6 +738,9 @@ export async function runScheduler({
         sshArgs.push("--restricted-dir", rel);
       }
     }
+    if (params.writerMode === "nodes") {
+      sshArgs.push("--writer", "nodes");
+    }
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
@@ -770,6 +786,7 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: stdout,
       abortSignal: abortController.signal,
+      writer: params.writerMode === "nodes" ? "nodes" : "legacy",
     });
 
     const wait = (p: ChildProcess) =>
@@ -906,6 +923,7 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: ingestStream,
       abortSignal: ingestAbort.signal,
+      writer: nodeWriterEnabled ? "nodes" : "legacy",
     }).catch((err) => {
       if (isDiskFullCause(err)) {
         stopForDiskFull(`disk full during remote ${side} watch ingest`, err);
@@ -1718,6 +1736,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+            writerMode: nodeWriterEnabled ? "nodes" : "legacy",
           })
         : await (async () => {
             try {
@@ -1732,6 +1751,7 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+                writer: nodeWriterEnabled ? "nodes" : "legacy",
               });
               return {
                 code: 0,
@@ -1782,6 +1802,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+            writerMode: nodeWriterEnabled ? "nodes" : "legacy",
           })
         : await (async () => {
             try {
@@ -1796,6 +1817,7 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+                writer: nodeWriterEnabled ? "nodes" : "legacy",
               });
               return {
                 code: 0,

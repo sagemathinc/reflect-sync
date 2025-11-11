@@ -179,6 +179,10 @@ export function registerSessionCommands(program: Command) {
         "copy files via cp --reflink when both roots are local",
         false,
       )
+      .option(
+        "--merge-strategy <name>",
+        "set merge strategy (experimental; enables node-based pipeline)",
+      )
       .action(
         async (
           alphaSpec: string,
@@ -583,6 +587,17 @@ export function registerSessionCommands(program: Command) {
           "enable automatic periodic full sync cycles",
         ).conflicts("disableFullCycle"),
       )
+      .addOption(
+        new Option(
+          "--merge-strategy <name>",
+          "set merge strategy (experimental)",
+        ).conflicts("clearMergeStrategy"),
+      )
+      .option(
+        "--clear-merge-strategy",
+        "remove merge strategy override",
+        false,
+      )
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -607,6 +622,12 @@ export function registerSessionCommands(program: Command) {
             : opts.enableFullCycle === true
               ? false
               : undefined;
+        const mergeStrategyUpdate =
+          opts.clearMergeStrategy === true
+            ? null
+            : opts.mergeStrategy !== undefined
+              ? opts.mergeStrategy
+              : undefined;
         try {
           const result = await editSession({
             sessionDb,
@@ -624,6 +645,7 @@ export function registerSessionCommands(program: Command) {
             logger: cliLogger,
             disableHotSync: disableHotSyncUpdate,
             disableFullCycle: disableFullCycleUpdate,
+            mergeStrategy: mergeStrategyUpdate,
           });
 
           const updatedRow = loadSessionById(sessionDb, row.id) ?? row;

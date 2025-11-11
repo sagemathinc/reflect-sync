@@ -114,6 +114,7 @@ export interface SessionCreateInput {
   disable_hot_sync?: boolean;
   enable_reflink?: boolean;
   disable_full_cycle?: boolean;
+  merge_strategy?: string | null;
 }
 
 export interface SessionPatch {
@@ -146,6 +147,7 @@ export interface SessionPatch {
   disable_hot_sync?: boolean | number | null;
   enable_reflink?: boolean | number | null;
   disable_full_cycle?: boolean | number | null;
+  merge_strategy?: string | null;
 }
 
 export interface SessionRow {
@@ -181,6 +183,7 @@ export interface SessionRow {
   disable_hot_sync: number;
   enable_reflink: number;
   disable_full_cycle: number;
+  merge_strategy: string | null;
 }
 
 export interface ForwardCreateInput {
@@ -270,6 +273,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         hash_alg         TEXT NOT NULL DEFAULT '${defaultHashAlg()}',
         compress         TEXT,
         ignore_rules     TEXT,  -- JSON.stringify(string[])
+        merge_strategy   TEXT,
         disable_hot_sync INTEGER NOT NULL DEFAULT 0,
         enable_reflink INTEGER NOT NULL DEFAULT 0,
         disable_full_cycle INTEGER NOT NULL DEFAULT 0,
@@ -412,6 +416,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "disable_hot_sync", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "enable_reflink", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "disable_full_cycle", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("sessions", "merge_strategy", "TEXT");
   ensureColumn("ssh_sessions", "ssh_args", "TEXT");
 
   return db;
@@ -446,10 +451,10 @@ export function createSession(
         beta_host, beta_port,
         alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
-        hash_alg, compress, ignore_rules,
+        hash_alg, compress, ignore_rules, merge_strategy,
         disable_hot_sync, disable_full_cycle, enable_reflink
       )
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const info = stmt.run(
       now,
@@ -469,6 +474,7 @@ export function createSession(
       input.hash_alg ?? defaultHashAlg(),
       input.compress ?? null,
       input.ignore ? serializeIgnoreRules(input.ignore) : null,
+      input.merge_strategy ?? null,
       input.disable_hot_sync ? 1 : 0,
       input.disable_full_cycle ? 1 : 0,
       input.enable_reflink ? 1 : 0,
