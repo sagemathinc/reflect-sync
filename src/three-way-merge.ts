@@ -561,9 +561,13 @@ type NodeRecord = {
   kind: string;
   hash: string;
   mtime: number;
+  ctime: number;
+  hashed_ctime: number | null;
   updated: number;
   size: number;
   deleted: number;
+  last_seen: number | null;
+  link_target: string | null;
   last_error: string | null;
 };
 
@@ -578,7 +582,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, updated, size, deleted, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -586,15 +590,19 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@updated,@size,@deleted,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@hashed_ctime,@updated,@size,@deleted,@last_seen,@link_target,@last_error)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
        mtime=excluded.mtime,
+       ctime=excluded.ctime,
+       hashed_ctime=excluded.hashed_ctime,
        updated=excluded.updated,
        size=excluded.size,
        deleted=excluded.deleted,
+       last_seen=excluded.last_seen,
+       link_target=excluded.link_target,
        last_error=excluded.last_error`,
   ).run(row);
 }
@@ -637,9 +645,13 @@ function markNodesDeletedBatch(
           kind: "f",
           hash: "",
           mtime: now,
+          ctime: now,
+          hashed_ctime: null,
           updated: now,
           size: 0,
           deleted: 1,
+          last_seen: now,
+          link_target: null,
           last_error: null,
         };
     rows.push(row);
@@ -667,9 +679,13 @@ function recordNodeErrorsBatch(
           kind: "f",
           hash: "",
           mtime: now,
+          ctime: now,
+          hashed_ctime: null,
           updated: now,
           size: 0,
           deleted: 0,
+          last_seen: now,
+          link_target: null,
           last_error: null,
         };
     row.updated = now;

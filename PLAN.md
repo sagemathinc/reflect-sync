@@ -134,8 +134,9 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 3. (done) Replace the merge planner with the query \+ resolver described above.
 4. (done) Reuse existing rsync/reflink helpers to execute copy/delete operations \(one path per entry, no implicit recursion\).
 5. (done) Mirror DB state after each confirmed operation \(source row → destination \+ base\).
-6. Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
-7. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
+6. (done) Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
+7. Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
+8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
 

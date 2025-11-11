@@ -310,51 +310,45 @@ function computeSize(
   db: ReturnType<typeof getDb>,
   rel: string | null,
 ): { kind: QueryPathKind; totalBytes: number; fileCount: number } {
-  if (rel === null || rel === "") {
-    const kind: QueryPathKind = rel === null ? "all" : "dir";
+  const summarize = (clause = "", params: any[] = []) => {
     const row = db
       .prepare(
-        `SELECT COALESCE(SUM(COALESCE(size, 0)), 0) AS total, COUNT(*) AS count
-         FROM files
-         WHERE deleted = 0`,
+        `SELECT COALESCE(SUM(size), 0) AS total, COUNT(*) AS count
+           FROM nodes
+          WHERE deleted = 0 AND kind = 'f' ${clause}`,
       )
-      .get() as { total: number; count: number };
-    return {
-      kind,
-      totalBytes: row?.total ?? 0,
-      fileCount: row?.count ?? 0,
-    };
+      .get(...params) as { total: number; count: number } | undefined;
+    return { totalBytes: row?.total ?? 0, fileCount: row?.count ?? 0 };
+  };
+
+  if (rel === null) {
+    const agg = summarize();
+    return { kind: "all", ...agg };
+  }
+  if (rel === "") {
+    const agg = summarize();
+    return { kind: "dir", ...agg };
   }
 
-  const fileRow = db
+  const nodeRow = db
     .prepare(
-      `SELECT COALESCE(size, 0) AS size
-         FROM files
-        WHERE deleted = 0 AND path = ?`,
+      `SELECT kind, COALESCE(size, 0) AS size
+         FROM nodes
+        WHERE deleted = 0 AND path = ?
+        LIMIT 1`,
     )
-    .get(rel) as { size: number } | undefined;
-  if (fileRow) {
+    .get(rel) as { kind: string; size: number } | undefined;
+  if (nodeRow && nodeRow.kind !== "d") {
     return {
       kind: "file",
-      totalBytes: fileRow.size ?? 0,
+      totalBytes: nodeRow.size ?? 0,
       fileCount: 1,
     };
   }
 
   ensureDirectoryExists(db, rel);
-  const likeParam = `${rel}/%`;
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(COALESCE(size, 0)), 0) AS total, COUNT(*) AS count
-         FROM files
-        WHERE deleted = 0 AND path LIKE ?`,
-    )
-    .get(likeParam) as { total: number; count: number };
-  return {
-    kind: "dir",
-    totalBytes: row?.total ?? 0,
-    fileCount: row?.count ?? 0,
-  };
+  const agg = summarize("AND path LIKE ?", [`${rel}/%`]);
+  return { kind: "dir", ...agg };
 }
 
 function determinePathKind(
@@ -364,15 +358,18 @@ function determinePathKind(
   if (rel === null) return "all";
   if (rel === "") return "dir";
 
-  const fileRow = db
+  const nodeRow = db
     .prepare(
-      `SELECT 1
-         FROM files
+      `SELECT kind
+         FROM nodes
         WHERE deleted = 0 AND path = ?
         LIMIT 1`,
     )
-    .get(rel);
-  if (fileRow) return "file";
+    .get(rel) as { kind: string } | undefined;
+  if (nodeRow) {
+    if (nodeRow.kind === "d") return "dir";
+    return "file";
+  }
 
   if (directoryExists(db, rel)) return "dir";
 
@@ -381,33 +378,26 @@ function determinePathKind(
 }
 
 function directoryExists(db: ReturnType<typeof getDb>, rel: string): boolean {
+  if (rel === "") return true;
   const dirRow = db
     .prepare(
       `SELECT 1
-         FROM dirs
+         FROM nodes
         WHERE deleted = 0 AND path = ?
         LIMIT 1`,
     )
-    .get(rel);
-  if (dirRow) return true;
+    .get(rel) as { kind?: string } | undefined;
+  if (dirRow && dirRow.kind === "d") return true;
   const childRow = db
     .prepare(
       `SELECT 1
-         FROM files
+         FROM nodes
         WHERE deleted = 0 AND path LIKE ?
         LIMIT 1`,
     )
     .get(`${rel}/%`);
   if (childRow) return true;
-  const subdirRow = db
-    .prepare(
-      `SELECT 1
-         FROM dirs
-        WHERE deleted = 0 AND path LIKE ?
-        LIMIT 1`,
-    )
-    .get(`${rel}/%`);
-  return !!subdirRow;
+  return false;
 }
 
 function ensureDirectoryExists(db: ReturnType<typeof getDb>, rel: string) {
@@ -424,18 +414,18 @@ function fetchRecentFiles(
   limit: number,
 ) {
   const params: any[] = [];
-  let where = "deleted = 0";
+  let where = "deleted = 0 AND kind = 'f'";
   if (kind === "file" && ctx.relPath) {
     where += " AND path = ?";
     params.push(ctx.relPath);
   } else if (ctx.relPath && ctx.relPath !== "") {
-    where += " AND (path = ? OR path LIKE ?)";
-    params.push(ctx.relPath, `${ctx.relPath}/%`);
+    where += " AND path LIKE ?";
+    params.push(`${ctx.relPath}/%`);
   }
 
   const stmt = db.prepare(
     `SELECT path, COALESCE(size, 0) AS size, mtime, ctime
-       FROM files
+       FROM nodes
       WHERE ${where}
       ORDER BY mtime DESC, path ASC
       LIMIT ?`,

@@ -14,6 +14,10 @@ function insertFile(dbPath: string, relPath: string, hash: string) {
       `INSERT OR REPLACE INTO files(path,size,ctime,mtime,op_ts,hash,deleted,last_seen,hashed_ctime)
        VALUES(?,?,?,?,?,?,?,?,?)`,
     ).run(relPath, 0, now, now, now, hash, 0, now, now);
+    db.prepare(
+      `INSERT OR REPLACE INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
+       VALUES(?, 'f', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    ).run(relPath, hash, now, now, now, now, 0, 0, now);
   } finally {
     db.close();
   }
@@ -25,6 +29,7 @@ function baseSessionRow(
   overrides: Partial<SessionRow> = {},
 ): SessionRow {
   const stamp = Date.now();
+  const defaultBaseDb = path.join(path.dirname(alphaDb), "base.db");
   return {
     id: 1,
     created_at: stamp,
@@ -42,7 +47,7 @@ function baseSessionRow(
       "~/.local/share/reflect-sync/by-origin/test/sessions/1/beta.db",
     remote_scan_cmd: null,
     remote_watch_cmd: null,
-    base_db: null,
+    base_db: defaultBaseDb,
     alpha_db: alphaDb,
     beta_db: betaDb,
     events_db: null,
@@ -74,9 +79,11 @@ describe("session diff restrictions", () => {
     workDir = await fsp.mkdtemp(tmpBase);
     alphaDb = path.join(workDir, "alpha.db");
     betaDb = path.join(workDir, "beta.db");
+    const baseDb = path.join(workDir, "base.db");
     // initialize schemas
     getDb(alphaDb).close();
     getDb(betaDb).close();
+    getDb(baseDb).close();
     insertFile(alphaDb, "include.txt", "alpha");
     insertFile(betaDb, "include.txt", "beta");
     insertFile(alphaDb, "dirA/file.txt", "alpha-a");

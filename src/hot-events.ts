@@ -75,15 +75,7 @@ export function fetchHotEvents(
 export function getMaxOpTs(dbPath: string): number {
   const db = getHandle(dbPath);
   const row = db
-    .prepare(
-      `SELECT MAX(op_ts) as m FROM (
-         SELECT op_ts FROM files
-         UNION ALL
-         SELECT op_ts FROM dirs
-         UNION ALL
-         SELECT op_ts FROM links
-       )`,
-    )
+    .prepare(`SELECT MAX(updated) as m FROM nodes`)
     .get() as { m: number | null };
   return row?.m ?? 0;
 }

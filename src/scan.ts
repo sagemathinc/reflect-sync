@@ -330,36 +330,54 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     kind: NodeKind;
     hash: string;
     mtime: number;
+    ctime?: number;
+    hashed_ctime?: number | null;
     size: number;
     deleted: 0 | 1;
+    last_seen?: number | null;
+    link_target?: string | null;
     last_error?: string | null;
     updated?: number;
   };
   const nodeUpsertStmt = useNodeWriter
     ? db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
           mtime=excluded.mtime,
+          ctime=excluded.ctime,
+          hashed_ctime=excluded.hashed_ctime,
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          last_seen=excluded.last_seen,
+          link_target=excluded.link_target,
           last_error=excluded.last_error
       `)
     : null;
   const nodeSelectStmt = useNodeWriter
     ? db.prepare(
-        `SELECT kind, hash, size FROM nodes WHERE path = ?`,
+        `SELECT kind, hash, size, ctime, hashed_ctime, link_target FROM nodes WHERE path = ?`,
       )
     : null;
   const writeNode = useNodeWriter
     ? (params: NodeWriteParams) => {
         const updated = params.updated ?? Date.now();
+        const ctime = params.ctime ?? params.mtime;
         nodeUpsertStmt!.run({
-          ...params,
+          path: params.path,
+          kind: params.kind,
+          hash: params.hash,
+          mtime: params.mtime,
+          ctime,
+          hashed_ctime: params.hashed_ctime ?? null,
           updated,
+          size: params.size,
+          deleted: params.deleted,
+          last_seen: params.last_seen ?? null,
+          link_target: params.link_target ?? null,
           last_error:
             params.last_error === undefined ? null : params.last_error,
         });
@@ -369,16 +387,27 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     ? (path: string, observed?: number) => {
         const now = observed ?? Date.now();
         const existing = nodeSelectStmt!.get(path) as
-          | { kind: NodeKind; hash: string; size: number }
+          | {
+              kind: NodeKind;
+              hash: string;
+              size: number;
+              ctime: number;
+              hashed_ctime: number | null;
+              link_target?: string | null;
+            }
           | undefined;
         writeNode!({
           path,
           kind: existing?.kind ?? "f",
           hash: existing?.hash ?? "",
           mtime: now,
+          ctime: existing?.ctime ?? now,
+          hashed_ctime: existing?.hashed_ctime ?? null,
           size: existing?.size ?? 0,
           deleted: 1,
           updated: now,
+          last_seen: now,
+          link_target: existing?.link_target ?? null,
           last_error: null,
         });
       }
@@ -487,8 +516,12 @@ ON CONFLICT(path) DO UPDATE SET
           kind: "d",
           hash: r.hash ?? "",
           mtime: r.mtime,
+          ctime: r.ctime,
           size: 0,
           deleted: 0,
+          last_seen: r.scan_id,
+          updated: r.op_ts,
+          link_target: null,
           last_error: null,
         });
       }
@@ -510,7 +543,25 @@ ON CONFLICT(path) DO UPDATE SET
 `);
 
   const applyMetaBatch = db.transaction((rows: Row[]) => {
-    for (const r of rows) upsertMeta.run(r);
+    for (const r of rows) {
+      upsertMeta.run(r);
+      if (useNodeWriter) {
+        writeNode!({
+          path: r.path,
+          kind: "f",
+          hash: r.hash ?? "",
+          mtime: r.mtime,
+          ctime: r.ctime,
+          hashed_ctime: r.hashed_ctime,
+          size: r.size ?? 0,
+          deleted: 0,
+          last_seen: r.last_seen,
+          updated: r.op_ts,
+          link_target: null,
+          last_error: null,
+        });
+      }
+    }
   });
 
   // Hashes (paths are rpaths)
@@ -530,8 +581,14 @@ ON CONFLICT(path) DO UPDATE SET
             kind: "f",
             hash: r.hash,
             mtime: meta?.mtime ?? r.ctime ?? Date.now(),
+            ctime: meta?.ctime ?? r.ctime ?? Date.now(),
+            hashed_ctime: r.ctime,
             size: meta?.size ?? 0,
             deleted: 0,
+            last_seen: meta?.last_seen ?? null,
+            updated: meta?.mtime ?? r.ctime ?? Date.now(),
+            link_target: null,
+            last_error: null,
           });
           fileNodeMeta?.delete(r.path);
         }
@@ -570,10 +627,15 @@ ON CONFLICT(path) DO UPDATE SET
         writeNode!({
           path: r.path,
           kind: "l",
-          hash: r.target,
+          hash: r.hash ?? "",
           mtime: r.mtime,
+          ctime: r.ctime,
           size: Buffer.byteLength(r.target ?? "", "utf8"),
           deleted: 0,
+          last_seen: r.scan_id,
+          link_target: r.target ?? "",
+          updated: r.op_ts,
+          last_error: null,
         });
       }
     }
@@ -786,7 +848,7 @@ ON CONFLICT(path) DO UPDATE SET
     { size: number; ctime: number; mtime: number }
   >();
   const fileNodeMeta = useNodeWriter
-    ? new Map<string, { size: number; mtime: number }>()
+    ? new Map<string, { size: number; mtime: number; ctime: number; last_seen: number }>()
     : null;
 
   // Handle worker replies (batched)
@@ -1031,7 +1093,12 @@ ON CONFLICT(path) DO UPDATE SET
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
           hashTotalBytes += size;
-          fileNodeMeta?.set(rpath, { size, mtime });
+          fileNodeMeta?.set(rpath, {
+            size,
+            mtime,
+            ctime,
+            last_seen: scan_id,
+          });
         }
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";

@@ -104,25 +104,29 @@ ON CONFLICT(path) DO UPDATE SET
 
     const upsertNode = useNodes
       ? db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @updated, @size, @deleted, NULL)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, NULL, @link_target, NULL)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
           mtime=excluded.mtime,
+          ctime=excluded.ctime,
+          hashed_ctime=excluded.hashed_ctime,
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          link_target=excluded.link_target,
           last_error=excluded.last_error
       `)
       : null;
     const markNodeDeleted = useNodes
       ? db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, updated, size, deleted, last_error)
-        VALUES (@path, 'f', '', @mtime, @updated, 0, 1, NULL)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
+        VALUES (@path, 'f', '', @mtime, @ctime, NULL, @updated, 0, 1, NULL, NULL, NULL)
         ON CONFLICT(path) DO UPDATE SET
           deleted=1,
           mtime=excluded.mtime,
+          ctime=excluded.ctime,
           updated=excluded.updated,
           last_error=NULL
       `)
@@ -181,9 +185,12 @@ ON CONFLICT(path) DO UPDATE SET
                 kind: "f",
                 hash: finalHash,
                 mtime: signature.mtime ?? opTs,
+                ctime: signature.ctime ?? signature.mtime ?? opTs,
+                hashed_ctime: signature.ctime ?? null,
                 updated: now,
                 size: signature.size ?? 0,
                 deleted: 0,
+                link_target: null,
               });
             }
             break;
@@ -204,9 +211,11 @@ ON CONFLICT(path) DO UPDATE SET
                 kind: "d",
                 hash: signature.hash ?? "",
                 mtime: signature.mtime ?? opTs,
+                ctime: signature.ctime ?? signature.mtime ?? opTs,
                 updated: now,
                 size: 0,
                 deleted: 0,
+                link_target: null,
               });
             }
             break;
@@ -225,11 +234,13 @@ ON CONFLICT(path) DO UPDATE SET
               upsertNode!.run({
                 path,
                 kind: "l",
-                hash: target ?? "",
+                hash: signature.hash ?? "",
                 mtime: signature.mtime ?? opTs,
+                ctime: signature.ctime ?? signature.mtime ?? opTs,
                 updated: now,
                 size: (target ?? "").length,
                 deleted: 0,
+                link_target: target ?? "",
               });
             }
             break;
@@ -241,11 +252,11 @@ ON CONFLICT(path) DO UPDATE SET
               markLinkDeleted!.run(path, opTs, now);
             }
             if (useNodes) {
-              const observed = now;
               markNodeDeleted!.run({
                 path,
-                mtime: observed,
-                updated: observed,
+                mtime: now,
+                ctime: now,
+                updated: now,
               });
             }
             break;
