@@ -327,16 +327,14 @@ export function registerSessionCommands(program: Command) {
             "State (actual/desired)",
             "Sync",
             "Prefer",
-            "Alpha",
-            "Beta",
             "PID",
             "Ignores",
             "Flags",
+            "Paths",
           )
           .setStyle("unicode-round");
 
         const alignments = [
-          AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
@@ -374,11 +372,21 @@ export function registerSessionCommands(program: Command) {
             `${r.actual_state}/${r.desired_state}`,
             fmtCleanMarker(r.last_clean_sync_at),
             r.prefer,
-            alphaPath,
-            betaPath,
             r.scheduler_pid ? String(r.scheduler_pid) : "-",
             ignoreSummary,
             flagsSummary,
+            `alpha: ${alphaPath}`,
+          );
+          table.addRow(
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            `beta:  ${betaPath}`,
           );
         }
 
