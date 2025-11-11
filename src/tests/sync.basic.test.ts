@@ -1,6 +1,6 @@
 // tests/sync.basic.test.ts
 
-import { sync, fileExists, mkCase } from "./util";
+import { syncPrefer, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join, dirname } from "node:path";
 import os from "node:os";
@@ -17,16 +17,16 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     await fsp.rm(tmp, { recursive: true, force: true });
   });
 
-  test.only("create + delete propagate alpha→beta", async () => {
+  test("create + delete propagate alpha→beta", async () => {
     const r = await mkCase(tmp, "t-create-delete");
     const aFile = join(r.aRoot, "hello.txt");
     const bFile = join(r.bRoot, "hello.txt");
     await fsp.writeFile(aFile, "hello\n");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fileExists(bFile)).toBe(true);
     expect(await fsp.readFile(bFile, "utf8")).toBe("hello\n");
     await fsp.rm(aFile);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fileExists(bFile)).toBe(false);
   });
 
@@ -35,11 +35,11 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const a = join(r.aRoot, "foo.txt");
     const b = join(r.bRoot, "foo.txt");
     await fsp.writeFile(a, "v1");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("v1");
     // same byte length
     await fsp.writeFile(a, "v2");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("v2");
   });
 
@@ -49,13 +49,13 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const b = join(r.bRoot, "dir/sub/deeper/file.txt");
     await fsp.mkdir(dirname(a), { recursive: true });
     await fsp.writeFile(a, "one");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("one");
     await fsp.writeFile(a, "two");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("two");
     await fsp.rm(a);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fileExists(b)).toBe(false);
   });
 
@@ -67,11 +67,11 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const b2 = join(r.bRoot, "new/name.txt");
     await fsp.mkdir(dirname(a1), { recursive: true });
     await fsp.writeFile(a1, "X");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fileExists(b1)).toBe(true);
     await fsp.mkdir(dirname(a2), { recursive: true });
     await fsp.rename(a1, a2);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fileExists(b1)).toBe(false);
     expect(await fsp.readFile(b2, "utf8")).toBe("X");
   });
@@ -81,10 +81,10 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const a = join(r.aRoot, "conf.txt");
     const b = join(r.bRoot, "conf.txt");
     await fsp.writeFile(a, "seed");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     await fsp.writeFile(a, "alpha");
     await fsp.writeFile(b, "beta");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(a, "utf8")).toBe("alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha");
   });
@@ -94,10 +94,10 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const a = join(r.aRoot, "conf.txt");
     const b = join(r.bRoot, "conf.txt");
     await fsp.writeFile(a, "seed");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     await fsp.writeFile(a, "alpha");
     await fsp.writeFile(b, "beta");
-    await sync(r, "beta");
+    await syncPrefer(r, "beta");
     expect(await fsp.readFile(a, "utf8")).toBe("beta");
     expect(await fsp.readFile(b, "utf8")).toBe("beta");
   });
@@ -107,10 +107,10 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const a = join(r.aRoot, "x.txt");
     const b = join(r.bRoot, "x.txt");
     await fsp.writeFile(a, "seed");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     await fsp.writeFile(a, "alpha2"); // modify alpha
     await fsp.rm(b); // delete on beta
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha2");
   });
 
@@ -119,10 +119,10 @@ describe("scan → merge simple tests and conflicts (part 1)", () => {
     const a = join(r.aRoot, "x.txt");
     const b = join(r.bRoot, "x.txt");
     await fsp.writeFile(a, "seed");
-    await sync(r, "beta");
+    await syncPrefer(r, "alpha");
     await fsp.writeFile(a, "alpha2"); // modify alpha
     await fsp.rm(b); // delete on beta
-    await sync(r, "beta");
+    await syncPrefer(r, "beta");
     expect(await fileExists(a)).toBe(false);
     expect(await fileExists(b)).toBe(false);
   });

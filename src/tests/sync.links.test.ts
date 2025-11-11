@@ -6,7 +6,7 @@
 // file<->link conflicts (alpha/beta preference), symlink-to-dir, loops, chains,
 // and absolute-target preservation.
 
-import { sync, fileExists, mkCase } from "./util";
+import { syncPrefer, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
@@ -38,7 +38,7 @@ describe("reflex-sync: symlink semantics", () => {
     // Relative link target — should be preserved verbatim
     await fsp.symlink("a.txt", aLink);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bLink)).resolves.toBe(true);
     await expect(readlinkTarget(bLink)).resolves.toBe("a.txt");
@@ -57,7 +57,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.symlink("no-such-file", aLink);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bLink)).resolves.toBe(true);
     await expect(readlinkTarget(bLink)).resolves.toBe("no-such-file");
@@ -81,7 +81,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.writeFile(aB, "B");
     await fsp.symlink("a.txt", aL);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(readlinkTarget(bL)).resolves.toBe("a.txt");
     await expect(fsp.readFile(bL, "utf8")).resolves.toBe("A");
@@ -90,7 +90,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.rm(aL);
     await fsp.symlink("b.txt", aL);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(readlinkTarget(bL)).resolves.toBe("b.txt");
     await expect(fileExists(bB)).resolves.toBe(true);
@@ -108,11 +108,11 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.writeFile(aFile, "x");
     await fsp.symlink("t.txt", aL);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     await expect(linkExists(bL)).resolves.toBe(true);
 
     await fsp.rm(aL);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bL)).resolves.toBe(false);
   });
@@ -126,7 +126,7 @@ describe("reflex-sync: symlink semantics", () => {
 
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.writeFile(aFile, "alpha1");
-    await sync(r, "alpha"); // seed beta with the file
+    await syncPrefer(r, "alpha"); // seed beta with the file
 
     // Turn beta's path into a symlink to some other content
     await fsp.rm(bPath).catch(() => {});
@@ -138,7 +138,7 @@ describe("reflex-sync: symlink semantics", () => {
     // rewrite same contents to bump mtime; or use utimes if you prefer
     await fsp.writeFile(aFile, "alpha2");
 
-    await sync(r, "alpha", false, undefined);
+    await syncPrefer(r, "alpha");
 
     // Expect beta back to a regular file with alpha's content
     await expect(isRegularFile(bPath)).resolves.toBe(true);
@@ -154,7 +154,7 @@ describe("reflex-sync: symlink semantics", () => {
 
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.writeFile(aPath, "alpha");
-    await sync(r, "alpha"); // seed
+    await syncPrefer(r, "alpha"); // seed
 
     // Beta turns x into a symlink to y.txt; create y.txt on both for deref
     await fsp.writeFile(join(aDir, "y.txt"), "Y");
@@ -162,7 +162,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.rm(bPath).catch(() => {});
     await fsp.symlink("y.txt", bPath);
 
-    await sync(r, "beta");
+    await syncPrefer(r, "beta");
 
     // Alpha should now have a symlink 'x' -> 'y.txt'
     await expect(linkExists(aPath)).resolves.toBe(true);
@@ -183,7 +183,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.writeFile(aDirFile, "inside");
     await fsp.symlink("dir", aLink); // relative to aTop
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(join(bTop, "dlink"))).resolves.toBe(true);
     await expect(readlinkTarget(join(bTop, "dlink"))).resolves.toBe("dir");
@@ -202,7 +202,7 @@ describe("reflex-sync: symlink semantics", () => {
     // link pointing to current directory (.), classic loop
     await fsp.symlink(".", aSelf);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bSelf)).resolves.toBe(true);
     await expect(readlinkTarget(bSelf)).resolves.toBe(".");
@@ -223,7 +223,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.symlink("base.txt", aL1);
     await fsp.symlink("l1", aL2);
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bL1)).resolves.toBe(true);
     await expect(linkExists(bL2)).resolves.toBe(true);
@@ -246,7 +246,7 @@ describe("reflex-sync: symlink semantics", () => {
     await fsp.writeFile(aFile, "ABS");
     await fsp.symlink(aFile, aLink); // absolute target
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(linkExists(bLink)).resolves.toBe(true);
     await expect(readlinkTarget(bLink)).resolves.toBe(aFile); // exact absolute string

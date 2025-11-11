@@ -36,6 +36,18 @@ describe("scan deletes", () => {
 
     await runScanCli();
 
+    let liveMeta: { last_seen: number } | null = null;
+    {
+      const db = getDb(dbPath);
+      try {
+        liveMeta = db
+          .prepare(`SELECT last_seen FROM nodes WHERE path = ?`)
+          .get("foo.txt") as { last_seen: number } | undefined ?? null;
+      } finally {
+        db.close();
+      }
+    }
+
     await fsp.rm(file);
 
     await runScanCli();
@@ -44,19 +56,26 @@ describe("scan deletes", () => {
     try {
       const row = db
         .prepare(
-          `SELECT deleted, hash, hashed_ctime, size FROM nodes WHERE path = ?`,
+          `SELECT deleted, hash, hashed_ctime, size, mtime, last_seen FROM nodes WHERE path = ?`,
         )
         .get("foo.txt") as {
         deleted: number;
         hash: string;
         hashed_ctime: number | null;
         size: number;
+        mtime: number;
+        last_seen: number | null;
       };
 
       expect(row.deleted).toBe(1);
       expect(row.hash).toBe("");
       expect(row.hashed_ctime).toBeNull();
       expect(row.size).toBe(0);
+      if (!liveMeta) {
+        throw new Error("missing initial metadata for foo.txt");
+      }
+      expect(row.last_seen).toBe(liveMeta.last_seen);
+      expect(row.mtime).toBe(liveMeta.last_seen + 1);
     } finally {
       db.close();
     }

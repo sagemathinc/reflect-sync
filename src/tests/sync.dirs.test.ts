@@ -6,7 +6,7 @@
 // delete-vs-create conflicts (prefer alpha/beta), and a skipped "dir→file"
 // current limitation test.
 
-import { sync, dirExists, fileExists, mkCase } from "./util";
+import { syncPrefer, dirExists, fileExists, mkCase } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
@@ -29,7 +29,7 @@ describe("ccsync: directory semantics", () => {
     const bDir = join(r.bRoot, "empty/dir");
     await fsp.mkdir(aDir, { recursive: true });
 
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(dirExists(bDir)).resolves.toBe(true);
   });
@@ -40,12 +40,12 @@ describe("ccsync: directory semantics", () => {
     const bDir = join(r.bRoot, "gone/soon");
 
     await fsp.mkdir(aDir, { recursive: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
     await expect(dirExists(bDir)).resolves.toBe(true);
 
     // remove now-empty dir on alpha
     await fsp.rm(aDir, { recursive: true, force: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(dirExists(bDir)).resolves.toBe(false);
   });
@@ -59,11 +59,11 @@ describe("ccsync: directory semantics", () => {
 
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.writeFile(aFile, "x");
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(fileExists(bFile)).resolves.toBe(true);
     await fsp.rm(aFile);
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(fileExists(bFile)).resolves.toBe(false);
     await expect(dirExists(bDir)).resolves.toBe(true); // empty but preserved
@@ -77,13 +77,13 @@ describe("ccsync: directory semantics", () => {
     const bDeep = join(r.bRoot, "top/a/b/c");
 
     await fsp.mkdir(aDeep, { recursive: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(dirExists(bDeep)).resolves.toBe(true);
 
     // deleting top removes subtree
     await fsp.rm(aTop, { recursive: true, force: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     await expect(dirExists(bTop)).resolves.toBe(false);
     await expect(dirExists(bDeep)).resolves.toBe(false);
@@ -97,13 +97,13 @@ describe("ccsync: directory semantics", () => {
 
     // seed: dir exists on both
     await fsp.mkdir(aDir, { recursive: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     // alpha deletes dir; beta adds child file
     await fsp.rm(aDir, { recursive: true, force: true });
     await fsp.writeFile(bFile, "beta-has-this");
 
-    await sync(r, "alpha"); // prefer alpha
+    await syncPrefer(r, "alpha"); // prefer alpha
 
     // expect alpha's deletion to win
     await expect(dirExists(bDir)).resolves.toBe(false);
@@ -119,14 +119,14 @@ describe("ccsync: directory semantics", () => {
 
     // seed
     await fsp.mkdir(aDir, { recursive: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     // alpha deletes dir; beta adds file
     await fsp.rm(aDir, { recursive: true, force: true });
     await fsp.mkdir(bDir, { recursive: true });
     await fsp.writeFile(bFile, "keep-me");
 
-    await sync(r, "beta", undefined, undefined, undefined, "prefer");
+    await syncPrefer(r, "beta");
 
     // expect beta to win: dir & file remain in beta and are restored to alpha
     await expect(dirExists(bDir)).resolves.toBe(true);
@@ -143,7 +143,7 @@ describe("ccsync: directory semantics", () => {
 
     // seed with directory on alpha
     await fsp.mkdir(aDir, { recursive: true });
-    await sync(r, "alpha");
+    await syncPrefer(r, "alpha");
 
     // beta replaces with a file at same path
     await fsp.rm(bFile, { recursive: true, force: true }).catch(() => {});
@@ -151,7 +151,7 @@ describe("ccsync: directory semantics", () => {
 
     // prefer beta; this recursively delete dirs automatically (less safe, but
     // the only reasonable automatic thing to do).
-    await sync(r, "beta");
+    await syncPrefer(r, "beta");
 
     await expect(fileExists(aDir)).resolves.toBe(true);
     await expect(fileExists(bFile)).resolves.toBe(true);

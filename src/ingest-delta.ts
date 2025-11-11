@@ -19,6 +19,7 @@ import { Command } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import { CLI_NAME } from "./constants.js";
 import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
+import { deletionMtimeFromMeta } from "./nodes-util.js";
 
 // SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are for skew/future handling.
 // See comments in the original version for rationale.
@@ -127,6 +128,38 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       last_error: params.last_error === undefined ? null : params.last_error,
     });
   };
+  type ExistingMetaRow = {
+    kind: NodeKind;
+    last_seen: number | null;
+    updated: number | null;
+    mtime: number | null;
+  };
+  const selectMetaStmt = db.prepare(
+    `SELECT kind, last_seen, updated, mtime FROM nodes WHERE path = ?`,
+  );
+  const buildDeleteParams = (
+    path: string,
+    kindHint: NodeKind,
+    updatedTs: number,
+    fallbackNow: number,
+  ): NodeWriteParams => {
+    const existing = selectMetaStmt.get(path) as ExistingMetaRow | undefined;
+    const deleteMtime = deletionMtimeFromMeta(existing ?? {}, fallbackNow);
+    return {
+      path,
+      kind: existing?.kind ?? kindHint,
+      hash: "",
+      mtime: deleteMtime,
+      ctime: deleteMtime,
+      hashed_ctime: null,
+      size: 0,
+      deleted: 1,
+      last_seen: existing?.last_seen ?? null,
+      updated: updatedTs,
+      link_target: null,
+      last_error: null,
+    };
+  };
   let processedRows = 0;
   let closed = false;
   logger.info("ingest start", { db: dbPath });
@@ -163,49 +196,46 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       }
 
       if (r.kind === "dir") {
-        writeNode({
-          path: r.path,
-          kind: "d",
-          hash: r.hash ?? "",
-          mtime: isDelete ? now : r.mtime ?? op_ts,
-          ctime: r.ctime ?? r.mtime ?? op_ts,
-          size: 0,
-          deleted: isDelete ? 1 : 0,
-          last_seen: now,
-          updated: op_ts,
-          link_target: null,
-          last_error: null,
-        });
-      } else if (r.kind === "link") {
-        const target = r.target ?? "";
-        writeNode({
-          path: r.path,
-          kind: "l",
-          hash: r.hash ?? "",
-          mtime: isDelete ? now : r.mtime ?? op_ts,
-          ctime: r.ctime ?? r.mtime ?? op_ts,
-          size: Buffer.byteLength(isDelete ? "" : target, "utf8"),
-          deleted: isDelete ? 1 : 0,
-          last_seen: now,
-          updated: op_ts,
-          link_target: isDelete ? null : target,
-          last_error: null,
-        });
-      } else {
         if (isDelete) {
+          writeNode(buildDeleteParams(r.path, "d", op_ts, now));
+        } else {
           writeNode({
             path: r.path,
-            kind: "f",
-            hash: "",
-            mtime: now,
-            ctime: r.ctime ?? now,
-            hashed_ctime: null,
+            kind: "d",
+            hash: r.hash ?? "",
+            mtime: r.mtime ?? op_ts,
+            ctime: r.ctime ?? r.mtime ?? op_ts,
             size: 0,
-            deleted: 1,
+            deleted: 0,
             last_seen: now,
             updated: op_ts,
             link_target: null,
             last_error: null,
+          });
+        }
+      } else if (r.kind === "link") {
+        const target = r.target ?? "";
+        if (isDelete) {
+          writeNode(buildDeleteParams(r.path, "l", op_ts, now));
+        } else {
+          writeNode({
+            path: r.path,
+            kind: "l",
+            hash: r.hash ?? "",
+            mtime: r.mtime ?? op_ts,
+            ctime: r.ctime ?? r.mtime ?? op_ts,
+            size: Buffer.byteLength(target, "utf8"),
+            deleted: 0,
+            last_seen: now,
+            updated: op_ts,
+            link_target: target,
+            last_error: null,
+          });
+        }
+      } else {
+        if (isDelete) {
+          writeNode({
+            ...buildDeleteParams(r.path, "f", op_ts, now),
           });
           insTouch.run(r.path, now);
         } else if (r.hash == null) {

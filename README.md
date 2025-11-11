@@ -46,6 +46,16 @@ Tradeoffs:
 - We trust the database snapshots we just wrote: after each copy/delete we mirror alpha’s metadata into beta’s DB (and vice versa) so the next cycle sees the same state without having to rescan immediately.
 - We do **not** try to solve the general case of simultaneous edits on both sides; those devolve to last-write-wins with `--prefer` as the tie breaker. The guarantee above simply ensures that editing only one side cannot regress the other.
 
+### Delete semantics
+
+Deletions are tracked just like edits: every scan/watch event updates the `nodes` table and the merge planner only reasons about that metadata. When a path disappears we set its `mtime` to **one millisecond after the last time we saw it alive** (we keep that timestamp in `last_seen`). Why?
+
+- We use `mtime` for last\-write\-wins. If a file was modified and then deleted before the next cycle, that “delete” should win because it happened _after_ the last known write. Using `last_seen + 1 ms` encodes exactly that ordering even if the host clock jitters.
+- If two copies both delete the same path they now share the same tombstone timestamp and we drop the path from the plan entirely, so nothing “resurrects” it later.
+- Remote deltas, watcher\-driven updates, and rsync\-driven deletes all follow this rule, so every subsystem reports the same ordering information without doing a fresh stat on the remote filesystem.
+- If during a single cycle one side edits the file and the other side deletes it, the with last write wins and our conservative choice of mtime, the edit will be preserved.
+
+Practically this means Reflect will only resurrect a deleted file if the other side really does have a newer, surviving edit, which is the safest interpretation for automated sync.
 
 ---
 
@@ -370,3 +380,4 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
+

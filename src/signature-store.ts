@@ -1,6 +1,7 @@
 import { getDb } from "./db.js";
 import type { SendSignature } from "./recent-send.js";
 import { withUpdatedMetadataHash } from "./hash-meta.js";
+import { deletionMtimeFromMeta } from "./nodes-util.js";
 
 export interface SignatureEntry {
   path: string;
@@ -30,6 +31,9 @@ export function applySignaturesToDb(
       ctime: number | null;
       hashed_ctime: number | null;
       link_target: string | null;
+      last_seen: number | null;
+      updated: number | null;
+      mtime: number | null;
     };
     type NodeWriteParams = {
       path: string;
@@ -47,7 +51,7 @@ export function applySignaturesToDb(
     };
 
     const selectNodeStmt = db.prepare(
-      `SELECT kind, hash, size, ctime, hashed_ctime, link_target FROM nodes WHERE path = ?`,
+      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime FROM nodes WHERE path = ?`,
     );
     const nodeUpsertStmt = db.prepare(`
         INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
@@ -86,18 +90,19 @@ export function applySignaturesToDb(
     const markDeleted = (path: string, opTs: number, kindHint?: NodeKind) => {
       const existing = selectNodeStmt.get(path) as NodeRow | undefined;
       const observed = Date.now();
+      const deleteMtime = deletionMtimeFromMeta(existing ?? {}, observed);
       writeNode({
         path,
-        kind: kindHint ?? existing?.kind ?? "f",
-        hash: existing?.hash ?? "",
-        mtime: observed,
-        ctime: existing?.ctime ?? observed,
-        hashed_ctime: existing?.hashed_ctime ?? null,
-        size: existing?.size ?? 0,
+        kind: existing?.kind ?? kindHint ?? "f",
+        hash: "",
+        mtime: deleteMtime,
+        ctime: deleteMtime,
+        hashed_ctime: null,
+        size: 0,
         deleted: 1,
         updated: opTs,
-        last_seen: null,
-        link_target: existing?.link_target ?? null,
+        last_seen: existing?.last_seen ?? null,
+        link_target: null,
       });
     };
 

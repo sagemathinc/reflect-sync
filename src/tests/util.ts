@@ -78,6 +78,15 @@ export async function sync(
   });
 }
 
+export async function syncPrefer(
+  r: Roots,
+  prefer: "alpha" | "beta" = "alpha",
+  args?: string[],
+  args2?: string[],
+) {
+  await sync(r, prefer, undefined, args, args2, "prefer");
+}
+
 export async function waitFor<T>(
   fn: () => Promise<T> | T,
   predicate: ((v: T) => Promise<boolean>) | ((v: T) => boolean),

@@ -1028,7 +1028,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         `UPDATE nodes
             SET deleted = 1,
                 updated = @ts,
-                mtime = @ts,
+                mtime = CASE
+                  WHEN last_seen IS NOT NULL THEN last_seen + 1
+                  WHEN updated IS NOT NULL THEN updated + 1
+                  WHEN mtime IS NOT NULL THEN mtime + 1
+                  ELSE @ts
+                END,
                 hash = '',
                 hashed_ctime = NULL,
                 size = 0,

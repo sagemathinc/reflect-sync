@@ -19,6 +19,7 @@ import {
   type MergeSide,
 } from "./merge-strategies.js";
 import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
+import { deletionMtimeFromMeta } from "./nodes-util.js";
 
 const VERY_VERBOSE = false;
 
@@ -652,30 +653,35 @@ function markNodesDeletedBatch(
   const now = Date.now();
   for (const path of paths) {
     const existing = fetchNode(db, path);
+    const deleteMtime = deletionMtimeFromMeta(
+      existing ?? {},
+      now,
+    );
     const row: NodeRecord = existing
       ? {
           ...existing,
           deleted: 1,
+          mtime: deleteMtime,
           hash: "",
           hashed_ctime: null,
           size: 0,
           updated: now,
           last_error: null,
         }
-      : {
-          path,
-          kind: "f",
-          hash: "",
-          mtime: now,
-          ctime: now,
-          hashed_ctime: null,
-          updated: now,
-          size: 0,
-          deleted: 1,
-          last_seen: now,
-          link_target: null,
-          last_error: null,
-        };
+        : {
+            path,
+            kind: "f",
+            hash: "",
+            mtime: deleteMtime,
+            ctime: deleteMtime,
+            hashed_ctime: null,
+            updated: now,
+            size: 0,
+            deleted: 1,
+            last_seen: null,
+            link_target: null,
+            last_error: null,
+          };
     rows.push(row);
   }
   const apply = db.transaction((entries: NodeRecord[]) => {

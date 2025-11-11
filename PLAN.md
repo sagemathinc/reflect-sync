@@ -136,8 +136,8 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 5. (done) Mirror DB state after each confirmed operation \(source row → destination \+ base\).
 6. (done) Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
 7. (done) Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. 
-8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
-9. "reflect sync" doesn't work, due to no longer having digests. Fix it. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
+8. (done) Remove old signature/recent\-send logic and simplify docs/tests around the new model.
+9. (done) "reflect sync" doesn't work, due to no longer having digests. Fix it. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
 10. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
 
    - all the paths that are different with the metadata (exactly the output of that huge sql query, plus a timestamp)
@@ -256,7 +256,7 @@ Run Time: real 0.001 user 0.000407 sys 0.000000
 
 Since both alpha and beta have this as deleted, it shouldn't be in the merge plan at all, right?
 
-### (not done) A thought related to "last write wins" and deletes.
+### \(done\) A thought related to "last write wins" and deletes.
 
 Right now we set the mtime of a delete to be the time we observe it,
 which is I think the most dangerous choice.  I better option
