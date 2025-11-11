@@ -64,7 +64,7 @@ import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList } from "./restrict.js";
 
-const PRUNE_REMOTE_DATABASE_MS = 30 * 60_000;
+const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
 // never sync more than this many files at once using hot sync
 // (discards more)
