@@ -887,24 +887,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const op_ts = mtime;
         const modeHex = modeHash(st.mode);
 
-        // Upsert *metadata only* (no hash/hashed_ctime change here)
-        metaBuf.push({
-          path: rpath,
-          size,
-          ctime,
-          mtime,
-          op_ts,
-          hash: null,
-          last_seen: scan_id,
-          hashed_ctime: null,
-        });
-
-        if (metaBuf.length >= DB_BATCH_SIZE) {
-          applyMetaBatch(metaBuf);
-          metaBuf.length = 0;
-        }
-
-        // Decide if we need to hash: only when ctime changed (or brand new)
         const row = getExisting.get(rpath) as
           | {
               hashed_ctime: number | null;
@@ -914,6 +896,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               size: number | null;
             }
           | undefined;
+
+        // Upsert *metadata only* (no hash/hashed_ctime change here)
+        metaBuf.push({
+          path: rpath,
+          size,
+          ctime,
+          mtime,
+          op_ts,
+          hash: row?.hash ?? null,
+          last_seen: scan_id,
+          hashed_ctime: row?.hashed_ctime ?? null,
+        });
+
+        if (metaBuf.length >= DB_BATCH_SIZE) {
+          applyMetaBatch(metaBuf);
+          metaBuf.length = 0;
+        }
+
+        // Decide if we need to hash: only when ctime changed (or brand new)
         let needsHash = !row || row.hashed_ctime !== ctime;
         if (!needsHash && row?.hash) {
           const meta = parseHashMeta(row.hash);
