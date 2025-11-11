@@ -138,3 +138,24 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 7. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
+
+
+## Big Scans and file transfers versus Realtime Updates
+
+We need to structure things so that a single large file being
+transferred or a large scan doesn't block the realtime
+transfer if actively edited files.  Some ideas:
+
+- make sure that when we divide files up into chunks to 
+  send via rsync that we bound the total *size* of those
+  files.  We know the size ahead of time of all files.
+  that is better than batching by number of files.
+- I think it should be possible to do operations concurrently
+  with files x and y in many cases. I can't think of any
+  problem at all when x!=y except e.g., if x is a directory
+  and y is contained in x, and the operation is "delete x".
+  
+
+
+
+
