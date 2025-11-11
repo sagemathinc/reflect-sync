@@ -241,6 +241,9 @@ export async function rsyncCopyDirsChunked(
   });
 }
 
+// rsync does not reliably update directory metadata (perms/uid/gid/mtime)
+// once the directory already exists; we run a second metadata-only pass to
+// ensure the destination dir reflects the source immediately after a copy.
 export async function rsyncFixMetaDirsChunked(
   workDir: string,
   fromRoot: string,

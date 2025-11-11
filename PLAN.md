@@ -135,9 +135,10 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 4. (done) Reuse existing rsync/reflink helpers to execute copy/delete operations \(one path per entry, no implicit recursion\).
 5. (done) Mirror DB state after each confirmed operation \(source row → destination \+ base\).
 6. (done) Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
-7. (done) Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
+7. (done) Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. 
 8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
-9. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
+9. "reflect sync" doesn't work, due to no longer having digests. Fix it. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
+10. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
    - all the paths that are different with the metadata (exactly the output of that huge sql query, plus a timestamp)
    - what the merge strategy decided to do: the operations, and for each operation, whether or not it succeeded.
 With this in hand, we should be able to look at a given problematic file and see every time it out of sync, what the plan was for it, and what happened. Probably the trace.db table should thus have columns and path should be indexed:
@@ -173,6 +174,26 @@ transfer if actively edited files.  Some ideas:
 With this approach, we could have a full scan *and* several hot watch
 transfers safely happening all at once.   The real limit is the
 impact on cpu/bandwidth.  
+
+### (not done) My overlayfs apt-get stress test fails
+
+See src/scripts/overlay/  
+
+The test fails every time I've tried it, with files getting corrupted, 
+which means something likely got copied back in the wrong direction,
+due to a mistake.  "reflect diff" also outputs all this, but I looked at one of these files and it is deleted on both sides, so I think
+`reflect diff` is wrong.
+
+```sh
+│ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
+│ var/cache/apt/archives/perl_5.40.1-6build1_amd64.deb                              │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
+│ var/cache/apt/archives/publicsuffix_20250328.1952-0.1_all.deb                     │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
+│ var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb                              │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
+╰───────────────────────────────────────────────────────────────────────────────────┴──────┴─────────────────────────┴───────────────╯
+
+wstein@lite:~/build/reflect-sync/scripts/overlay$ r diff o|wc -l
+796
+```
   
 ### (not done) A thought related to "last write wins" and deletes.
 
@@ -214,3 +235,19 @@ remote commands (e.g., scans, rsync copies, etc.) all reuse, which addresses tha
 just use this if possible as it could be a massive win (often ssh
 takes 1s or more and can break in general).
 
+## (not done) robustness and self healing
+
+If there is an error doing a copy operation, do something so that 
+file gets scanned again during the next cycle (or do a targeted
+scan).  Why?  Because if somehow the file was deleted but this isn't
+known in the database (e.g., something got dropped with ingest-delta
+during a session restart), we get stuck always thinking the file is
+not deleted even though it is.  I think this is an issue only for
+a remote file, since the remote database is definitely correct; it's
+only the local one that is wrong.
+
+Another option could be to request the latest state from the remote
+database for a particular list of paths (all the ones with copy failures), 
+then update local accordingly.
+
+I did see this edge case when stress testing.

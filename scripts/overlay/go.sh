@@ -18,7 +18,7 @@ sudo mount -t overlay overlay -o lowerdir=$lowerdir,upperdir=$upperdir,workdir=$
 cp -v run.sh stress.sh $root/
 
 reflect terminate o || true
-reflect create  --merge-strategy=lww-mtime --name=o $upperdir localhost:$upperdir2
+reflect create --name=o localhost:$upperdir2 $upperdir
 
 #podman run -it --rm --rootfs "$root" bash /stress.sh
 
