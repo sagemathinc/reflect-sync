@@ -135,7 +135,7 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 4. (done) Reuse existing rsync/reflink helpers to execute copy/delete operations \(one path per entry, no implicit recursion\).
 5. (done) Mirror DB state after each confirmed operation \(source row → destination \+ base\).
 6. (done) Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
-7. Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
+7. (done) Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
 8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 9. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
    - all the paths that are different with the metadata (exactly the output of that huge sql query, plus a timestamp)
@@ -150,7 +150,7 @@ This should make it very easy to see "why is path this way now?"  What have we d
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
 
 
-## Big Scans and file transfers versus Realtime Updates
+## (done) Big Scans and file transfers versus Realtime Updates
 
 We need to structure things so that a single large file being
 transferred or a large scan doesn't block the realtime
@@ -173,18 +173,22 @@ transfer if actively edited files.  Some ideas:
 With this approach, we could have a full scan *and* several hot watch
 transfers safely happening all at once.   The real limit is the
 impact on cpu/bandwidth.  
-
-## Other questions and thoughts about merge plans
-
-Question: could we completely eliminate the --prefer option entirely and instead make
-  that a part of the merge-strategy name?   For mirror-to-alpha and mirror-to-beta,
-  it's not meaningful.  For lww-mtime we could have:
- 
-  - 'lww-mtime-prefer-alpha'
-  - 'lww-mtime-prefer-beta'
-  - 'lww-mtime-prefer-updated'
   
-## Memory usage
+### (not done) A thought related to "last write wins" and deletes.
+
+Right now we set the mtime of a delete to be the time we observe it,
+which is I think the most dangerous choice.  I better option
+would be to set the delete to 1ms after the last time we observed
+that it was NOT deleted.  That is the most conservative choice,
+which for deletes seems reasonable.   We know the last time we
+observed it not deleted, since we update a field about times
+each time we do a scan.  Anyway, with this choice, if between
+full cycles a file is both modified and deleted, then it'll get
+preserved, because the mod happened later.
+
+
+  
+## (not done) Memory usage
 
 It seems really large when doing stress tests, e.g, during scan and merge planning. This is not surprising given we grab all the diff out of the db in one query, and that could blow up into a lot of used memory (it hit maybe 6GB?)
 
@@ -203,4 +207,10 @@ ls -lht ~/.local/share/reflect-sync/sessions/7/*.db
 ```
 
 
+## (not done) Use a socket and a single ssh session
+
+There's a way to run a single persistent ssh session that all these
+remote commands (e.g., scans, rsync copies, etc.) all reuse, which addresses that connecting over ssh may be expensive.  We should
+just use this if possible as it could be a massive win (often ssh
+takes 1s or more and can break in general).
 

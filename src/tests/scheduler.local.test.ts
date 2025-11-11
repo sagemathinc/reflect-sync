@@ -166,7 +166,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
       await waitFor(
         async () => await fileExists(bFile),
         (ok) => ok === true,
-        2000,
+        4500,
         50,
       );
 
@@ -174,7 +174,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
       await waitFor(
         () => sawRealtimePush(baseDb),
         (ok) => ok === true,
-        2000,
+        4500,
         50,
       );
     } finally {

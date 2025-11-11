@@ -7,6 +7,7 @@ import {
   rsyncCopyChunked,
   rsyncCopyDirsChunked,
   rsyncDeleteChunked,
+  rsyncFixMetaDirsChunked,
   ensureTempDir,
 } from "./rsync.js";
 import type { RsyncCompressSpec } from "./rsync-compression.js";
@@ -474,6 +475,17 @@ async function performDirCopies(params: {
         ...params.rsyncOpts,
         direction: params.direction,
         tempDir: params.tempDir,
+      },
+    );
+    await rsyncFixMetaDirsChunked(
+      params.workDir,
+      params.fromRoot,
+      params.toRoot,
+      unique,
+      `${params.direction} dirs meta`,
+      {
+        ...params.rsyncOpts,
+        direction: params.direction,
       },
     );
     mirrorNodesFromSourceBatch(

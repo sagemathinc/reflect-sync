@@ -43,6 +43,7 @@ export function applySignaturesToDb(
       updated?: number;
       last_seen?: number | null;
       link_target?: string | null;
+      last_error?: string | null;
     };
 
     const selectNodeStmt = db.prepare(
@@ -50,7 +51,7 @@ export function applySignaturesToDb(
     );
     const nodeUpsertStmt = db.prepare(`
         INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, NULL, @link_target, NULL)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -60,6 +61,7 @@ export function applySignaturesToDb(
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
       `);
@@ -78,7 +80,7 @@ export function applySignaturesToDb(
         deleted: params.deleted,
         last_seen: params.last_seen ?? null,
         link_target: params.link_target ?? null,
-        last_error: null,
+        last_error: params.last_error ?? null,
       });
     };
     const markDeleted = (path: string, opTs: number, kindHint?: NodeKind) => {

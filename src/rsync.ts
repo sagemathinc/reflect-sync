@@ -241,6 +241,57 @@ export async function rsyncCopyDirsChunked(
   });
 }
 
+export async function rsyncFixMetaDirsChunked(
+  workDir: string,
+  fromRoot: string,
+  toRoot: string,
+  dirRpaths: string[],
+  label: string,
+  opts: {
+    chunkSize?: number;
+    concurrency?: number;
+    dryRun?: boolean | string;
+    verbose?: boolean | string;
+    logger?: Logger;
+    logLevel?: LogLevel;
+    sshPort?: number;
+    direction?;
+  } = {},
+): Promise<void> {
+  if (!dirRpaths.length) return;
+  const { logger, debug } = resolveLogContext(opts);
+  const chunkSize = opts.chunkSize ?? REFLECT_DIR_CHUNK;
+  const concurrency = opts.concurrency ?? Math.min(4, REFLECT_COPY_CONCURRENCY);
+  const sorted = Array.from(new Set(dirRpaths)).sort();
+  const batches = chunk(sorted, chunkSize);
+  const listFiles: string[] = [];
+  for (let i = 0; i < batches.length; i++) {
+    const lf = path.join(
+      workDir,
+      `${label.replace(/[\s\(\)]+/g, "-")}.meta-dirs.${i}.list`,
+    );
+    await writeNulList(lf, batches[i]);
+    listFiles.push(lf);
+  }
+  await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
+    if (debug) {
+      logger.debug(
+        `>>> rsync fixmeta ${label} [${idx + 1}/${listFiles.length}]`,
+      );
+    }
+    await rsyncFixMetaDirs(
+      fromRoot,
+      toRoot,
+      lf,
+      `${label} (dirs chunk ${idx + 1})`,
+      {
+        ...opts,
+        direction: opts.direction,
+      },
+    );
+  });
+}
+
 export async function rsyncCopyChunked(
   workDir: string,
   fromRoot: string,
