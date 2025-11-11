@@ -139,6 +139,7 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 9. "reflect sync" doesn't work, due to no longer having digests. Fix it. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
 10. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
+
    - all the paths that are different with the metadata (exactly the output of that huge sql query, plus a timestamp)
    - what the merge strategy decided to do: the operations, and for each operation, whether or not it succeeded.
 With this in hand, we should be able to look at a given problematic file and see every time it out of sync, what the plan was for it, and what happened. Probably the trace.db table should thus have columns and path should be indexed:
@@ -147,9 +148,7 @@ With this in hand, we should be able to look at a given problematic file and see
 
 This should make it very easy to see "why is path this way now?"  What have we done to it.  It will also be very useful for unit testing, since we can just read this table and verify what we think should happen actually did happen.
 
-
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
-
 
 ## (done) Big Scans and file transfers versus Realtime Updates
 
@@ -193,8 +192,70 @@ due to a mistake.  "reflect diff" also outputs all this, but I looked at one of 
 
 wstein@lite:~/build/reflect-sync/scripts/overlay$ r diff o|wc -l
 796
+
+also:
+
+
+wstein@lite:~/.local/share/reflect-sync/sessions/8$ sqlite3
+-- Loading resources from /home/wstein/.sqliterc
+SQLite version 3.46.1 2024-08-13 09:16:08
+Enter ".help" for usage hints.
+Connected to a transient in-memory database.
+Use ".open FILENAME" to reopen on a persistent database.
+sqlite> attach 'alpha.db' as alpha; attach 'beta.db' as beta; attach 'base.db' as base;
+Run Time: real 0.001 user 0.000000 sys 0.001264
+sqlite> .mode lines
+sqlite> attach 'alpha.db' as alpha; attach 'beta.db' as beta; attach 'base.db' as base;
+Run Time: real 0.000 user 0.000009 sys 0.000015
+Runtime error: database alpha is already in use
+
+
+sqlite> select * from alpha.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
+        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
+        kind = f
+        hash = 
+       mtime = 1762893096375.0
+       ctime = 1762893096375.0
+hashed_ctime = NULL
+     updated = 1762893096481.0
+        size = 0
+     deleted = 1
+   last_seen = 1762893096375.0
+ link_target = NULL
+  last_error = NULL
+Run Time: real 0.000 user 0.000098 sys 0.000164
+sqlite> select * from beta.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
+        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
+        kind = f
+        hash = mUYjPMgGPhNs9QKItzre2R6Vu/M+7JBii4XuFh5k4Og=|1a4
+       mtime = 1762893093154.0
+       ctime = 1762893085252.54
+hashed_ctime = 1762893085252.54
+     updated = 1762894696104.0
+        size = 26576
+     deleted = 1
+   last_seen = NULL
+ link_target = NULL
+  last_error = NULL
+Run Time: real 0.000 user 0.000094 sys 0.000157
+sqlite> select * from base.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
+        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
+        kind = f
+        hash = mUYjPMgGPhNs9QKItzre2R6Vu/M+7JBii4XuFh5k4Og=|1a4
+       mtime = 1733269648000.0
+       ctime = 1762893085252.54
+hashed_ctime = 1762893085252.54
+     updated = 1762894706112.0
+        size = 26576
+     deleted = 1
+   last_seen = 1762893087275.0
+ link_target = NULL
+  last_error = NULL
+Run Time: real 0.001 user 0.000407 sys 0.000000
 ```
-  
+
+Since both alpha and beta have this as deleted, it shouldn't be in the merge plan at all, right?
+
 ### (not done) A thought related to "last write wins" and deletes.
 
 Right now we set the mtime of a delete to be the time we observe it,
@@ -207,8 +268,6 @@ each time we do a scan.  Anyway, with this choice, if between
 full cycles a file is both modified and deleted, then it'll get
 preserved, because the mod happened later.
 
-
-  
 ## (not done) Memory usage
 
 It seems really large when doing stress tests, e.g, during scan and merge planning. This is not surprising given we grab all the diff out of the db in one query, and that could blow up into a lot of used memory (it hit maybe 6GB?)
@@ -226,7 +285,6 @@ ls -lht ~/.local/share/reflect-sync/sessions/7/*.db
 -rw-r--r-- 1 wstein wstein 87M Nov 11 10:38 /home/wstein/.local/share/reflect-sync/sessions/7/beta.db
 -rw-r--r-- 1 wstein wstein 83M Nov 11 10:37 /home/wstein/.local/share/reflect-sync/sessions/7/base.db
 ```
-
 
 ## (not done) Use a socket and a single ssh session
 
@@ -251,3 +309,4 @@ database for a particular list of paths (all the ones with copy failures),
 then update local accordingly.
 
 I did see this edge case when stress testing.
+
