@@ -1,9 +1,13 @@
+// src/op-stamp.ts
 import { getDb } from "./db.js";
+import { nodeKindToEntry, type EntryKind as NodeEntryKind } from "./nodes-util.js";
 
-export type EntryKind = "file" | "dir" | "link" | "missing";
+export type EntryKind = NodeEntryKind;
+
+export type OpStampEntryKind = EntryKind | "missing";
 
 export interface OpStamp {
-  kind: EntryKind;
+  kind: OpStampEntryKind;
   opTs: number | null;
   deleted: boolean;
   size?: number | null;
@@ -35,57 +39,33 @@ export function fetchOpStamps(
     const batches = chunkArray(paths, SQLITE_MAX_VARIABLE_NUMBER - 1);
     for (const batch of batches) {
       const placeholders = batch.map(() => "?").join(",");
-
-      const filesStmt = db.prepare(
-        `SELECT path, op_ts, deleted, size, mtime, ctime, hash FROM files WHERE path IN (${placeholders})`,
+      const stmt = db.prepare(
+        `SELECT path, kind, hash, mtime, ctime, updated, size, deleted, link_target
+           FROM nodes
+          WHERE path IN (${placeholders})`,
       );
-      for (const row of filesStmt.iterate(...batch)) {
-        const deleted = Boolean(row.deleted);
-        const entry = result.get(row.path as string);
-        if (!entry || entry.deleted) {
-          result.set(row.path as string, {
-            kind: deleted ? "missing" : "file",
-            opTs: row.op_ts as number | null,
-            deleted,
-            size: row.size as number | null,
-            mtime: row.mtime as number | null,
-            ctime: row.ctime as number | null,
-            hash: row.hash as string | null,
-          });
-        }
+      for (const row of stmt.iterate(...batch)) {
+        const deleted = !!row.deleted;
+        const path = row.path as string;
+        const entryKind = nodeKindToEntry(row.kind as string);
+        if (result.has(path) && !result.get(path)!.deleted) continue;
+        result.set(path, {
+          kind: deleted ? "missing" : entryKind,
+          opTs: row.updated != null ? Number(row.updated) : null,
+          deleted,
+          size: row.size != null ? Number(row.size) : null,
+          mtime: row.mtime != null ? Number(row.mtime) : null,
+          ctime: row.ctime != null ? Number(row.ctime) : null,
+          hash: row.hash != null ? String(row.hash) : null,
+          target: row.link_target != null ? String(row.link_target) : null,
+        });
       }
-
-      const dirsStmt = db.prepare(
-        `SELECT path, op_ts, deleted, mtime, ctime, hash FROM dirs WHERE path IN (${placeholders})`,
-      );
-      for (const row of dirsStmt.iterate(...batch)) {
-        const deleted = Boolean(row.deleted);
-        const existing = result.get(row.path as string);
-        if (!existing || existing.deleted) {
-          result.set(row.path as string, {
-            kind: deleted ? "missing" : "dir",
-            opTs: row.op_ts as number | null,
-            deleted,
-            mtime: row.mtime as number | null,
-            ctime: row.ctime as number | null,
-            hash: row.hash as string | null,
-          });
-        }
-      }
-
-      const linksStmt = db.prepare(
-        `SELECT path, op_ts, deleted, hash, target FROM links WHERE path IN (${placeholders})`,
-      );
-      for (const row of linksStmt.iterate(...batch)) {
-        const deleted = Boolean(row.deleted);
-        const existing = result.get(row.path as string);
-        if (!existing || existing.deleted) {
-          result.set(row.path as string, {
-            kind: deleted ? "missing" : "link",
-            opTs: row.op_ts as number | null,
-            deleted,
-            hash: row.hash as string | null,
-            target: row.target as string | null,
+      for (const path of batch) {
+        if (!result.has(path)) {
+          result.set(path, {
+            kind: "missing",
+            opTs: null,
+            deleted: true,
           });
         }
       }

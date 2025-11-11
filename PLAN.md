@@ -137,6 +137,15 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 6. (done) Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
 7. Rewrite "reflect sync" to instead use the output of the merge plan -- done = all files transfer successfully so database is same on both sides. Before reflect sync depended on the digests, which we are no longer computing.  Also add a nice green checkbox to the "reflect list" when the last known full scan showed that that the sync roots are the same.  Do not store and compute the digest as part of a normal sync cycle, since it's just as expensive to compute as doing the whole merge strategy, and it's only useful to compare the two sides, which we already do directly.
 8. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
+9. Implement a tracing table for debugging.  Enable with an env variable being set, e.g., REFLECT_TRACE_ALL=1.   When set, we log a lot of information to a new db called trace.db, to help with debugging.  It will explain exactly what the diffs were during each 3-way merge, both with full scans and hotsync.  Basically when set the 3-way merge function should record:
+   - all the paths that are different with the metadata (exactly the output of that huge sql query, plus a timestamp)
+   - what the merge strategy decided to do: the operations, and for each operation, whether or not it succeeded.
+With this in hand, we should be able to look at a given problematic file and see every time it out of sync, what the plan was for it, and what happened. Probably the trace.db table should thus have columns and path should be indexed:
+
+  time | path | alpha state... | beta state... | planned operation | did op work
+
+This should make it very easy to see "why is path this way now?"  What have we done to it.  It will also be very useful for unit testing, since we can just read this table and verify what we think should happen actually did happen.
+
 
 With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
 

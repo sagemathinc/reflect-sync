@@ -1,4 +1,5 @@
-// --- imports near the top of cli.ts (add if not already present)
+// src/session-cli.ts
+
 import { Command, Option } from "commander";
 import {
   ensureSessionDb,
@@ -38,6 +39,7 @@ import { diffSession } from "./session-diff.js";
 import { getDb } from "./db.js";
 import type { Database } from "./db.js";
 import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
+import { nodeKindToEntry } from "./nodes-util.js";
 import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 
@@ -787,7 +789,7 @@ export function registerSessionCommands(program: Command) {
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         try {
-          await runWatchCommand(sessionDb, ref, opts);
+          await runMonitorCommand(sessionDb, ref, opts);
         } catch (err) {
           console.error((err as Error).message);
           process.exitCode = 1;
@@ -1075,7 +1077,7 @@ type WatchEventPayload = {
   deleted?: boolean;
 };
 
-async function runWatchCommand(
+async function runMonitorCommand(
   sessionDbPath: string,
   ref: string,
   opts: WatchCommandOptions,
@@ -1252,22 +1254,24 @@ function fetchScanEvents(
   limit: number,
 ): ScanRow[] {
   const stmt = handle.prepare(
-    `SELECT path, op_ts as opTs, 'file' as kind, size, mtime, hash, target, deleted
-       FROM (
-         SELECT path, op_ts, size, mtime, hash, NULL as target, deleted FROM files WHERE op_ts > ?
-         UNION ALL
-         SELECT path, op_ts, NULL, mtime, hash, NULL, deleted FROM dirs WHERE op_ts > ?
-         UNION ALL
-         SELECT path, op_ts, NULL, mtime, hash, target, deleted FROM links WHERE op_ts > ?
-       )
-       ORDER BY opTs ASC
-       LIMIT ?`,
+    `SELECT path,
+            updated AS opTs,
+            kind,
+            size,
+            mtime,
+            hash,
+            link_target AS target,
+            deleted
+       FROM nodes
+      WHERE updated > ?
+      ORDER BY opTs ASC, path ASC
+      LIMIT ?`,
   );
-  const raw = stmt.all(since, since, since, limit) as Record<string, any>[];
+  const raw = stmt.all(since, limit) as Record<string, any>[];
   return raw.map((row) => ({
     path: row.path as string,
     opTs: Number(row.opTs),
-    kind: row.kind as string,
+    kind: nodeKindToEntry(row.kind as string),
     size: row.size != null ? Number(row.size) : null,
     mtime: row.mtime != null ? Number(row.mtime) : null,
     hash: row.hash != null ? String(row.hash) : null,
@@ -1282,18 +1286,12 @@ function lookupLatestMeta(
 ): (Omit<ScanRow, "opTs"> & { path: string }) | null {
   const row = handle
     .prepare(
-      `SELECT kind, size, mtime, hash, target, deleted
-       FROM (
-         SELECT 'file' as kind, size, mtime, hash, NULL as target, deleted, op_ts FROM files WHERE path = ?
-         UNION ALL
-         SELECT 'dir' as kind, NULL as size, mtime, hash, NULL as target, deleted, op_ts FROM dirs WHERE path = ?
-         UNION ALL
-         SELECT 'link' as kind, NULL as size, mtime, hash, target, deleted, op_ts FROM links WHERE path = ?
-       )
-       ORDER BY op_ts DESC
-       LIMIT 1`,
+      `SELECT kind, size, mtime, hash, link_target AS target, deleted
+         FROM nodes
+        WHERE path = ?
+        LIMIT 1`,
     )
-    .get(path, path, path) as
+    .get(path) as
     | {
         kind: string;
         size: number | null;
@@ -1306,7 +1304,7 @@ function lookupLatestMeta(
   if (!row) return null;
   return {
     path,
-    kind: row.kind,
+    kind: nodeKindToEntry(row.kind as string),
     size: row.size ?? null,
     mtime: row.mtime ?? null,
     hash: row.hash ?? null,
