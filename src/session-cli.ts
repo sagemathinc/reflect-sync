@@ -196,7 +196,7 @@ export function registerSessionCommands(program: Command) {
       .addOption(
         new Option("--merge-strategy <name>", "merge strategy")
           .choices(Array.from(MERGE_STRATEGY_NAMES) as string[])
-          .default("lww-mtime"),
+          .default("last-write-wins"),
       )
       .action(
         async (

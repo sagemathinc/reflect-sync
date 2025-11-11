@@ -799,11 +799,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         WHERE path = ? AND kind = 'f'`,
     );
 
-    const getExistingDir = db.prepare(
-      `SELECT ctime, mtime, hash, deleted
+  const getExistingDir = db.prepare(
+    `SELECT ctime, mtime, hash, deleted, updated
          FROM nodes
         WHERE path = ? AND kind = 'd'`,
-    );
+  );
 
     const getExistingLink = db.prepare(
       `SELECT ctime, mtime, hash, link_target AS target, deleted
@@ -827,8 +827,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
 
       if (entry.dirent.isDirectory()) {
-        // directory ops don't bump mtime reliably, so we use op time.
-        const op_ts = Date.now();
+        const prev = getExistingDir.get(rpath);
         let hash = modeHash(st.mode);
         if (numericIds) {
           // NOTE: it is only a good idea to use this when
@@ -837,19 +836,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         }
 
         // Decide whether to emit NDJSON for this dir (delta-only)
-        let dirChanged = true;
-        if (emitDelta) {
-          const prev = getExistingDir.get(rpath);
-          dirChanged =
-            !prev ||
-            prev.deleted === 1 ||
-            prev.mtime !== mtime ||
-            prev.ctime !== ctime ||
-            prev.hash !== hash;
+        let dirChanged = !prev;
+        if (prev) {
+          dirChanged = prev.deleted === 1 || prev.hash !== hash;
         }
 
+        const op_ts =
+          dirChanged || !prev
+            ? Date.now()
+            : prev.updated ?? prev.mtime ?? mtime;
+
         // Always upsert to bump last_seen (so deletion detection works)
-        dirMetaBuf.push({ path: rpath, ctime, mtime, hash, scan_id, op_ts });
+        dirMetaBuf.push({
+          path: rpath,
+          ctime,
+          mtime,
+          hash,
+          scan_id,
+          op_ts,
+        });
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
           applyDirBatch(dirMetaBuf);
           dirMetaBuf.length = 0;

@@ -123,7 +123,7 @@ function getPlanTargets(sessionRow: any) {
     betaDb: sessionRow.beta_db ?? derived.beta_db,
     baseDb: sessionRow.base_db ?? derived.base_db,
     prefer: (sessionRow.prefer ?? "alpha") as "alpha" | "beta",
-    strategy: sessionRow.merge_strategy ?? "lww-mtime",
+    strategy: sessionRow.merge_strategy ?? "last-write-wins",
   };
 }
 

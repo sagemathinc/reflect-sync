@@ -38,7 +38,7 @@ See [Design Details](./DESIGN.md).
 
 ### Consistency guarantees & tradeoffs
 
-Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re-sampling the destination signature (hash + metadata). This gives a practical guarantee: **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** In other words, corruption can only occur if both sides are actively editing the same path (a true conflict).
+Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re-sampling the destination signature (hash + metadata). This gives a practical guarantee: **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** In other words, corruption can only occur if both sides are actively editing the same path (a true conflict). The default merge strategy is **`last-write-wins`**, which compares our logical observation time (`updated`) on each side. This means a freshly-deleted or recreated file always beats an old mtime-preserved copy even if the filesystem timestamp didn’t change. If you truly want to compare raw mtimes, you can opt into the legacy `lww-mtime` strategy.
 
 Tradeoffs:
 
@@ -380,4 +380,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-

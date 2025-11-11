@@ -14,12 +14,14 @@ const getMode = async (p: string) => (await fsp.lstat(p)).mode & 0o777;
 describe("reflex-sync: file/dir mode propagation + conflicts", () => {
   let tmp: string;
 
+  const CLEANUP = !process.env.KEEP_TEST_TMP;
+
   beforeAll(async () => {
     tmp = await fsp.mkdtemp(join(os.tmpdir(), "rfsync-test-modes-"));
   });
 
   afterAll(async () => {
-    // comment out to inspect failures
+    if (!CLEANUP) return;
     await fsp.rm(tmp, { recursive: true, force: true });
   });
 

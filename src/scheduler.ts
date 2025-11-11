@@ -198,7 +198,7 @@ export function configureSchedulerCommand(
           "node-based merge strategy identifier",
         )
           .choices(MERGE_STRATEGY_NAMES as unknown as string[])
-          .default("lww-mtime"),
+          .default("last-write-wins"),
       )
       .option(
         "-i, --ignore <pattern>",
@@ -263,7 +263,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
     enableReflink: opts.enableReflink === true,
-    mergeStrategy: mergeStrategy ?? "lww-mtime",
+    mergeStrategy: mergeStrategy ?? "last-write-wins",
   };
 
   if (out.alphaHost && out.betaHost) {
@@ -1989,7 +1989,7 @@ export async function runScheduler({
         betaDb,
         baseDb,
         prefer,
-        strategyName: mergeStrategy ?? "lww-mtime",
+        strategyName: mergeStrategy ?? "last-write-wins",
         alphaRoot,
         betaRoot,
         alphaHost,

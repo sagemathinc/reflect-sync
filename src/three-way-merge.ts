@@ -142,7 +142,7 @@ export async function executeThreeWayMerge(
           (opts.restrictedPaths && opts.restrictedPaths.length
             ? "restricted"
             : "full"),
-        strategy: opts.strategyName ?? "lww-mtime",
+        strategy: opts.strategyName ?? "last-write-wins",
         prefer: opts.prefer,
         restrictedCount: opts.restrictedPaths?.length ?? 0,
       },

@@ -63,7 +63,7 @@ export async function sync(
   _verbose: boolean | undefined = undefined,
   args?: string[],
   _args2?: string[],
-  strategy = "lww-mtime",
+  strategy = "last-write-wins",
 ) {
   await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...(args ?? [])]);
   await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...(args ?? [])]);
