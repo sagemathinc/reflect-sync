@@ -529,69 +529,47 @@ ON CONFLICT(path) DO UPDATE SET
   });
 
   // Files meta (paths are rpaths)
-  const upsertMeta = db.prepare(`
-INSERT INTO files (path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
-VALUES (@path, @size, @ctime, @mtime, @op_ts, @hash, 0, @last_seen, @hashed_ctime)
-ON CONFLICT(path) DO UPDATE SET
-  size=excluded.size,
-  ctime=excluded.ctime,
-  mtime=excluded.mtime,
-  op_ts=excluded.op_ts,
-  last_seen=excluded.last_seen,
-  deleted=0
--- NOTE: we intentionally DO NOT overwrite hash or hashed_ctime here.
-`);
-
   const applyMetaBatch = db.transaction((rows: Row[]) => {
+    if (!useNodeWriter) return;
     for (const r of rows) {
-      upsertMeta.run(r);
-      if (useNodeWriter) {
-        writeNode!({
-          path: r.path,
-          kind: "f",
-          hash: r.hash ?? "",
-          mtime: r.mtime,
-          ctime: r.ctime,
-          hashed_ctime: r.hashed_ctime,
-          size: r.size ?? 0,
-          deleted: 0,
-          last_seen: r.last_seen,
-          updated: r.op_ts,
-          link_target: null,
-          last_error: null,
-        });
-      }
+      writeNode!({
+        path: r.path,
+        kind: "f",
+        hash: r.hash ?? "",
+        mtime: r.mtime,
+        ctime: r.ctime,
+        hashed_ctime: r.hashed_ctime,
+        size: r.size ?? 0,
+        deleted: 0,
+        last_seen: r.last_seen,
+        updated: r.op_ts,
+        link_target: null,
+        last_error: null,
+      });
     }
   });
 
   // Hashes (paths are rpaths)
   const applyHashBatch = db.transaction(
     (rows: { path: string; hash: string; ctime: number }[]) => {
-      const stmt = db.prepare(
-        `UPDATE files
-         SET hash = ?, hashed_ctime = ?, deleted = 0
-         WHERE path = ?`,
-      );
+      if (!useNodeWriter) return;
       for (const r of rows) {
-        stmt.run(r.hash, r.ctime, r.path);
-        if (useNodeWriter) {
-          const meta = fileNodeMeta?.get(r.path);
-          writeNode!({
-            path: r.path,
-            kind: "f",
-            hash: r.hash,
-            mtime: meta?.mtime ?? r.ctime ?? Date.now(),
-            ctime: meta?.ctime ?? r.ctime ?? Date.now(),
-            hashed_ctime: r.ctime,
-            size: meta?.size ?? 0,
-            deleted: 0,
-            last_seen: meta?.last_seen ?? null,
-            updated: meta?.mtime ?? r.ctime ?? Date.now(),
-            link_target: null,
-            last_error: null,
-          });
-          fileNodeMeta?.delete(r.path);
-        }
+        const meta = fileNodeMeta?.get(r.path);
+        writeNode!({
+          path: r.path,
+          kind: "f",
+          hash: r.hash,
+          mtime: meta?.mtime ?? r.ctime ?? Date.now(),
+          ctime: meta?.ctime ?? r.ctime ?? Date.now(),
+          hashed_ctime: r.ctime,
+          size: meta?.size ?? 0,
+          deleted: 0,
+          last_seen: meta?.last_seen ?? null,
+          updated: meta?.mtime ?? r.ctime ?? Date.now(),
+          link_target: null,
+          last_error: null,
+        });
+        fileNodeMeta?.delete(r.path);
       }
     },
   );
