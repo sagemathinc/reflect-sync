@@ -268,9 +268,11 @@ function queryDiffs(
   const clauseBetaOnly = restricted
     ? " AND EXISTS (SELECT 1 FROM __three_way_paths r WHERE r.path = b.path)"
     : "";
+  const deletedFilter =
+    "NOT (COALESCE(diff.a_deleted, 0) = 1 AND COALESCE(diff.b_deleted, 0) = 1)";
   const finalWhere = restricted
-    ? "WHERE diff.path IN (SELECT path FROM __three_way_paths)"
-    : "";
+    ? `WHERE diff.path IN (SELECT path FROM __three_way_paths) AND ${deletedFilter}`
+    : `WHERE ${deletedFilter}`;
 
   const sql = `
 WITH
