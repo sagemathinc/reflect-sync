@@ -64,12 +64,17 @@ import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList } from "./restrict.js";
+import { computePathSignature } from "./path-signature.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
 // never sync more than this many files at once using hot sync
 // (discards more)
 const MAX_HOT_SYNC = 200;
+const HOT_SIG_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.REFLECT_HOT_SIG_CONCURRENCY ?? 4),
+);
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -270,10 +275,7 @@ const HOT_TTL_MS = envNum("HOT_TTL_MS", 30 * 60_000);
 const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
 
-const HOT_DEBOUNCE_MS = envNum(
-  "HOT_DEBOUNCE_MS",
-  envNum("MICRO_DEBOUNCE_MS", 200),
-);
+const HOT_THROTTLE_MS = envNum("HOT_THROTTLE_MS", 200);
 
 const MIN_INTERVAL_MS = envNum("SCHED_MIN_MS", 7_500);
 const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
@@ -361,6 +363,20 @@ export async function runScheduler({
   if (!betaHost) autoIgnores.push(...autoIgnoreForRoot(betaRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns([...baseIgnore, ...autoIgnores]);
   const nodeWriterEnabled = !!mergeStrategy;
+  const expandWithAncestors = (paths: string[]): string[] => {
+    const set = new Set<string>();
+    for (const rel of paths) {
+      if (!rel) continue;
+      let current = rel;
+      while (current && !set.has(current)) {
+        set.add(current);
+        const parent = parentDir(current);
+        if (!parent || parent === current) break;
+        current = parent;
+      }
+    }
+    return Array.from(set);
+  };
 
   // ---------- scheduler state ----------
   let running = false,
@@ -876,6 +892,7 @@ export async function runScheduler({
       sshArgs.push("-p", String(port));
     }
     sshArgs.push(host, `${remoteCommand} watch`, "--root", root);
+    sshArgs.push("--hash", hash);
     if (numericIds) {
       sshArgs.push("--numeric-ids");
     }
@@ -1230,6 +1247,7 @@ export async function runScheduler({
   let hotTimer: NodeJS.Timeout | null = null;
   let hotFlushPromise: Promise<void> | null = null;
   let flushQueuedWhileRunning = false;
+  let lastHotFlushAt = 0;
 
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
@@ -1242,10 +1260,13 @@ export async function runScheduler({
     }
     return out;
   };
+  const dedupePaths = (paths: string[]) =>
+    Array.from(new Set(paths.filter(Boolean)));
+  const hotMetaLogger = scoped("hot.meta");
 
   const fetchAlphaRemoteSignatures = async (
     paths: string[],
-    opts: { ignore: boolean; stable?: boolean },
+    opts: { ignore: boolean; stable?: boolean } = { ignore: false },
   ): Promise<SignatureEntry[]> => {
     if (!paths.length) return [];
     if (!alphaStream?.stat) {
@@ -1259,14 +1280,17 @@ export async function runScheduler({
       if (entries.length) collected.push(...entries);
     }
     if (collected.length) {
-      applySignaturesToDb(alphaDb, collected, { numericIds });
+      applySignaturesToDb(alphaDb, collected, {
+        numericIds,
+        writer: nodeWriterEnabled ? "nodes" : undefined,
+      });
     }
     return collected;
   };
 
   const fetchBetaRemoteSignatures = async (
     paths: string[],
-    opts: { ignore: boolean; stable?: boolean },
+    opts: { ignore: boolean; stable?: boolean } = { ignore: false },
   ): Promise<SignatureEntry[]> => {
     if (!paths.length) return [];
     if (!betaStream?.stat) {
@@ -1280,7 +1304,10 @@ export async function runScheduler({
       if (entries.length) collected.push(...entries);
     }
     if (collected.length) {
-      applySignaturesToDb(betaDb, collected, { numericIds });
+      applySignaturesToDb(betaDb, collected, {
+        numericIds,
+        writer: nodeWriterEnabled ? "nodes" : undefined,
+      });
     }
     return collected;
   };
@@ -1370,6 +1397,81 @@ export async function runScheduler({
       }
     : undefined;
 
+  async function collectLocalSignatureEntries(
+    side: "alpha" | "beta",
+    relPaths: string[],
+  ): Promise<SignatureEntry[]> {
+    const unique = dedupePaths(relPaths);
+    if (!unique.length) return [];
+    const root = side === "alpha" ? alphaRoot : betaRoot;
+    const entries: SignatureEntry[] = [];
+    let index = 0;
+    const concurrency = Math.min(HOT_SIG_CONCURRENCY, unique.length);
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => {
+        while (true) {
+          const current = index++;
+          if (current >= unique.length) break;
+          const rel = unique[current];
+          const abs = path.join(root, rel);
+          try {
+            const result = await computePathSignature(abs, {
+              hashAlg: hash,
+              numericIds,
+            });
+            entries.push({
+              path: rel,
+              signature: result.signature,
+              target: result.target,
+            });
+          } catch (err: any) {
+            hotMetaLogger.debug("local signature failed", {
+              side,
+              path: rel,
+              error: String(err?.message || err),
+            });
+            entries.push({
+              path: rel,
+              signature: { kind: "missing", opTs: Date.now() },
+            });
+          }
+        }
+      }),
+    );
+    return entries;
+  }
+
+  async function refreshHotMetadata(
+    side: "alpha" | "beta",
+    relPaths: string[],
+  ): Promise<void> {
+    if (!nodeWriterEnabled || !mergeStrategy) return;
+    const unique = dedupePaths(relPaths);
+    if (!unique.length) return;
+    const isRemote = side === "alpha" ? alphaIsRemote : betaIsRemote;
+    if (isRemote) {
+      const fetch =
+        side === "alpha" ? fetchAlphaRemoteSignatures : fetchBetaRemoteSignatures;
+      if (!fetch) return;
+      try {
+        await fetch(unique, { ignore: true, stable: true });
+      } catch (err: any) {
+        hotMetaLogger.warn("remote signature refresh failed", {
+          side,
+          error: String(err?.message || err),
+        });
+      }
+      return;
+    }
+    const entries = await collectLocalSignatureEntries(side, unique);
+    if (!entries.length) return;
+    applySignaturesToDb(
+      side === "alpha" ? alphaDb : betaDb,
+      entries,
+      { numericIds, writer: "nodes" },
+    );
+  }
+
   async function partitionStablePaths(side: "alpha" | "beta", paths: string[]) {
     if (!stabilityEnabled || !paths.length) {
       return { ready: paths, pending: [] as string[] };
@@ -1413,11 +1515,20 @@ export async function runScheduler({
       flushQueuedWhileRunning = true;
       return;
     }
+    const now = Date.now();
+    const elapsed = now - lastHotFlushAt;
+    if (elapsed >= HOT_THROTTLE_MS) {
+      lastHotFlushAt = now;
+      startHotFlush();
+      return;
+    }
     if (hotTimer) return;
+    const delay = Math.max(0, HOT_THROTTLE_MS - elapsed);
     hotTimer = setTimeout(() => {
       hotTimer = null;
+      lastHotFlushAt = Date.now();
       startHotFlush();
-    }, HOT_DEBOUNCE_MS);
+    }, delay);
   }
 
   function startHotFlush() {
@@ -1455,6 +1566,7 @@ export async function runScheduler({
   async function flushHotOnce(): Promise<void> {
     if (fatalTriggered) return;
     if (hotAlpha.size === 0 && hotBeta.size === 0) return;
+    lastHotFlushAt = Date.now();
     const rpathsAlpha = Array.from(hotAlpha);
     const rpathsBeta = Array.from(hotBeta);
     hotAlpha.clear();
@@ -1479,17 +1591,44 @@ export async function runScheduler({
         });
         return;
       }
-      const readySet = new Set<string>([...readyAlpha, ...readyBeta]);
-      const readyPaths = Array.from(readySet).slice(0, MAX_HOT_SYNC);
-      await runCycle({
-        restrictedPaths: readyPaths,
-        label: "hot",
-      });
-      if (readyPaths.length) {
-        log("info", "realtime", "restricted sync complete", {
-          paths: readyPaths.length,
-          alphaPaths: readyAlpha.length,
-          betaPaths: readyBeta.length,
+      const ordered: string[] = [];
+      const seen = new Set<string>();
+      for (const p of readyAlpha) {
+        if (p && !seen.has(p)) {
+          seen.add(p);
+          ordered.push(p);
+        }
+      }
+      for (const p of readyBeta) {
+        if (p && !seen.has(p)) {
+          seen.add(p);
+          ordered.push(p);
+        }
+      }
+      const limitedPaths = ordered.slice(0, MAX_HOT_SYNC);
+      if (!limitedPaths.length) return;
+      const limitedSet = new Set(limitedPaths);
+      for (const p of readyAlpha) {
+        if (p && !limitedSet.has(p)) hotAlpha.add(p);
+      }
+      for (const p of readyBeta) {
+        if (p && !limitedSet.has(p)) hotBeta.add(p);
+      }
+
+      if (nodeWriterEnabled && mergeStrategy) {
+        const limitedAlpha = readyAlpha.filter(
+          (p) => p && limitedSet.has(p),
+        );
+        const limitedBeta = readyBeta.filter((p) => p && limitedSet.has(p));
+        await Promise.all([
+          refreshHotMetadata("alpha", limitedAlpha),
+          refreshHotMetadata("beta", limitedBeta),
+        ]);
+        await runHotNodeMerge(limitedPaths);
+      } else {
+        await runCycle({
+          restrictedPaths: limitedPaths,
+          label: "hot",
         });
       }
     } catch (e: any) {
@@ -1507,6 +1646,35 @@ export async function runScheduler({
         });
       }
     }
+  }
+
+  async function runHotNodeMerge(limitedPaths: string[]) {
+    const hotLogger = scoped("merge.hot");
+    const expanded = expandWithAncestors(limitedPaths);
+    if (!expanded.length) return;
+    const result = await executeThreeWayMerge({
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer,
+      strategyName: mergeStrategy,
+      restrictedPaths: expanded,
+      alphaRoot,
+      betaRoot,
+      alphaHost,
+      alphaPort,
+      betaHost,
+      betaPort,
+      dryRun,
+      compress,
+      logger: hotLogger,
+    });
+    hotLogger.info("hot merge complete", {
+      strategy: mergeStrategy,
+      restrictedPaths: expanded.length,
+      diffCount: result.plan.diffs.length,
+      operations: result.plan.operations.length,
+    });
   }
 
   // ---------- root watchers (locals only) ----------

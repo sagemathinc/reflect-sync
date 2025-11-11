@@ -2,11 +2,11 @@
 // watch.ts — remote/local watcher that emits NDJSON events to stdout
 //            and accepts JSON control messages on stdin.
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
 import readline from "node:readline";
-import { lstat, readlink } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import {
   HotWatchManager,
@@ -27,10 +27,10 @@ import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
 import { waitForStableFile } from "./stability.js";
 import { type SendSignature, signatureEquals } from "./recent-send.js";
-import { stringDigest, defaultHashAlg, modeHash } from "./hash.js";
+import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 import { DeviceBoundary, type DeviceCheckOptions } from "./device-boundary.js";
+import { computePathSignature } from "./path-signature.js";
 
-const HASH_ALG = defaultHashAlg();
 const IGNORE_TTL_MS = Number(
   process.env.REFLECT_REMOTE_IGNORE_TTL_MS ?? 60_000,
 );
@@ -62,6 +62,7 @@ type WatchOpts = {
   maxHotWatchers: number;
   ignoreRules: string[];
   numericIds: boolean;
+  hash: string;
 };
 
 // ---------- helpers ----------
@@ -228,6 +229,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     maxHotWatchers,
     ignoreRules: rawIgnoreRules,
     numericIds,
+    hash,
   } = opts;
   const rootAbs = path.resolve(root);
   await ensureTempDir(rootAbs);
@@ -366,58 +368,14 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
           },
         };
       }
-      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
-      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
-      if (st.isSymbolicLink()) {
-        const target = await readlink(abs);
-        return {
-          signature: {
-            kind: "link",
-            opTs: mtime,
-            mtime,
-            ctime,
-            hash: stringDigest(HASH_ALG, target),
-          },
-          target,
-        };
-      }
-      if (st.isDirectory()) {
-        return {
-          signature: {
-            kind: "dir",
-            opTs: mtime,
-            mtime,
-            ctime,
-            hash: modeHash(st.mode),
-          },
-        };
-      }
-      if (st.isFile()) {
-        const signature: SendSignature = {
-          kind: "file",
-          opTs: mtime,
-          mtime,
-          ctime,
-          size: st.size,
-          mode: st.mode,
-        };
-        if (numericIds) {
-          signature.uid = st.uid;
-          signature.gid = st.gid;
-        }
-        return {
-          signature,
-        };
-      }
-      return {
-        signature: {
-          kind: "file",
-          opTs: mtime,
-          mtime,
-          ctime,
-          size: st.size,
+      return await computePathSignature(
+        abs,
+        {
+          hashAlg: hash,
+          numericIds,
         },
-      };
+        st,
+      );
     } catch (err: any) {
       if (err?.code === "ENOENT") {
         return {
@@ -765,6 +723,11 @@ export function configureWatchCommand(
       "--numeric-ids",
       "include uid:gid metadata in hashes (requires root on both sides)",
       false,
+    )
+    .addOption(
+      new Option("--hash <algorithm>", "content hash algorithm")
+        .choices(listSupportedHashes())
+        .default(defaultHashAlg()),
     );
 }
 
@@ -783,6 +746,7 @@ async function mainFromCli() {
     ignore?: string[];
     db?: string;
     numericIds?: boolean;
+    hash: string;
   };
 
   await runWatch({
@@ -793,6 +757,7 @@ async function mainFromCli() {
     maxHotWatchers: Number(opts.maxHotWatchers),
     ignoreRules: opts.ignore ?? [],
     numericIds: Boolean(opts.numericIds),
+    hash: opts.hash ?? defaultHashAlg(),
   });
 }
 

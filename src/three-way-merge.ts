@@ -17,6 +17,7 @@ import {
   type MergeStrategyContext,
   type MergeSide,
 } from "./merge-strategies.js";
+import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
 
 export type ThreeWayMergeOptions = {
   alphaDb: string;
@@ -24,6 +25,7 @@ export type ThreeWayMergeOptions = {
   baseDb: string;
   prefer: "alpha" | "beta";
   strategyName?: string | null;
+  restrictedPaths?: string[];
   logger?: Logger;
 };
 
@@ -63,11 +65,37 @@ export function planThreeWayMerge(
   } = opts;
 
   const db = getDb(baseDb);
+  const restrictedPaths = dedupeRestrictedList(
+    opts.restrictedPaths ?? [],
+  ).filter(Boolean);
+  const restrictionActive = restrictedPaths.length > 0;
+
   try {
+    if (restrictionActive) {
+      db.exec("DROP TABLE IF EXISTS __three_way_paths;");
+      db.exec(
+        "CREATE TEMP TABLE __three_way_paths(path TEXT PRIMARY KEY) WITHOUT ROWID;",
+      );
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO __three_way_paths(path) VALUES (?)`,
+      );
+      const txInsert = db.transaction((paths: string[]) => {
+        for (const rel of paths) {
+          let current = rel;
+          while (current && !insert.run(current)) {
+            const parent = dirnameRel(current);
+            if (!parent || parent === current) break;
+            current = parent;
+          }
+        }
+      });
+      txInsert(restrictedPaths);
+    }
+
     attachDb(db, "alpha", alphaDb);
     attachDb(db, "beta", betaDb);
 
-    const rows = queryDiffs(db);
+    const rows = queryDiffs(db, restrictionActive);
     const strategy = resolveMergeStrategy(strategyName);
     const ctx: MergeStrategyContext = { prefer };
     const operations = strategy(rows, ctx);
@@ -230,7 +258,18 @@ function attachDb(db: ReturnType<typeof getDb>, alias: string, file: string) {
 
 function queryDiffs(
   db: ReturnType<typeof getDb>,
+  restricted: boolean,
 ): MergeDiffRow[] {
+  const clausePairs = restricted
+    ? " AND EXISTS (SELECT 1 FROM __three_way_paths r WHERE r.path = a.path)"
+    : "";
+  const clauseBetaOnly = restricted
+    ? " AND EXISTS (SELECT 1 FROM __three_way_paths r WHERE r.path = b.path)"
+    : "";
+  const finalWhere = restricted
+    ? "WHERE diff.path IN (SELECT path FROM __three_way_paths)"
+    : "";
+
   const sql = `
 WITH
 pairs AS (
@@ -255,7 +294,7 @@ pairs AS (
   WHERE (b.path IS NULL
      OR a.kind    <> b.kind
      OR a.hash    <> b.hash
-     OR a.deleted <> b.deleted)
+     OR a.deleted <> b.deleted)${clausePairs}
 ),
 
 beta_only AS (
@@ -277,7 +316,7 @@ beta_only AS (
     b.last_error AS b_error
   FROM beta.nodes b
   LEFT JOIN alpha.nodes a ON a.path = b.path
-  WHERE a.path IS NULL
+  WHERE a.path IS NULL${clauseBetaOnly}
 ),
 
 diff AS (
@@ -311,6 +350,7 @@ SELECT
   base.last_error AS base_error
 FROM diff
 LEFT JOIN nodes AS base ON base.path = diff.path
+${finalWhere}
 ORDER BY diff.path;
 `;
 

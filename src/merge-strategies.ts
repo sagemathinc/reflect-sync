@@ -44,10 +44,11 @@ export function resolveMergeStrategy(name?: string | null): MergeStrategy {
     case "prefer-beta":
       return (rows) => planPreferSide(rows, "beta");
     case "prefer-alpha":
-    case "lww-mtime":
-    case "lww-updated":
-      // TODO: implement these semantics properly
       return (rows, ctx) => planPreferSide(rows, ctx.prefer);
+    case "lww-mtime":
+      return (rows, ctx) => planLww(rows, "mtime", ctx.prefer);
+    case "lww-updated":
+      return (rows, ctx) => planLww(rows, "updated", ctx.prefer);
     default:
       return (rows, ctx) => planPreferSide(rows, ctx.prefer);
   }
@@ -105,4 +106,112 @@ function planPreferSide(rows: MergeDiffRow[], prefer: MergeSide) {
     operations.push({ op: "copy", from, to, path: row.path });
   }
   return operations;
+}
+
+type TimestampMode = "mtime" | "updated";
+
+type SideState = {
+  exists: boolean;
+  deleted: boolean;
+  hash?: string | null;
+  kind?: string | null;
+  ts: number;
+};
+
+type Candidate = {
+  side: MergeSide;
+  ts: number;
+  type: "present" | "deleted";
+};
+
+function planLww(
+  rows: MergeDiffRow[],
+  mode: TimestampMode,
+  prefer: MergeSide,
+): PlannedOperation[] {
+  const operations: PlannedOperation[] = [];
+  for (const row of rows) {
+    const alpha = extractState(row, "alpha", mode);
+    const beta = extractState(row, "beta", mode);
+
+    const bothMissing = !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
+    if (bothMissing) continue;
+
+    const sameHash =
+      alpha.exists &&
+      beta.exists &&
+      !!alpha.hash &&
+      alpha.hash === beta.hash &&
+      alpha.kind === beta.kind;
+    if (sameHash) {
+      operations.push({ op: "noop", path: row.path });
+      continue;
+    }
+
+    const alphaCand = toCandidate(alpha, "alpha");
+    const betaCand = toCandidate(beta, "beta");
+    const winner = pickWinner(alphaCand, betaCand, prefer);
+    if (!winner) continue;
+
+    if (winner.type === "present") {
+      const from = winner.side;
+      const to = from === "alpha" ? "beta" : "alpha";
+      operations.push({ op: "copy", from, to, path: row.path });
+    } else {
+      const target = winner.side === "alpha" ? "beta" : "alpha";
+      operations.push({ op: "delete", side: target, path: row.path });
+    }
+  }
+  return operations;
+}
+
+function extractState(
+  row: MergeDiffRow,
+  side: MergeSide,
+  mode: TimestampMode,
+): SideState {
+  const prefix = side === "alpha" ? "a" : "b";
+  const deleted = !!(row as any)[`${prefix}_deleted`];
+  const kind = (row as any)[`${prefix}_kind`] ?? null;
+  const hash = (row as any)[`${prefix}_hash`] ?? null;
+  const size = (row as any)[`${prefix}_size`];
+  const exists = !deleted && (kind != null || hash != null || size != null);
+  const ts =
+    mode === "mtime"
+      ? (Number((row as any)[`${prefix}_mtime`]) ||
+          Number((row as any)[`${prefix}_updated`]) ||
+          0)
+      : (Number((row as any)[`${prefix}_updated`]) ||
+          Number((row as any)[`${prefix}_mtime`]) ||
+          0);
+  return {
+    exists,
+    deleted,
+    hash,
+    kind,
+    ts,
+  };
+}
+
+function toCandidate(state: SideState, side: MergeSide): Candidate | null {
+  if (state.exists) {
+    return { side, ts: state.ts, type: "present" };
+  }
+  if (state.deleted) {
+    return { side, ts: state.ts, type: "deleted" };
+  }
+  return null;
+}
+
+function pickWinner(
+  alpha: Candidate | null,
+  beta: Candidate | null,
+  prefer: MergeSide,
+): Candidate | null {
+  if (alpha && beta) {
+    if (alpha.ts > beta.ts) return alpha;
+    if (beta.ts > alpha.ts) return beta;
+    return prefer === "alpha" ? alpha : beta;
+  }
+  return alpha ?? beta ?? null;
 }

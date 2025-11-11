@@ -154,7 +154,15 @@ transfer if actively edited files.  Some ideas:
   with files x and y in many cases. I can't think of any
   problem at all when x!=y except e.g., if x is a directory
   and y is contained in x, and the operation is "delete x".
-  
+- when we start carrying out operations we store in memory
+  what operations are queued
+- when deciding what operations to do as part of a 3-way merge,
+  we discard any that are not allowed due to currently queued or
+  running operations, then start/queue up the rest.
+
+With this approach, we could have a full scan *and* several hot watch
+transfers safely happening all at once.   The real limit is the
+impact on cpu/bandwidth.  
 
 
 
