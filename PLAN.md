@@ -183,7 +183,24 @@ Question: could we completely eliminate the --prefer option entirely and instead
   - 'lww-mtime-prefer-alpha'
   - 'lww-mtime-prefer-beta'
   - 'lww-mtime-prefer-updated'
+  
+## Memory usage
 
+It seems really large when doing stress tests, e.g, during scan and merge planning. This is not surprising given we grab all the diff out of the db in one query, and that could blow up into a lot of used memory (it hit maybe 6GB?)
+
+```
+2808677 wstein    20   0   13.7g   3.6g  62988 R 637.2  11.9   3:29.88 MainThread 
+```
+
+In contrast, the on disk database usage is under control:
+
+```
+wstein@lite:~/build/reflect-sync/src$ !ls
+ls -lht ~/.local/share/reflect-sync/sessions/7/*.db
+-rw-r--r-- 1 wstein wstein 91M Nov 11 10:38 /home/wstein/.local/share/reflect-sync/sessions/7/alpha.db
+-rw-r--r-- 1 wstein wstein 87M Nov 11 10:38 /home/wstein/.local/share/reflect-sync/sessions/7/beta.db
+-rw-r--r-- 1 wstein wstein 83M Nov 11 10:37 /home/wstein/.local/share/reflect-sync/sessions/7/base.db
+```
 
 
 
