@@ -63,11 +63,29 @@ function planPreferSide(rows: MergeDiffRow[], prefer: MergeSide) {
     const bActive = !bDeleted && !!row.b_hash;
 
     if (aActive && !bActive) {
-      operations.push({ op: "copy", from: "alpha", to: "beta", path: row.path });
+      if (prefer === "alpha") {
+        operations.push({
+          op: "copy",
+          from: "alpha",
+          to: "beta",
+          path: row.path,
+        });
+      } else {
+        operations.push({ op: "delete", side: "alpha", path: row.path });
+      }
       continue;
     }
     if (bActive && !aActive) {
-      operations.push({ op: "copy", from: "beta", to: "alpha", path: row.path });
+      if (prefer === "beta") {
+        operations.push({
+          op: "copy",
+          from: "beta",
+          to: "alpha",
+          path: row.path,
+        });
+      } else {
+        operations.push({ op: "delete", side: "beta", path: row.path });
+      }
       continue;
     }
     if (!aActive && !bActive) {

@@ -408,10 +408,8 @@ async function performDeletes(params: {
     },
   );
   const deleted = res.deleted?.length ? res.deleted : unique;
-  for (const path of deleted) {
-    markNodeDeleted(params.targetDb, path);
-    markNodeDeleted(params.baseDb, path);
-  }
+  markNodesDeletedBatch(params.targetDb, deleted);
+  markNodesDeletedBatch(params.baseDb, deleted);
 }
 
 async function performDirCopies(params: {
@@ -441,20 +439,16 @@ async function performDirCopies(params: {
         tempDir: params.tempDir,
       },
     );
-    for (const path of unique) {
-      mirrorNodeFromSource(
-        params.sourceDb,
-        params.destDb,
-        params.baseDb,
-        path,
-      );
-    }
+    mirrorNodesFromSourceBatch(
+      params.sourceDb,
+      params.destDb,
+      params.baseDb,
+      unique,
+    );
   } catch (err) {
     const message = `rsync dir copy failed: ${err instanceof Error ? err.message : String(err)}`;
-    for (const path of unique) {
-      recordNodeError(params.destDb, path, message);
-      recordNodeError(params.baseDb, path, message);
-    }
+    recordNodeErrorsBatch(params.destDb, unique, message);
+    recordNodeErrorsBatch(params.baseDb, unique, message);
     throw err;
   }
 }
@@ -503,30 +497,26 @@ async function performFileCopies(params: {
   } catch (err) {
     unique.forEach((p) => failed.add(p));
     const message = `rsync file copy failed: ${err instanceof Error ? err.message : String(err)}`;
-    for (const path of failed) {
-      recordNodeError(params.destDb, path, message);
-      recordNodeError(params.baseDb, path, message);
-    }
+    const failedList = Array.from(failed);
+    recordNodeErrorsBatch(params.destDb, failedList, message);
+    recordNodeErrorsBatch(params.baseDb, failedList, message);
     throw err;
   }
 
   const succeeded = failed.size
     ? unique.filter((p) => !failed.has(p))
     : unique;
-  for (const path of succeeded) {
-    mirrorNodeFromSource(
-      params.sourceDb,
-      params.destDb,
-      params.baseDb,
-      path,
-    );
-  }
+  mirrorNodesFromSourceBatch(
+    params.sourceDb,
+    params.destDb,
+    params.baseDb,
+    succeeded,
+  );
   if (failed.size) {
     const message = `rsync reported partial failures for ${params.direction}`;
-    for (const path of failed) {
-      recordNodeError(params.destDb, path, message);
-      recordNodeError(params.baseDb, path, message);
-    }
+    const failedList = Array.from(failed);
+    recordNodeErrorsBatch(params.destDb, failedList, message);
+    recordNodeErrorsBatch(params.baseDb, failedList, message);
     throw new Error(message);
   }
 }
@@ -571,59 +561,87 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   ).run(row);
 }
 
-function mirrorNodeFromSource(
+function mirrorNodesFromSourceBatch(
   sourceDb: ReturnType<typeof getDb>,
   destDb: ReturnType<typeof getDb>,
   baseDb: ReturnType<typeof getDb>,
-  path: string,
+  paths: string[],
 ): void {
-  const row = fetchNode(sourceDb, path);
-  if (!row) return;
-  const clean: NodeRecord = { ...row, last_error: null };
-  upsertNode(destDb, clean);
-  upsertNode(baseDb, clean);
+  const rows: NodeRecord[] = [];
+  for (const path of paths) {
+    const row = fetchNode(sourceDb, path);
+    if (row) rows.push({ ...row, last_error: null });
+  }
+  if (!rows.length) return;
+  const applyDest = destDb.transaction((entries: NodeRecord[]) => {
+    for (const entry of entries) upsertNode(destDb, entry);
+  });
+  const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
+    for (const entry of entries) upsertNode(baseDb, entry);
+  });
+  applyDest(rows);
+  applyBase(rows);
 }
 
-function markNodeDeleted(db: ReturnType<typeof getDb>, path: string) {
-  const existing = fetchNode(db, path);
-  const now = Date.now();
-  const row: NodeRecord = existing
-    ? { ...existing, deleted: 1, updated: now, last_error: null }
-    : {
-        path,
-        kind: "f",
-        hash: "",
-        mtime: now,
-        updated: now,
-        size: 0,
-        deleted: 1,
-        last_error: null,
-      };
-  upsertNode(db, row);
-}
-
-function recordNodeError(
+function markNodesDeletedBatch(
   db: ReturnType<typeof getDb>,
-  path: string,
+  paths: string[],
+): void {
+  if (!paths.length) return;
+  const rows: NodeRecord[] = [];
+  const now = Date.now();
+  for (const path of paths) {
+    const existing = fetchNode(db, path);
+    const row: NodeRecord = existing
+      ? { ...existing, deleted: 1, updated: now, last_error: null }
+      : {
+          path,
+          kind: "f",
+          hash: "",
+          mtime: now,
+          updated: now,
+          size: 0,
+          deleted: 1,
+          last_error: null,
+        };
+    rows.push(row);
+  }
+  const apply = db.transaction((entries: NodeRecord[]) => {
+    for (const entry of entries) upsertNode(db, entry);
+  });
+  apply(rows);
+}
+
+function recordNodeErrorsBatch(
+  db: ReturnType<typeof getDb>,
+  paths: string[],
   message: string,
 ) {
-  const existing = fetchNode(db, path);
+  if (!paths.length) return;
   const now = Date.now();
-  const row: NodeRecord = existing
-    ? { ...existing }
-    : {
-        path,
-        kind: "f",
-        hash: "",
-        mtime: now,
-        updated: now,
-        size: 0,
-        deleted: 0,
-        last_error: null,
-      };
-  row.updated = now;
-  row.last_error = JSON.stringify({ message, at: now });
-  upsertNode(db, row);
+  const rows: NodeRecord[] = [];
+  for (const path of paths) {
+    const existing = fetchNode(db, path);
+    const row: NodeRecord = existing
+      ? { ...existing }
+      : {
+          path,
+          kind: "f",
+          hash: "",
+          mtime: now,
+          updated: now,
+          size: 0,
+          deleted: 0,
+          last_error: null,
+        };
+    row.updated = now;
+    row.last_error = JSON.stringify({ message, at: now });
+    rows.push(row);
+  }
+  const apply = db.transaction((entries: NodeRecord[]) => {
+    for (const entry of entries) upsertNode(db, entry);
+  });
+  apply(rows);
 }
 
 function isVanishedWarning(stderr?: string | null): boolean {

@@ -131,9 +131,9 @@ Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, e
 
 1. \(done\) Implement the new `nodes` schema in alpha/beta/base \(drop legacy tables once stable\).
 2. (done) Update scan/watch code to write into `nodes` \(hashes, kinds, `updated` timestamps\).
-3. Replace the merge planner with the query \+ resolver described above.
-4. Reuse existing rsync/reflink helpers to execute copy/delete operations \(one path per entry, no implicit recursion\).
-5. Mirror DB state after each confirmed operation \(source row → destination \+ base\).
+3. (done) Replace the merge planner with the query \+ resolver described above.
+4. (done) Reuse existing rsync/reflink helpers to execute copy/delete operations \(one path per entry, no implicit recursion\).
+5. (done) Mirror DB state after each confirmed operation \(source row → destination \+ base\).
 6. Wire hot\-sync to use restricted versions of the same scan/merge pipeline.
 7. Remove old signature/recent\-send logic and simplify docs/tests around the new model.
 
