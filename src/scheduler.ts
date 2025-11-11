@@ -1247,6 +1247,7 @@ export async function runScheduler({
   let hotTimer: NodeJS.Timeout | null = null;
   let hotFlushPromise: Promise<void> | null = null;
   let flushQueuedWhileRunning = false;
+  let fullCycleRunning = false;
   let lastHotFlushAt = 0;
 
   let alphaStream: StreamControl | null = null;
@@ -1511,6 +1512,10 @@ export async function runScheduler({
   }
 
   function scheduleHotFlush() {
+    if (fullCycleRunning) {
+      flushQueuedWhileRunning = true;
+      return;
+    }
     if (hotFlushPromise) {
       flushQueuedWhileRunning = true;
       return;
@@ -1862,7 +1867,12 @@ export async function runScheduler({
 
   // ---------- full cycle ----------
   async function runCycle(options: CycleOptions = {}): Promise<void> {
+    if (fullCycleRunning) {
+      log("info", "scheduler", "full cycle already running; skipping nested runCycle");
+      return;
+    }
     try {
+      fullCycleRunning = true;
       await ensureRootsExist();
     } catch (err) {
       if (err instanceof RemoteRootUnavailableError) {
@@ -1874,6 +1884,12 @@ export async function runScheduler({
         );
       }
       throw err;
+    } finally {
+      fullCycleRunning = false;
+      if (flushQueuedWhileRunning || hotAlpha.size || hotBeta.size) {
+        flushQueuedWhileRunning = false;
+        scheduleHotFlush();
+      }
     }
 
     const restrictedPaths = dedupeRestrictedList(options.restrictedPaths);
