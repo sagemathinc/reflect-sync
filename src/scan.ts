@@ -1029,6 +1029,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             SET deleted = 1,
                 updated = @ts,
                 mtime = @ts,
+                hash = '',
+                hashed_ctime = NULL,
+                size = 0,
                 last_error = NULL
           WHERE last_seen <> @scan
             AND deleted = 0${restrictedClause}`,

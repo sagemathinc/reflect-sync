@@ -653,7 +653,15 @@ function markNodesDeletedBatch(
   for (const path of paths) {
     const existing = fetchNode(db, path);
     const row: NodeRecord = existing
-      ? { ...existing, deleted: 1, updated: now, last_error: null }
+      ? {
+          ...existing,
+          deleted: 1,
+          hash: "",
+          hashed_ctime: null,
+          size: 0,
+          updated: now,
+          last_error: null,
+        }
       : {
           path,
           kind: "f",
