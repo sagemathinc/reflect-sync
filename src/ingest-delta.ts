@@ -97,6 +97,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     size: number;
     deleted: 0 | 1;
     last_error?: string | null;
+    updated?: number;
   };
   const nodeUpsertStmt = useNodeWriter
     ? db.prepare(`
@@ -117,16 +118,18 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     : null;
   const writeNode = useNodeWriter
     ? (params: NodeWriteParams) => {
+        const updated = params.updated ?? Date.now();
         nodeUpsertStmt!.run({
           ...params,
-          updated: Date.now(),
+          updated,
           last_error:
             params.last_error === undefined ? null : params.last_error,
         });
       }
     : null;
   const markNodeDeleted = useNodeWriter
-    ? (path: string) => {
+    ? (path: string, observed?: number) => {
+        const now = observed ?? Date.now();
         const existing = nodeSelectStmt!.get(path) as
           | { kind: NodeKind; hash: string; size: number }
           | undefined;
@@ -134,9 +137,10 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           path,
           kind: existing?.kind ?? "f",
           hash: existing?.hash ?? "",
-          mtime: Date.now(),
+          mtime: now,
           size: existing?.size ?? 0,
           deleted: 1,
+          updated: now,
           last_error: null,
         });
       }
@@ -253,7 +257,7 @@ ON CONFLICT(path) DO UPDATE SET
         upsertDir.run({
           path: r.path,
           ctime: isDelete ? null : (r.ctime ?? null),
-          mtime: isDelete ? null : (r.mtime ?? null),
+          mtime: isDelete ? now : (r.mtime ?? null),
           hash: r.hash ?? null,
           op_ts,
           deleted: isDelete ? 1 : 0,
@@ -261,7 +265,7 @@ ON CONFLICT(path) DO UPDATE SET
         });
         if (useNodeWriter) {
           if (isDelete) {
-            markNodeDeleted!(r.path);
+            markNodeDeleted!(r.path, now);
           } else {
             writeNode!({
               path: r.path,
@@ -279,7 +283,7 @@ ON CONFLICT(path) DO UPDATE SET
           path: r.path,
           target: isDelete ? null : (r.target ?? null),
           ctime: isDelete ? null : (r.ctime ?? null),
-          mtime: isDelete ? null : (r.mtime ?? null),
+          mtime: isDelete ? now : (r.mtime ?? null),
           op_ts,
           hash: isDelete ? null : (r.hash ?? null),
           deleted: isDelete ? 1 : 0,
@@ -287,7 +291,7 @@ ON CONFLICT(path) DO UPDATE SET
         });
         if (useNodeWriter) {
           if (isDelete) {
-            markNodeDeleted!(r.path);
+            markNodeDeleted!(r.path, now);
           } else {
             writeNode!({
               path: r.path,
@@ -308,7 +312,7 @@ ON CONFLICT(path) DO UPDATE SET
             path: r.path,
             size: null,
             ctime: null,
-            mtime: null,
+            mtime: now,
             op_ts,
             hash: null,
             deleted: 1,
@@ -317,7 +321,7 @@ ON CONFLICT(path) DO UPDATE SET
           });
           insTouch.run(r.path, now);
           if (useNodeWriter) {
-            markNodeDeleted!(r.path);
+            markNodeDeleted!(r.path, now);
           }
         } else if (r.hash == null) {
           // came from watch without a hash: don't poison the DB with NULL hashes

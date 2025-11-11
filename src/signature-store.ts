@@ -122,6 +122,7 @@ ON CONFLICT(path) DO UPDATE SET
         VALUES (@path, 'f', '', @mtime, @updated, 0, 1, NULL)
         ON CONFLICT(path) DO UPDATE SET
           deleted=1,
+          mtime=excluded.mtime,
           updated=excluded.updated,
           last_error=NULL
       `)
@@ -240,10 +241,11 @@ ON CONFLICT(path) DO UPDATE SET
               markLinkDeleted!.run(path, opTs, now);
             }
             if (useNodes) {
+              const observed = now;
               markNodeDeleted!.run({
                 path,
-                mtime: opTs,
-                updated: now,
+                mtime: observed,
+                updated: observed,
               });
             }
             break;

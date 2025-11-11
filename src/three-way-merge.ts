@@ -19,6 +19,8 @@ import {
 } from "./merge-strategies.js";
 import { dedupeRestrictedList, dirnameRel } from "./restrict.js";
 
+const VERY_VERBOSE = false;
+
 export type ThreeWayMergeOptions = {
   alphaDb: string;
   betaDb: string;
@@ -55,14 +57,7 @@ export type ExecuteThreeWayMergeResult = {
 export function planThreeWayMerge(
   opts: ThreeWayMergeOptions,
 ): ThreeWayMergeResult {
-  const {
-    alphaDb,
-    betaDb,
-    baseDb,
-    prefer,
-    strategyName,
-    logger,
-  } = opts;
+  const { alphaDb, betaDb, baseDb, prefer, strategyName, logger } = opts;
 
   const db = getDb(baseDb);
   const restrictedPaths = dedupeRestrictedList(
@@ -104,6 +99,12 @@ export function planThreeWayMerge(
       operations: operations.length,
       strategy: strategyName ?? "default",
     });
+    if (VERY_VERBOSE) {
+      logger?.debug(
+        "three merge details" +
+          JSON.stringify({ rows, operations }, undefined, 2),
+      );
+    }
     return { diffs: rows, operations };
   } finally {
     try {
@@ -382,11 +383,7 @@ function categorizeOperations(plan: ThreeWayMergeResult): OperationBuckets {
   for (const op of plan.operations) {
     if (op.op === "copy") {
       const row = diffMap.get(op.path);
-      const kind = row
-        ? op.from === "alpha"
-          ? row.a_kind
-          : row.b_kind
-        : null;
+      const kind = row ? (op.from === "alpha" ? row.a_kind : row.b_kind) : null;
       if (op.from === "alpha") {
         if (kind === "d") buckets.copyAlphaBetaDirs.add(op.path);
         else buckets.copyAlphaBetaFiles.add(op.path);
@@ -543,9 +540,7 @@ async function performFileCopies(params: {
     throw err;
   }
 
-  const succeeded = failed.size
-    ? unique.filter((p) => !failed.has(p))
-    : unique;
+  const succeeded = failed.size ? unique.filter((p) => !failed.has(p)) : unique;
   mirrorNodesFromSourceBatch(
     params.sourceDb,
     params.destDb,
@@ -576,7 +571,10 @@ function uniquePaths(paths: string[]): string[] {
   return Array.from(new Set(paths));
 }
 
-function fetchNode(db: ReturnType<typeof getDb>, path: string): NodeRecord | null {
+function fetchNode(
+  db: ReturnType<typeof getDb>,
+  path: string,
+): NodeRecord | null {
   return (
     (db
       .prepare(

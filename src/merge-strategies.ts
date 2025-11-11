@@ -1,3 +1,18 @@
+/**
+ * Merge strategies operate on rows from the node tables (alpha/beta/base).
+ *
+ * Each row reflects our latest knowledge of that path after scan/watch/ingest:
+ *
+ * - `kind/hash/size` describe the current object when `deleted = 0`.
+ * - `mtime` is the operating system stat mtime, except when the file
+ *   is deleted, when it is instead the timestamp when we observed the deletion.
+ * - `updated` always tracks the last time we touched the row, allowing merge
+ *    strategies to use either `mtime` or `updated` as their comparison clock.
+ *    Thus updated is closer to "ctime" in POSIX (though not quite the same).
+ *
+ * With those guarantees, last-writer-wins strategies can compare timestamps
+ * directly without special-casing deletions.
+ */
 export type MergeSide = "alpha" | "beta";
 
 export type MergeDiffRow = {
@@ -176,14 +191,10 @@ function extractState(
   const hash = (row as any)[`${prefix}_hash`] ?? null;
   const size = (row as any)[`${prefix}_size`];
   const exists = !deleted && (kind != null || hash != null || size != null);
+  const mtime = Number((row as any)[`${prefix}_mtime`]) || 0;
+  const updated = Number((row as any)[`${prefix}_updated`]) || 0;
   const ts =
-    mode === "mtime"
-      ? (Number((row as any)[`${prefix}_mtime`]) ||
-          Number((row as any)[`${prefix}_updated`]) ||
-          0)
-      : (Number((row as any)[`${prefix}_updated`]) ||
-          Number((row as any)[`${prefix}_mtime`]) ||
-          0);
+    mode === "mtime" ? mtime || updated : updated || mtime;
   return {
     exists,
     deleted,

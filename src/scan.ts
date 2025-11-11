@@ -333,6 +333,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     size: number;
     deleted: 0 | 1;
     last_error?: string | null;
+    updated?: number;
   };
   const nodeUpsertStmt = useNodeWriter
     ? db.prepare(`
@@ -355,16 +356,18 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     : null;
   const writeNode = useNodeWriter
     ? (params: NodeWriteParams) => {
+        const updated = params.updated ?? Date.now();
         nodeUpsertStmt!.run({
           ...params,
-          updated: Date.now(),
+          updated,
           last_error:
             params.last_error === undefined ? null : params.last_error,
         });
       }
     : null;
   const markNodeDeleted = useNodeWriter
-    ? (path: string) => {
+    ? (path: string, observed?: number) => {
+        const now = observed ?? Date.now();
         const existing = nodeSelectStmt!.get(path) as
           | { kind: NodeKind; hash: string; size: number }
           | undefined;
@@ -372,9 +375,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           path,
           kind: existing?.kind ?? "f",
           hash: existing?.hash ?? "",
-          mtime: Date.now(),
+          mtime: now,
           size: existing?.size ?? 0,
           deleted: 1,
+          updated: now,
           last_error: null,
         });
       }
