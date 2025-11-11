@@ -1,66 +1,134 @@
-## Reflect Sync Reliability Plan
+## Rewrite Plan
 
-Goal: eliminate echo-induced corruption when beta pushes heavy writes to a remote
-alpha. We want guarantees that rsync never causes alpha to re-send the same
-paths back or ingest partial files. No TTL hacks—everything must be ordered and
-deterministic.  We also must ensure that reflect sync never places a file
-that is corrupted due to it changing during the transfer.
+We now understand the problem space well enough to aim for a clean, obviously-correct implementation. The goals:
 
-### Pillar 1 — Remote watcher lock/ack protocol
+- A merge algorithm that always converges, even if scans/deltas are delayed or the scheduler restarts mid-cycle.
+- A single source of truth per endpoint (alpha/beta/base) so the planner can decide every action (copy/delete) in one indexed query.
+- Hot-syncs are just restricted full merges: watchers write precise metadata into the DB, and the same planner handles the rest.
 
-1. **Lock request.** Before rsyncing a chunk, scheduler sends
-   `{op:"lock", requestId, paths:[…]}` over the watch control channel.
-2. Remote `watch` records each path in a forced-ignore map and replies
-   `{op:"lockAck", requestId}` once it is ready.
-3. Scheduler waits for every ack before starting rsync. This guarantees the
-   watcher will ignore those paths until we explicitly release them.
-4. **Release.** After rsync finishes, scheduler probes (stat) the destination to
-   learn the new ctime/mtime, then sends `{op:"release", paths:[…],
-   watermark:{path:ctime,…}}`. The watcher discards any future events whose
-   ctime ≤ watermark so late-arriving write notifications don’t echo.
-5. **Unlock / failure cleanup.** If rsync fails or we abort, send
-   `{op:"unlock", paths:[…]}` so the watcher drops forced ignores. Nothing
-   remains suppressed indefinitely.
+## Node-based schema
 
-### Pillar 2 — Stable inputs before copy
+Each SQLite database (alpha, beta, base) exposes one table covering every filesystem entry:
 
-- Extend the existing hot watcher debounce so a file must be quiescent \(no size
-  or mtime change\) for ~250 ms immediately before we enqueue it for rsync.
-- When building a micro\-sync batch, stat each candidate; if it changed in that
-  window, skip it for this cycle and let the watcher requeue it later. This keeps
-  signatures meaningful and avoids copying mid\-write data, which would result in creating corrupted files.
+| column    | type   | notes |
+|-----------|--------|-------|
+| `path`    | TEXT PRIMARY KEY | relative path |
+| `kind`    | TEXT NOT NULL    | `'f'` (file), `'d'` (dir), `'l'` (symlink) |
+| `hash`    | TEXT NOT NULL    | sha256 (+uid/gid/mode when rooted), symlink target, or `''` for dirs |
+| `mtime`   | REAL NOT NULL    | filesystem mtime |
+| `updated` | REAL NOT NULL    | logical timestamp we control (e.g., scan time) |
+| `size`    | INTEGER NOT NULL | informational only |
+| `deleted` | INTEGER NOT NULL | 0/1 tombstone |
 
-### Pillar 3 — Detect rsync partial transfers
+No `ctime` column—we can’t reproduce it faithfully after copy, so we rely on `updated` instead. Base uses the same schema, so mirroring rows between DBs is trivial.
 
-- Keep using temp dirs \(no `--inplace`\) so partial copies never clobber live
-  files.
-- Treat rsync exit code 23 \(and “file has vanished” lines\) as “retry needed”:
-  requeue those paths and send `unlock` so locks drop even on failure.
-- Do not count a batch as successful unless all paths finished without partial
-  errors. This ensures alpha never installs a truncated pack file.
-- Double check that in case of exit code 23, rsync does NOT move the file into place anyways.
+## Merge query
 
-### Why signatures stay
+A single `LEFT JOIN` + anti-join surfaces all paths requiring work. This runs in ~1 s per million nodes in local tests.
 
-Locks/ctime gating only protects the realtime watcher. Full scans still rely on
-hash signatures to know whether work is required, so we keep the signature
-pipeline intact: lock → (optionally) refresh remote signatures →
-rsync → release with ctime → scans verify hashes.
+```sql
+WITH
+pairs AS (
+  SELECT
+    a.path,
+    a.kind    AS a_kind,
+    a.hash    AS a_hash,
+    a.mtime   AS a_mtime,
+    a.updated AS a_updated,
+    a.size    AS a_size,
+    a.deleted AS a_deleted,
+    b.kind    AS b_kind,
+    b.hash    AS b_hash,
+    b.mtime   AS b_mtime,
+    b.updated AS b_updated,
+    b.size    AS b_size,
+    b.deleted AS b_deleted
+  FROM alpha.nodes a
+  LEFT JOIN beta.nodes b ON b.path = a.path
+  WHERE b.path IS NULL              -- only on alpha
+     OR a.kind    <> b.kind
+     OR a.hash    <> b.hash
+     OR a.deleted <> b.deleted
+),
 
-### Implementation order
+beta_only AS (
+  SELECT
+    b.path,
+    NULL      AS a_kind,
+    NULL      AS a_hash,
+    NULL      AS a_mtime,
+    NULL      AS a_updated,
+    NULL      AS a_size,
+    1         AS a_deleted,
+    b.kind    AS b_kind,
+    b.hash    AS b_hash,
+    b.mtime   AS b_mtime,
+    b.updated AS b_updated,
+    b.size    AS b_size,
+    b.deleted AS b_deleted
+  FROM beta.nodes b
+  LEFT JOIN alpha.nodes a ON a.path = b.path
+  WHERE a.path IS NULL
+),
 
-1. **Control channel enhancements:** add lock/release/unlock RPCs + ACK handling
-   in `watch.ts` and scheduler’s remote stream.
-2. **Watcher forced-ignore map:** ctime-based suppression keyed by path so any
-   event with ctime ≤ watermark is dropped immediately.
-3. **Stability window:** ensure micro-sync only copies files that have been idle
-   for a short duration; reschedule hot files instead of racing them.
-4. **Rsync partial detection:** handle exit code 23 / vanished warnings by
-   retrying and cleaning up locks.
+diff AS (
+  SELECT * FROM pairs
+  UNION ALL
+  SELECT * FROM beta_only
+)
 
-### Validation
+SELECT
+  diff.path,
+  diff.a_kind,    diff.a_hash,    diff.a_mtime,
+  diff.a_updated, diff.a_size,    diff.a_deleted,
+  diff.b_kind,    diff.b_hash,    diff.b_mtime,
+  diff.b_updated, diff.b_size,    diff.b_deleted,
+  base.kind    AS base_kind,
+  base.hash    AS base_hash,
+  base.mtime   AS base_mtime,
+  base.updated AS base_updated,
+  base.deleted AS base_deleted
+FROM diff
+LEFT JOIN base.nodes AS base ON base.path = diff.path
+ORDER BY diff.path;
+```
 
-* Unit + integration tests (`pnpm test`, ssh remote suite).
-* Stress scenarios: dpkg install, concurrent `git clone`, overlayfs upperdir
-  churn. Only ship once those converge with zero corruption.
+Hot-sync windows reuse the same query with filters (`AND a.updated >= :floor`, etc.) or explicit path temp tables.
 
+## Operational strategy
+
+1. **Scanning**  
+   - Full scans walk the filesystem, compute hashes (including uid/gid/mode for root copies), and upsert into `nodes`, bumping `updated`.  
+   - Watchers do the same for their touched paths (no special “signature” tables anymore).
+
+2. **Planning**  
+   - Run the query above (optionally restricted) to obtain every path where alpha/beta/base disagree.  
+   - Feed the rows into a simple resolver that decides: copy alpha→beta, copy beta→alpha, delete alpha, delete beta. Policies (prefer alpha/beta, LWW on `mtime` vs `updated`, etc.) live here.
+
+3. **Executing**  
+   - Convert the plan into rsync/reflink operations. Each copy/delete is atomic for its path (files, dirs, symlinks).  
+   - No rsync optimizations that infer child nodes; every listed path is explicitly tracked so we always know what changed.
+
+4. **Mirroring DB state**  
+   - After a successful copy, insert the exact source row into the destination `nodes` table and update base to match.  
+   - After a delete, mark the destination row deleted and propagate the tombstone to base.  
+   - Because we mirror immediately, the next scan sees the same data whether or not the filesystem changed mid-copy; any new edits simply show up as fresh rows on the next merge.
+
+5. **Hot-sync**  
+   - Watchers enqueue paths, immediately update `nodes`, and trigger a restricted merge using the same pipeline.  
+   - If hot sync is disabled, nothing special happens; the next full cycle converges via the same planner.
+
+6. **Self-heal**  
+   - Even if remote delta ingestion drops events or the scheduler restarts before finishing a cycle, the next merge re-runs the query and produces operations until both sides equal base. There’s no separate “signature” bookkeeping to get out of sync.
+
+## Work items
+
+1. Implement the new `nodes` schema in alpha/beta/base (drop legacy tables once stable).
+2. Update scan/watch code to write into `nodes` (hashes, kinds, `updated` timestamps).
+3. Replace the merge planner with the query + resolver described above.
+4. Reuse existing rsync/reflink helpers to execute copy/delete operations (one path per entry, no implicit recursion).
+5. Mirror DB state after each confirmed operation (source row → destination + base).
+6. Wire hot-sync to use restricted versions of the same scan/merge pipeline.
+7. Remove old signature/recent-send logic and simplify docs/tests around the new model.
+
+With this structure, every sync cycle is deterministic: the planner surfaces all discrepancies, the executor performs concrete operations, and the databases converge immediately if those operations succeed.
