@@ -1,3 +1,5 @@
+// src/tests/session.diff.test.ts
+
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -58,6 +60,7 @@ function baseSessionRow(
     enable_reflink: 0,
     disable_full_cycle: 0,
     merge_strategy: null,
+    last_clean_sync_at: null,
     ...overrides,
   };
 }
