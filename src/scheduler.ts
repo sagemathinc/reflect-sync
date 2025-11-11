@@ -52,6 +52,7 @@ import {
   type SessionLoggerHandle,
 } from "./session-logs.js";
 import { runMerge } from "./merge.js";
+import { planThreeWayMerge } from "./three-way-merge.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 import {
@@ -1884,6 +1885,28 @@ export async function runScheduler({
     // Merge/rsync (full)
     log("info", "merge", `prefer=${prefer} dryRun=${dryRun}`);
     const mergeLogger = scoped("merge");
+    if (mergeStrategy) {
+      try {
+        const { diffs, operations } = planThreeWayMerge({
+          alphaDb,
+          betaDb,
+          baseDb,
+          prefer,
+          strategyName: mergeStrategy,
+          logger: mergeLogger,
+        });
+        mergeLogger.info("node-merge plan", {
+          strategy: mergeStrategy,
+          diffCount: diffs.length,
+          operations: operations.length,
+        });
+      } catch (err) {
+        mergeLogger.error("node-merge planning failed", {
+          strategy: mergeStrategy,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     const mergeStart = Date.now();
     let mergeOk = false;
     let mergeError: unknown = null;
