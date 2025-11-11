@@ -67,15 +67,17 @@ describe("ingest metadata tie-breaker", () => {
     const db = getDb(roots.aDb);
     try {
       const row = db
-        .prepare(`SELECT hash, hashed_ctime, op_ts FROM files WHERE path = ?`)
+        .prepare(
+          `SELECT hash, hashed_ctime, updated FROM nodes WHERE path = ? AND kind = 'f'`,
+        )
         .get(relPath) as {
         hash?: string;
         hashed_ctime?: number;
-        op_ts?: number;
+        updated?: number;
       };
       expect(row?.hash).toBe(metadataChange.hash);
       expect(row?.hashed_ctime).toBe(metadataChange.ctime);
-      expect(row?.op_ts).toBeGreaterThanOrEqual(initial.op_ts);
+      expect(row?.updated).toBeGreaterThanOrEqual(initial.op_ts);
     } finally {
       db.close();
     }

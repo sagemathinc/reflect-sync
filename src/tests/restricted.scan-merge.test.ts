@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { Database } from "../db";
 import { mkCase, runDist } from "./util";
+import { executeThreeWayMerge } from "../three-way-merge.js";
 
 describe("restricted scan and merge", () => {
   let tmp: string;
@@ -38,13 +39,17 @@ describe("restricted scan and merge", () => {
     const db = new Database(r.aDb);
     try {
       const files = db
-        .prepare(`SELECT path FROM files WHERE deleted = 0 ORDER BY path`)
+        .prepare(
+          `SELECT path FROM nodes WHERE deleted = 0 AND kind = 'f' ORDER BY path`,
+        )
         .all()
         .map((row: { path: string }) => row.path);
       expect(files).toEqual(["dirA/fileA.txt", "include.txt"]);
 
       const dirs = db
-        .prepare(`SELECT path FROM dirs WHERE deleted = 0 ORDER BY path`)
+        .prepare(
+          `SELECT path FROM nodes WHERE deleted = 0 AND kind = 'd' ORDER BY path`,
+        )
         .all()
         .map((row: { path: string }) => row.path);
       expect(dirs).toEqual(["dirA"]);
@@ -73,22 +78,16 @@ describe("restricted scan and merge", () => {
     await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb]);
 
     // Restricted merge should only copy include.txt and dirA/*
-    await runDist("merge.js", [
-      "--alpha-root",
-      r.aRoot,
-      "--beta-root",
-      r.bRoot,
-      "--alpha-db",
-      r.aDb,
-      "--beta-db",
-      r.bDb,
-      "--base-db",
-      r.baseDb,
-      "--restricted-path",
-      "include.txt",
-      "--restricted-dir",
-      "dirA",
-    ]);
+    await executeThreeWayMerge({
+      alphaDb: r.aDb,
+      betaDb: r.bDb,
+      baseDb: r.baseDb,
+      prefer: "alpha",
+      strategyName: "lww-mtime",
+      restrictedPaths: ["include.txt", "dirA/fileA.txt"],
+      alphaRoot: r.aRoot,
+      betaRoot: r.bRoot,
+    });
 
     await expect(
       fsp.readFile(path.join(r.bRoot, "include.txt"), "utf8"),

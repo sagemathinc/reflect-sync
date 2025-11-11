@@ -146,7 +146,9 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
       // Verify local DB has the row
       const db = new Database(aDbLocal);
       const row = db
-        .prepare(`SELECT path, hash, deleted FROM files WHERE path = ?`)
+        .prepare(
+          `SELECT path, hash, deleted FROM nodes WHERE path = ? AND kind = 'f'`,
+        )
         .get("hello.txt");
       db.close();
 

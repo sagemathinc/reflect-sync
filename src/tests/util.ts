@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Database } from "../db";
+import { executeThreeWayMerge } from "../three-way-merge.js";
 
 const DIST = resolve(__dirname, "../../dist");
 
@@ -61,26 +62,19 @@ export async function sync(
   prefer: "alpha" | "beta" = "alpha",
   _verbose: boolean | undefined = undefined,
   args?: string[],
-  args2?: string[],
+  _args2?: string[],
 ) {
   await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...(args ?? [])]);
   await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...(args ?? [])]);
-  const mergeArgs = args2 ?? args ?? [];
-  await runDist("merge.js", [
-    "--alpha-root",
-    r.aRoot,
-    "--beta-root",
-    r.bRoot,
-    "--alpha-db",
-    r.aDb,
-    "--beta-db",
-    r.bDb,
-    "--base-db",
-    r.baseDb,
-    "--prefer",
+  await executeThreeWayMerge({
+    alphaDb: r.aDb,
+    betaDb: r.bDb,
+    baseDb: r.baseDb,
     prefer,
-    ...(mergeArgs ?? []),
-  ]);
+    strategyName: "lww-mtime",
+    alphaRoot: r.aRoot,
+    betaRoot: r.bRoot,
+  });
 }
 
 export async function waitFor<T>(

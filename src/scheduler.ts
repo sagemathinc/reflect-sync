@@ -700,7 +700,6 @@ export async function runScheduler({
     ignoreRules: string[];
     restrictedPaths?: string[];
     restrictedDirs?: string[];
-    writerMode?: "legacy" | "nodes";
   }): Promise<{
     code: number | null;
     ms: number;
@@ -759,9 +758,6 @@ export async function runScheduler({
         sshArgs.push("--restricted-dir", rel);
       }
     }
-    if (params.writerMode === "nodes") {
-      sshArgs.push("--writer", "nodes");
-    }
     lastRemoteScan.start = Date.now();
     lastRemoteScan.ok = false;
 
@@ -807,7 +803,6 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: stdout,
       abortSignal: abortController.signal,
-      writer: params.writerMode === "nodes" ? "nodes" : "legacy",
     });
 
     const wait = (p: ChildProcess) =>
@@ -945,7 +940,6 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: ingestStream,
       abortSignal: ingestAbort.signal,
-      writer: nodeWriterEnabled ? "nodes" : "legacy",
     }).catch((err) => {
       if (isDiskFullCause(err)) {
         stopForDiskFull(`disk full during remote ${side} watch ingest`, err);
@@ -1287,7 +1281,6 @@ export async function runScheduler({
     if (collected.length) {
       applySignaturesToDb(alphaDb, collected, {
         numericIds,
-        writer: nodeWriterEnabled ? "nodes" : undefined,
       });
     }
     return collected;
@@ -1311,7 +1304,6 @@ export async function runScheduler({
     if (collected.length) {
       applySignaturesToDb(betaDb, collected, {
         numericIds,
-        writer: nodeWriterEnabled ? "nodes" : undefined,
       });
     }
     return collected;
@@ -1385,11 +1377,9 @@ export async function runScheduler({
     }
     const entries = await collectLocalSignatureEntries(side, unique);
     if (!entries.length) return;
-    applySignaturesToDb(
-      side === "alpha" ? alphaDb : betaDb,
-      entries,
-      { numericIds, writer: "nodes" },
-    );
+    applySignaturesToDb(side === "alpha" ? alphaDb : betaDb, entries, {
+      numericIds,
+    });
   }
 
   async function partitionStablePaths(side: "alpha" | "beta", paths: string[]) {
@@ -1840,7 +1830,6 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-            writerMode: nodeWriterEnabled ? "nodes" : "legacy",
           })
         : await (async () => {
             try {
@@ -1855,7 +1844,6 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-                writer: nodeWriterEnabled ? "nodes" : "legacy",
               });
               return {
                 code: 0,
@@ -1906,7 +1894,6 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-            writerMode: nodeWriterEnabled ? "nodes" : "legacy",
           })
         : await (async () => {
             try {
@@ -1921,7 +1908,6 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-                writer: nodeWriterEnabled ? "nodes" : "legacy",
               });
               return {
                 code: 0,

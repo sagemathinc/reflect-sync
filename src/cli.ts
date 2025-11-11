@@ -134,7 +134,7 @@ configureScanCommand(program.command("scan")).action(
 
 program
   .command("ingest")
-  .description("Ingest NDJSON deltas from stdin into a local files table")
+  .description("Ingest NDJSON deltas from stdin into the local nodes table")
   .requiredOption("--db <path>", "sqlite db file")
   .action(async (opts: { db: string }, command) => {
     const { runIngestDelta } = await import("./ingest-delta.js");

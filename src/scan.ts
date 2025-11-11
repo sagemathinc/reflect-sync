@@ -80,11 +80,11 @@ export function configureScanCommand(
     .option("--emit-delta", "emit NDJSON deltas to stdout for ingest", false)
     .option(
       "--emit-since-age <milliseconds>",
-      "when used with --emit-delta, first replay all rows (files/dirs/links) that are at most this old, so op_ts >= now - age",
+      "with --emit-delta, first replay all nodes that are at most this old (op_ts >= now - age)",
     )
     .option(
       "--emit-all",
-      "when used with --emit-delta, first replay all rows (files/dirs/links)",
+      "with --emit-delta, replay every node before live output",
       false,
     )
     .addOption(
@@ -115,11 +115,6 @@ export function configureScanCommand(
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
       [] as string[],
-    )
-    .addOption(
-      new Option("--writer <mode>", "writer mode (nodes only; legacy ignored)")
-        .choices(["legacy", "nodes"])
-        .default("nodes"),
     );
 }
 
@@ -145,7 +140,6 @@ type ScanOptions = {
   restrictedDirs?: string[];
   restrictedPath?: string[] | string;
   restrictedDir?: string[] | string;
-  writer?: "legacy" | "nodes";
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -167,7 +161,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     restrictedDirs: restrictedDirsOpt = [],
     restrictedPath: restrictedPathOpt = [],
     restrictedDir: restrictedDirOpt = [],
-    writer = "legacy",
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const ignoreRaw: string[] = [];
@@ -322,12 +315,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
-  const writerMode = writer ?? "nodes";
-  if (writerMode !== "nodes") {
-    logger?.warn?.(
-      "legacy writer mode is no longer supported; using nodes output",
-    );
-  }
   type NodeKind = "f" | "d" | "l";
   type NodeWriteParams = {
     path: string;

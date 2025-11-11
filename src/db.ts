@@ -44,40 +44,6 @@ export function getDb(dbPath: string): Database {
   }
 
   db.exec(`
-CREATE TABLE IF NOT EXISTS files (
-  path TEXT PRIMARY KEY NOT NULL,
-  size INTEGER,
-  ctime INTEGER,
-  mtime INTEGER,
-  -- op_ts = operation timestamp: adjusted timestamp in ms used for last
-  --         write wins = normalized mtime for creates/modifies; for deletes,
-  --         set to observed delete time
-  op_ts INTEGER,
-  hash TEXT,
-  deleted INTEGER DEFAULT 0,
-  last_seen INTEGER,
-  hashed_ctime INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS files_live_idx ON files(deleted, path);
-CREATE INDEX IF NOT EXISTS files_pdo ON files(path, deleted, op_ts);
-`);
-
-  db.exec(`
-  CREATE TABLE IF NOT EXISTS dirs (
-    path       TEXT PRIMARY KEY NOT NULL,
-    ctime      INTEGER,
-    mtime      INTEGER,
-    op_ts      INTEGER,  -- operation timestamp for last write wins
-    hash       TEXT DEFAULT '',     -- hash used for *metadata* only for directories.
-    deleted    INTEGER DEFAULT 0,
-    last_seen  INTEGER
-  );
-
-  CREATE INDEX IF NOT EXISTS dirs_live_idx  ON dirs(deleted, path);
-`);
-
-  db.exec(`
   CREATE TABLE IF NOT EXISTS recent_touch (
     path TEXT PRIMARY KEY NOT NULL,
     ts   INTEGER
@@ -95,21 +61,6 @@ CREATE INDEX IF NOT EXISTS files_pdo ON files(path, deleted, op_ts);
   );
   CREATE INDEX IF NOT EXISTS hot_events_ts_idx ON hot_events(op_ts);
 `);
-
-  db.exec(`
-  CREATE TABLE IF NOT EXISTS links (
-    path       TEXT PRIMARY KEY NOT NULL,
-    target     TEXT,
-    ctime      INTEGER,
-    mtime      INTEGER,
-    op_ts      INTEGER,   -- LWW op timestamp
-    hash       TEXT,
-    deleted    INTEGER DEFAULT 0,
-    last_seen  INTEGER
-  );
-CREATE INDEX IF NOT EXISTS links_live_idx ON links(deleted, path);
-CREATE INDEX IF NOT EXISTS links_pdo ON files(path, deleted, op_ts);
-  `);
 
   db.exec(`
   CREATE TABLE IF NOT EXISTS recent_send (
@@ -157,22 +108,7 @@ export function getBaseDb(dbPath: string): Database {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
 
-  // base (files) and base_dirs (directories) — relative paths; include op_ts for LWW
   db.exec(`
-      CREATE TABLE IF NOT EXISTS base (
-        path    TEXT PRIMARY KEY,  -- RELATIVE file path
-        hash    TEXT,
-        deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER
-      );
-
-      CREATE TABLE IF NOT EXISTS base_dirs (
-        path    TEXT PRIMARY KEY,  -- RELATIVE dir path
-        hash    TEXT DEFAULT '',
-        deleted INTEGER DEFAULT 0,
-        op_ts   INTEGER
-      );
-
      CREATE TABLE IF NOT EXISTS events(
       id INTEGER PRIMARY KEY,
       ts INTEGER,

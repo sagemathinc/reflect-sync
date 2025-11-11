@@ -16,94 +16,39 @@ export interface SignatureEntry {
 export function applySignaturesToDb(
   dbPath: string,
   entries: SignatureEntry[],
-  opts: { numericIds?: boolean; writer?: "legacy" | "nodes" | "both" } = {},
+  opts: { numericIds?: boolean } = {},
 ): void {
   if (!entries.length) return;
   const db = getDb(dbPath);
   try {
     const now = Date.now();
-    const writerMode = opts.writer ?? "legacy";
-    const useNodes = writerMode === "nodes" || writerMode === "both";
-    const useLegacy = writerMode === "legacy" || writerMode === "both";
-    const lookupHash = useLegacy
-      ? db.prepare(`SELECT hash FROM files WHERE path = ?`)
-      : null;
-    const upsertFile = useLegacy
-      ? db.prepare(`
-INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
-VALUES (?, ?, NULL, ?, ?, ?, 0, ?, NULL)
-ON CONFLICT(path) DO UPDATE SET
-  size       = COALESCE(excluded.size, files.size),
-  mtime      = COALESCE(excluded.mtime, files.mtime),
-  op_ts      = CASE WHEN excluded.op_ts >= files.op_ts THEN excluded.op_ts ELSE files.op_ts END,
-  hash       = COALESCE(excluded.hash, files.hash),
-  deleted    = 0,
-  last_seen  = CASE WHEN excluded.last_seen > files.last_seen THEN excluded.last_seen ELSE files.last_seen END
-`)
-      : null;
+    type NodeKind = "f" | "d" | "l";
+    type NodeRow = {
+      kind: NodeKind;
+      hash: string | null;
+      size: number | null;
+      ctime: number | null;
+      hashed_ctime: number | null;
+      link_target: string | null;
+    };
+    type NodeWriteParams = {
+      path: string;
+      kind: NodeKind;
+      hash: string;
+      mtime: number;
+      ctime?: number;
+      hashed_ctime?: number | null;
+      size: number;
+      deleted: 0 | 1;
+      updated?: number;
+      last_seen?: number | null;
+      link_target?: string | null;
+    };
 
-    const upsertDir = useLegacy
-      ? db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (?, NULL, ?, ?, ?, 0, ?)
-ON CONFLICT(path) DO UPDATE SET
-  mtime     = COALESCE(excluded.mtime, dirs.mtime),
-  op_ts     = CASE WHEN excluded.op_ts >= dirs.op_ts THEN excluded.op_ts ELSE dirs.op_ts END,
-  hash      = COALESCE(excluded.hash, dirs.hash),
-  deleted   = 0,
-  last_seen = CASE WHEN excluded.last_seen > dirs.last_seen THEN excluded.last_seen ELSE dirs.last_seen END
-`)
-      : null;
-
-    const upsertLink = useLegacy
-      ? db.prepare(`
-INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (?, ?, NULL, ?, ?, ?, 0, ?)
-ON CONFLICT(path) DO UPDATE SET
-  target    = COALESCE(excluded.target, links.target),
-  mtime     = COALESCE(excluded.mtime, links.mtime),
-  op_ts     = CASE WHEN excluded.op_ts >= links.op_ts THEN excluded.op_ts ELSE links.op_ts END,
-  hash      = COALESCE(excluded.hash, links.hash),
-  deleted   = 0,
-  last_seen = CASE WHEN excluded.last_seen > links.last_seen THEN excluded.last_seen ELSE links.last_seen END
-`)
-      : null;
-
-    const markFileDeleted = useLegacy
-      ? db.prepare(`
-INSERT INTO files(path, size, ctime, mtime, op_ts, hash, deleted, last_seen, hashed_ctime)
-VALUES (?, NULL, NULL, NULL, ?, NULL, 1, ?, NULL)
-ON CONFLICT(path) DO UPDATE SET
-  deleted   = 1,
-  op_ts     = CASE WHEN excluded.op_ts >= files.op_ts THEN excluded.op_ts ELSE files.op_ts END,
-  last_seen = CASE WHEN excluded.last_seen > files.last_seen THEN excluded.last_seen ELSE files.last_seen END
-`)
-      : null;
-
-    const markDirDeleted = useLegacy
-      ? db.prepare(`
-INSERT INTO dirs(path, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (?, NULL, NULL, ?, NULL, 1, ?)
-ON CONFLICT(path) DO UPDATE SET
-  deleted   = 1,
-  op_ts     = CASE WHEN excluded.op_ts >= dirs.op_ts THEN excluded.op_ts ELSE dirs.op_ts END,
-  last_seen = CASE WHEN excluded.last_seen > dirs.last_seen THEN excluded.last_seen ELSE dirs.last_seen END
-`)
-      : null;
-
-    const markLinkDeleted = useLegacy
-      ? db.prepare(`
-INSERT INTO links(path, target, ctime, mtime, op_ts, hash, deleted, last_seen)
-VALUES (?, NULL, NULL, NULL, ?, NULL, 1, ?)
-ON CONFLICT(path) DO UPDATE SET
-  deleted   = 1,
-  op_ts     = CASE WHEN excluded.op_ts >= links.op_ts THEN excluded.op_ts ELSE links.op_ts END,
-  last_seen = CASE WHEN excluded.last_seen > links.last_seen THEN excluded.last_seen ELSE links.last_seen END
-`)
-      : null;
-
-    const upsertNode = useNodes
-      ? db.prepare(`
+    const selectNodeStmt = db.prepare(
+      `SELECT kind, hash, size, ctime, hashed_ctime, link_target FROM nodes WHERE path = ?`,
+    );
+    const nodeUpsertStmt = db.prepare(`
         INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
         VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, NULL, @link_target, NULL)
         ON CONFLICT(path) DO UPDATE SET
@@ -117,20 +62,42 @@ ON CONFLICT(path) DO UPDATE SET
           deleted=excluded.deleted,
           link_target=excluded.link_target,
           last_error=excluded.last_error
-      `)
-      : null;
-    const markNodeDeleted = useNodes
-      ? db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-        VALUES (@path, 'f', '', @mtime, @ctime, NULL, @updated, 0, 1, NULL, NULL, NULL)
-        ON CONFLICT(path) DO UPDATE SET
-          deleted=1,
-          mtime=excluded.mtime,
-          ctime=excluded.ctime,
-          updated=excluded.updated,
-          last_error=NULL
-      `)
-      : null;
+      `);
+    const writeNode = (params: NodeWriteParams) => {
+      const updated = params.updated ?? now;
+      const ctime = params.ctime ?? params.mtime;
+      nodeUpsertStmt.run({
+        path: params.path,
+        kind: params.kind,
+        hash: params.hash,
+        mtime: params.mtime,
+        ctime,
+        hashed_ctime: params.hashed_ctime ?? null,
+        updated,
+        size: params.size,
+        deleted: params.deleted,
+        last_seen: params.last_seen ?? null,
+        link_target: params.link_target ?? null,
+        last_error: null,
+      });
+    };
+    const markDeleted = (path: string, opTs: number, kindHint?: NodeKind) => {
+      const existing = selectNodeStmt.get(path) as NodeRow | undefined;
+      const observed = Date.now();
+      writeNode({
+        path,
+        kind: kindHint ?? existing?.kind ?? "f",
+        hash: existing?.hash ?? "",
+        mtime: observed,
+        ctime: existing?.ctime ?? observed,
+        hashed_ctime: existing?.hashed_ctime ?? null,
+        size: existing?.size ?? 0,
+        deleted: 1,
+        updated: opTs,
+        last_seen: null,
+        link_target: existing?.link_target ?? null,
+      });
+    };
 
     const tx = db.transaction((rows: SignatureEntry[]) => {
       for (const { path, signature, target } of rows) {
@@ -138,24 +105,14 @@ ON CONFLICT(path) DO UPDATE SET
         switch (signature.kind) {
           case "file": {
             let hashValue = signature.hash ?? null;
-            if (
-              !hashValue &&
-              useLegacy &&
-              (signature.mode != null || opts.numericIds)
-            ) {
+            if (!hashValue && (signature.mode != null || opts.numericIds)) {
               try {
-                const row = lookupHash!.get(path) as {
-                  hash?: string | null;
-                };
-                hashValue = row?.hash ?? null;
+                const existing = selectNodeStmt.get(path) as NodeRow | undefined;
+                hashValue = existing?.hash ?? null;
               } catch {}
             }
-            if (
-              hashValue &&
-              useLegacy &&
-              (signature.mode != null || opts.numericIds)
-            ) {
-              const updated = withUpdatedMetadataHash(
+            if (hashValue && (signature.mode != null || opts.numericIds)) {
+              const updatedHash = withUpdatedMetadataHash(
                 hashValue,
                 {
                   mode: signature.mode ?? 0,
@@ -164,101 +121,57 @@ ON CONFLICT(path) DO UPDATE SET
                 },
                 !!opts.numericIds,
               );
-              if (updated) {
-                hashValue = updated;
+              if (updatedHash) {
+                hashValue = updatedHash;
               }
             }
-            if (useLegacy) {
-              upsertFile!.run(
-                path,
-                signature.size ?? null,
-                signature.mtime ?? null,
-                opTs,
-                hashValue,
-                now,
-              );
-            }
-            const finalHash = hashValue ?? "";
-            if (useNodes) {
-              upsertNode!.run({
-                path,
-                kind: "f",
-                hash: finalHash,
-                mtime: signature.mtime ?? opTs,
-                ctime: signature.ctime ?? signature.mtime ?? opTs,
-                hashed_ctime: signature.ctime ?? null,
-                updated: now,
-                size: signature.size ?? 0,
-                deleted: 0,
-                link_target: null,
-              });
-            }
+            writeNode({
+              path,
+              kind: "f",
+              hash: hashValue ?? "",
+              mtime: signature.mtime ?? opTs,
+              ctime: signature.ctime ?? signature.mtime ?? opTs,
+              hashed_ctime: signature.ctime ?? null,
+              size: signature.size ?? 0,
+              deleted: 0,
+              updated: opTs,
+              last_seen: null,
+              link_target: null,
+            });
             break;
           }
           case "dir":
-            if (useLegacy) {
-              upsertDir!.run(
-                path,
-                signature.mtime ?? null,
-                opTs,
-                signature.hash ?? null,
-                now,
-              );
-            }
-            if (useNodes) {
-              upsertNode!.run({
-                path,
-                kind: "d",
-                hash: signature.hash ?? "",
-                mtime: signature.mtime ?? opTs,
-                ctime: signature.ctime ?? signature.mtime ?? opTs,
-                updated: now,
-                size: 0,
-                deleted: 0,
-                link_target: null,
-              });
-            }
+            writeNode({
+              path,
+              kind: "d",
+              hash: signature.hash ?? "",
+              mtime: signature.mtime ?? opTs,
+              ctime: signature.ctime ?? signature.mtime ?? opTs,
+              size: 0,
+              deleted: 0,
+              updated: opTs,
+              last_seen: null,
+              link_target: null,
+            });
             break;
-          case "link":
-            if (useLegacy) {
-              upsertLink!.run(
-                path,
-                target ?? null,
-                signature.mtime ?? null,
-                opTs,
-                signature.hash ?? null,
-                now,
-              );
-            }
-            if (useNodes) {
-              upsertNode!.run({
-                path,
-                kind: "l",
-                hash: signature.hash ?? "",
-                mtime: signature.mtime ?? opTs,
-                ctime: signature.ctime ?? signature.mtime ?? opTs,
-                updated: now,
-                size: (target ?? "").length,
-                deleted: 0,
-                link_target: target ?? "",
-              });
-            }
+          case "link": {
+            const linkTarget = target ?? "";
+            writeNode({
+              path,
+              kind: "l",
+              hash: signature.hash ?? "",
+              mtime: signature.mtime ?? opTs,
+              ctime: signature.ctime ?? signature.mtime ?? opTs,
+              size: linkTarget.length,
+              deleted: 0,
+              updated: opTs,
+              last_seen: null,
+              link_target: linkTarget,
+            });
             break;
-          case "missing":
+          }
           default:
-            if (useLegacy) {
-              markFileDeleted!.run(path, opTs, now);
-              markDirDeleted!.run(path, opTs, now);
-              markLinkDeleted!.run(path, opTs, now);
-            }
-            if (useNodes) {
-              markNodeDeleted!.run({
-                path,
-                mtime: now,
-                ctime: now,
-                updated: now,
-              });
-            }
+            markDeleted(path, opTs);
             break;
         }
       }

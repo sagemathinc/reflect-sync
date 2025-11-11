@@ -11,10 +11,6 @@ function insertFile(dbPath: string, relPath: string, hash: string) {
   const db = getDb(dbPath);
   try {
     db.prepare(
-      `INSERT OR REPLACE INTO files(path,size,ctime,mtime,op_ts,hash,deleted,last_seen,hashed_ctime)
-       VALUES(?,?,?,?,?,?,?,?,?)`,
-    ).run(relPath, 0, now, now, now, hash, 0, now, now);
-    db.prepare(
       `INSERT OR REPLACE INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
        VALUES(?, 'f', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     ).run(relPath, hash, now, now, now, now, 0, 0, now);
