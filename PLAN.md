@@ -310,3 +310,12 @@ then update local accordingly.
 
 I did see this edge case when stress testing.
 
+## Remote agent feasibility
+
+Long-term we may want a lightweight remote watcher/scan agent that replaces the SEA bundle on hosts where installing Node is painful. The required features boil down to SQLite access, a directory walker, a file watcher, and SHA-256 hashing; both Go and Rust ecosystems cover these pieces with portable libraries.
+
+- **Timing**: defer until the wire protocol and merge semantics are locked down; re-implementing while reflect-sync is still shifting would create thrash.
+- **Go vs Rust**: Go is the likely win because static binaries, cross-compilation, and standard tooling make it trivial to ship one binary per target. Rust would yield tighter control over memory footprint and potentially smaller binaries, but static builds with SQLite and watcher crates require more CI plumbing.
+- **Portability targets**: Linux + macOS on x86/ARM. Go handles this out of the box; Rust can as well but expects more manual setup for glibc vs musl builds.
+- **Protocol fidelity**: whichever language we choose must exactly mirror today’s scan/watch behavior—ignore rules, hashing, NDJSON framing, lock/unlock semantics—so this effort should only start once those behaviors are fully specified and proven stable.
+- **Performance**: both languages can saturate disks for full scans and deliver low-latency watcher events via native backends (inotify/kqueue/FSEvents). The challenge is less about raw speed and more about faithfully reproducing our existing throttling and batching logic.
