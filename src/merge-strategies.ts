@@ -54,71 +54,40 @@ export type MergeStrategy = (
   ctx: MergeStrategyContext,
 ) => PlannedOperation[];
 
+export const MERGE_STRATEGY_NAMES = [
+  "lww-mtime",
+  "lww-updated",
+  "mirror-to-beta",
+  "mirror-to-alpha",
+] as const;
+
 export function resolveMergeStrategy(name?: string | null): MergeStrategy {
   switch (name?.trim().toLowerCase()) {
-    case "prefer-beta":
-      return (rows) => planPreferSide(rows, "beta");
-    case "prefer-alpha":
-      return (rows, ctx) => planPreferSide(rows, ctx.prefer);
+    case "mirror-to-alpha":
+      return (rows) => planMirror(rows, "alpha");
+    case "mirror-to-beta":
+      return (rows) => planMirror(rows, "beta");
     case "lww-mtime":
       return (rows, ctx) => planLww(rows, "mtime", ctx.prefer);
     case "lww-updated":
       return (rows, ctx) => planLww(rows, "updated", ctx.prefer);
     default:
-      return (rows, ctx) => planPreferSide(rows, ctx.prefer);
+      return (rows, ctx) => planMirror(rows, ctx.prefer === "alpha" ? "beta" : "alpha");
   }
 }
 
-function planPreferSide(rows: MergeDiffRow[], prefer: MergeSide) {
+function planMirror(rows: MergeDiffRow[], target: MergeSide) {
   const operations: PlannedOperation[] = [];
   for (const row of rows) {
-    const aDeleted = !!row.a_deleted;
-    const bDeleted = !!row.b_deleted;
-    const baseDeleted = !!row.base_deleted;
-    const aActive = !aDeleted && !!row.a_hash;
-    const bActive = !bDeleted && !!row.b_hash;
+    const source = target === "alpha" ? "beta" : "alpha";
+    const srcActive = source === "alpha" ? !row.a_deleted : !row.b_deleted;
+    const dstActive = target === "alpha" ? !row.a_deleted : !row.b_deleted;
 
-    if (aActive && !bActive) {
-      if (prefer === "alpha") {
-        operations.push({
-          op: "copy",
-          from: "alpha",
-          to: "beta",
-          path: row.path,
-        });
-      } else {
-        operations.push({ op: "delete", side: "alpha", path: row.path });
-      }
-      continue;
+    if (srcActive) {
+      operations.push({ op: "copy", from: source, to: target, path: row.path });
+    } else if (dstActive) {
+      operations.push({ op: "delete", side: target, path: row.path });
     }
-    if (bActive && !aActive) {
-      if (prefer === "beta") {
-        operations.push({
-          op: "copy",
-          from: "beta",
-          to: "alpha",
-          path: row.path,
-        });
-      } else {
-        operations.push({ op: "delete", side: "beta", path: row.path });
-      }
-      continue;
-    }
-    if (!aActive && !bActive) {
-      if (!baseDeleted) {
-        operations.push({ op: "delete", side: "alpha", path: row.path });
-        operations.push({ op: "delete", side: "beta", path: row.path });
-      }
-      continue;
-    }
-    const sameHash = row.a_hash && row.a_hash === row.b_hash;
-    if (sameHash) {
-      operations.push({ op: "noop", path: row.path });
-      continue;
-    }
-    const from = prefer === "alpha" ? "alpha" : "beta";
-    const to = from === "alpha" ? "beta" : "alpha";
-    operations.push({ op: "copy", from, to, path: row.path });
   }
   return operations;
 }

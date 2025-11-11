@@ -51,8 +51,8 @@ import {
   createSessionLogger,
   type SessionLoggerHandle,
 } from "./session-logs.js";
-import { runMerge } from "./merge.js";
 import { executeThreeWayMerge } from "./three-way-merge.js";
+import { MERGE_STRATEGY_NAMES } from "./merge-strategies.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
 import {
@@ -189,9 +189,13 @@ export function configureSchedulerCommand(
         "use reflink copies when both roots are local",
         false,
       )
-      .option(
-        "--merge-strategy <name>",
-        "use experimental node-based merge strategy identifier",
+      .addOption(
+        new Option(
+          "--merge-strategy <name>",
+          "node-based merge strategy identifier",
+        )
+          .choices(MERGE_STRATEGY_NAMES as unknown as string[])
+          .default("lww-mtime"),
       )
       .option(
         "-i, --ignore <pattern>",
@@ -256,7 +260,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
     sessionDb: opts.sessionDb,
     enableReflink: opts.enableReflink === true,
-    mergeStrategy: mergeStrategy ?? null,
+    mergeStrategy: mergeStrategy ?? "lww-mtime",
   };
 
   if (out.alphaHost && out.betaHost) {
@@ -1313,91 +1317,6 @@ export async function runScheduler({
     return collected;
   };
 
-  const lockRemoteAlphaPaths = async (paths: string[]) => {
-    if (!paths.length) return;
-    if (!alphaStream?.lock) {
-      await ensureRemoteStreams();
-    }
-    if (!alphaStream?.lock) return;
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    for (const batch of chunkArray(unique, 1000)) {
-      await alphaStream.lock!(batch);
-    }
-  };
-
-  const releaseRemoteAlphaPaths = async (entries: ReleaseAckEntry[]) => {
-    if (!entries.length) return;
-    if (!alphaStream?.release) {
-      await ensureRemoteStreams();
-    }
-    if (!alphaStream?.release) return;
-    for (const batch of chunkArray(entries, 500)) {
-      await alphaStream.release!(batch);
-    }
-  };
-
-  const unlockRemoteAlphaPaths = async (paths: string[]) => {
-    if (!paths.length) return;
-    if (!alphaStream?.unlock) {
-      await ensureRemoteStreams();
-    }
-    if (!alphaStream?.unlock) return;
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    for (const batch of chunkArray(unique, 1000)) {
-      await alphaStream.unlock!(batch);
-    }
-  };
-
-  const lockRemoteBetaPaths = async (paths: string[]) => {
-    if (!paths.length) return;
-    if (!betaStream?.lock) {
-      await ensureRemoteStreams();
-    }
-    if (!betaStream?.lock) return;
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    for (const batch of chunkArray(unique, 1000)) {
-      await betaStream.lock!(batch);
-    }
-  };
-
-  const releaseRemoteBetaPaths = async (entries: ReleaseAckEntry[]) => {
-    if (!entries.length) return;
-    if (!betaStream?.release) {
-      await ensureRemoteStreams();
-    }
-    if (!betaStream?.release) return;
-    for (const batch of chunkArray(entries, 500)) {
-      await betaStream.release!(batch);
-    }
-  };
-
-  const unlockRemoteBetaPaths = async (paths: string[]) => {
-    if (!paths.length) return;
-    if (!betaStream?.unlock) {
-      await ensureRemoteStreams();
-    }
-    if (!betaStream?.unlock) return;
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    for (const batch of chunkArray(unique, 1000)) {
-      await betaStream.unlock!(batch);
-    }
-  };
-
-  const alphaLockHandle = alphaIsRemote
-    ? {
-        lock: lockRemoteAlphaPaths,
-        release: releaseRemoteAlphaPaths,
-        unlock: unlockRemoteAlphaPaths,
-      }
-    : undefined;
-  const betaLockHandle = betaIsRemote
-    ? {
-        lock: lockRemoteBetaPaths,
-        release: releaseRemoteBetaPaths,
-        unlock: unlockRemoteBetaPaths,
-      }
-    : undefined;
-
   async function collectLocalSignatureEntries(
     side: "alpha" | "beta",
     relPaths: string[],
@@ -2073,57 +1992,23 @@ export async function runScheduler({
     let mergeOk = false;
     let mergeError: unknown = null;
     try {
-      if (mergeStrategy) {
-        const execResult = await executeThreeWayMerge({
-          alphaDb,
-          betaDb,
-          baseDb,
-          prefer,
-          strategyName: mergeStrategy,
-          alphaRoot,
-          betaRoot,
-          alphaHost,
-          alphaPort,
-          betaHost,
-          betaPort,
-          dryRun,
-          compress,
-          logger: mergeLogger,
-        });
-        mergeOk = execResult.ok;
-      } else {
-        await runMerge({
-          alphaRoot,
-          betaRoot,
-          alphaDb,
-          betaDb,
-          baseDb,
-          alphaHost,
-          alphaPort,
-          betaHost,
-          betaPort,
-          prefer,
-          dryRun,
-          compress,
-          sessionDb,
-          sessionId,
-          logger: mergeLogger,
-          ignoreRules,
-          verbose: !!sessionLogHandle,
-          restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-          restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
-          enableReflink,
-          fetchRemoteAlphaSignatures: alphaIsRemote
-            ? fetchAlphaRemoteSignatures
-            : undefined,
-          fetchRemoteBetaSignatures: betaIsRemote
-            ? fetchBetaRemoteSignatures
-            : undefined,
-          alphaRemoteLock: alphaLockHandle,
-          betaRemoteLock: betaLockHandle,
-        });
-        mergeOk = true;
-      }
+      const execResult = await executeThreeWayMerge({
+        alphaDb,
+        betaDb,
+        baseDb,
+        prefer,
+        strategyName: mergeStrategy ?? "lww-mtime",
+        alphaRoot,
+        betaRoot,
+        alphaHost,
+        alphaPort,
+        betaHost,
+        betaPort,
+        dryRun,
+        compress,
+        logger: mergeLogger,
+      });
+      mergeOk = execResult.ok;
     } catch (err) {
       mergeError = err;
       mergeLogger.error("merge failed", {

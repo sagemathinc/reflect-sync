@@ -174,6 +174,16 @@ With this approach, we could have a full scan *and* several hot watch
 transfers safely happening all at once.   The real limit is the
 impact on cpu/bandwidth.  
 
+## Other questions and thoughts about merge plans
+
+Question: could we completely eliminate the --prefer option entirely and instead make
+  that a part of the merge-strategy name?   For mirror-to-alpha and mirror-to-beta,
+  it's not meaningful.  For lww-mtime we could have:
+ 
+  - 'lww-mtime-prefer-alpha'
+  - 'lww-mtime-prefer-beta'
+  - 'lww-mtime-prefer-updated'
+
 
 
 

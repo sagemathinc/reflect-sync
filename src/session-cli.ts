@@ -39,6 +39,7 @@ import { diffSession } from "./session-diff.js";
 import { getDb } from "./db.js";
 import type { Database } from "./db.js";
 import { fetchHotEvents, getMaxOpTs } from "./hot-events.js";
+import { MERGE_STRATEGY_NAMES } from "./merge-strategies.js";
 import { nodeKindToEntry } from "./nodes-util.js";
 import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
@@ -181,9 +182,10 @@ export function registerSessionCommands(program: Command) {
         "copy files via cp --reflink when both roots are local",
         false,
       )
-      .option(
-        "--merge-strategy <name>",
-        "set merge strategy (experimental; enables node-based pipeline)",
+      .addOption(
+        new Option("--merge-strategy <name>", "merge strategy")
+          .choices(Array.from(MERGE_STRATEGY_NAMES) as string[])
+          .default("lww-mtime"),
       )
       .action(
         async (
@@ -590,10 +592,9 @@ export function registerSessionCommands(program: Command) {
         ).conflicts("disableFullCycle"),
       )
       .addOption(
-        new Option(
-          "--merge-strategy <name>",
-          "set merge strategy (experimental)",
-        ).conflicts("clearMergeStrategy"),
+        new Option("--merge-strategy <name>", "set merge strategy")
+          .choices(Array.from(MERGE_STRATEGY_NAMES) as string[])
+          .conflicts("clearMergeStrategy"),
       )
       .option(
         "--clear-merge-strategy",
