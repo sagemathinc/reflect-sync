@@ -59,6 +59,7 @@ export const MERGE_STRATEGY_NAMES = [
   "lww-updated",
   "mirror-to-beta",
   "mirror-to-alpha",
+  "prefer",
 ] as const;
 
 export function resolveMergeStrategy(name?: string | null): MergeStrategy {
@@ -67,6 +68,9 @@ export function resolveMergeStrategy(name?: string | null): MergeStrategy {
       return (rows) => planMirror(rows, "alpha");
     case "mirror-to-beta":
       return (rows) => planMirror(rows, "beta");
+    case "prefer":
+      return (rows, ctx) =>
+        planMirror(rows, ctx.prefer === "alpha" ? "beta" : "alpha");
     case "lww-mtime":
       return (rows, ctx) => planLww(rows, "mtime", ctx.prefer);
     case "lww-updated":

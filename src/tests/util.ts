@@ -63,6 +63,7 @@ export async function sync(
   _verbose: boolean | undefined = undefined,
   args?: string[],
   _args2?: string[],
+  strategy = "lww-mtime",
 ) {
   await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...(args ?? [])]);
   await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...(args ?? [])]);
@@ -71,7 +72,7 @@ export async function sync(
     betaDb: r.bDb,
     baseDb: r.baseDb,
     prefer,
-    strategyName: "lww-mtime",
+    strategyName: strategy,
     alphaRoot: r.aRoot,
     betaRoot: r.bRoot,
   });

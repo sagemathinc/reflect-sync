@@ -126,7 +126,7 @@ describe("ccsync: directory semantics", () => {
     await fsp.mkdir(bDir, { recursive: true });
     await fsp.writeFile(bFile, "keep-me");
 
-    await sync(r, "beta"); // prefer beta
+    await sync(r, "beta", undefined, undefined, undefined, "prefer");
 
     // expect beta to win: dir & file remain in beta and are restored to alpha
     await expect(dirExists(bDir)).resolves.toBe(true);
