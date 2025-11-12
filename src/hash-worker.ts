@@ -20,8 +20,15 @@ type JobBatch = {
 };
 
 type Out =
-  | { path: string; hash: string; ctime: number; mtime: number }
-  | { path: string; error: string };
+  | {
+      path: string;
+      hash: string;
+      ctime: number;
+      mtime: number;
+      size: number;
+    }
+  | { path: string; error: string }
+  | { path: string; skipped: true };
 
 if (!parentPort) {
   throw new Error("hash-worker must be run as a worker");
@@ -37,17 +44,50 @@ parentPort.on("message", async (payload: JobBatch) => {
 
   for (const j of jobs) {
     try {
-      // Content digest (fast path for small files handled inside fileDigest)
-      const content = await fileDigest(hashAlgorithm, j.path, j.size);
-
-      // Mode/uid/gid snapshot (to fold into the final hash string)
-      const st = await fsStat(j.path);
-      let h = `${content}|${modeHash(st.mode)}`;
-      if (numericIds) {
-        h += `|${st.uid}:${st.gid}`;
+      const before = await fsStat(j.path);
+      const beforeMtime =
+        (before as any).mtimeMs ?? before.mtime.getTime();
+      const beforeCtime =
+        (before as any).ctimeMs ?? before.ctime.getTime();
+      if (
+        before.size !== j.size ||
+        Math.abs(beforeMtime - j.mtime) > 0.5 ||
+        Math.abs(beforeCtime - j.ctime) > 0.5
+      ) {
+        out.push({ path: j.path, skipped: true });
+        continue;
       }
 
-      out.push({ path: j.path, hash: h, ctime: j.ctime, mtime: j.mtime });
+      // Content digest (fast path for small files handled inside fileDigest)
+      const content = await fileDigest(hashAlgorithm, j.path, before.size);
+
+      // Mode/uid/gid snapshot (to fold into the final hash string)
+      const after = await fsStat(j.path);
+      const afterMtime =
+        (after as any).mtimeMs ?? after.mtime.getTime();
+      const afterCtime =
+        (after as any).ctimeMs ?? after.ctime.getTime();
+      if (
+        after.size !== before.size ||
+        Math.abs(afterMtime - beforeMtime) > 0.5 ||
+        Math.abs(afterCtime - beforeCtime) > 0.5
+      ) {
+        out.push({ path: j.path, skipped: true });
+        continue;
+      }
+
+      let h = `${content}|${modeHash(after.mode)}`;
+      if (numericIds) {
+        h += `|${after.uid}:${after.gid}`;
+      }
+
+      out.push({
+        path: j.path,
+        hash: h,
+        ctime: afterCtime,
+        mtime: afterMtime,
+        size: after.size,
+      });
     } catch (e: any) {
       // Common case: file vanished mid-hash or permission error
       out.push({ path: j.path, error: e?.message || String(e) });

@@ -56,6 +56,7 @@ export function applySignaturesToDb(
       last_seen: number | null;
       updated: number | null;
       mtime: number | null;
+      hash_pending?: number | null;
     };
     type NodeWriteParams = {
       path: string;
@@ -70,14 +71,15 @@ export function applySignaturesToDb(
       last_seen?: number | null;
       link_target?: string | null;
       last_error?: string | null;
+      hash_pending?: number;
     };
 
     const selectNodeStmt = db.prepare(
-      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime FROM nodes WHERE path = ?`,
+      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime, hash_pending FROM nodes WHERE path = ?`,
     );
     const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -87,6 +89,7 @@ export function applySignaturesToDb(
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          hash_pending=excluded.hash_pending,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -102,12 +105,13 @@ export function applySignaturesToDb(
         ctime,
         hashed_ctime: params.hashed_ctime ?? null,
         updated,
-        size: params.size,
-        deleted: params.deleted,
-        last_seen: params.last_seen ?? null,
-        link_target: params.link_target ?? null,
-        last_error: params.last_error ?? null,
-      });
+      size: params.size,
+      deleted: params.deleted,
+      hash_pending: params.hash_pending ?? 0,
+      last_seen: params.last_seen ?? null,
+      link_target: params.link_target ?? null,
+      last_error: params.last_error ?? null,
+    });
     };
     const markDeleted = (path: string, kindHint?: NodeKind) => {
       const existing = selectNodeStmt.get(path) as NodeRow | undefined;
@@ -126,6 +130,7 @@ export function applySignaturesToDb(
         updated: updatedTick,
         last_seen: existing?.last_seen ?? null,
         link_target: null,
+        hash_pending: 0,
       });
     };
 
@@ -165,15 +170,16 @@ export function applySignaturesToDb(
               mtime: signature.mtime ?? opTs,
               ctime: signature.ctime ?? signature.mtime ?? opTs,
               hashed_ctime: signature.ctime ?? null,
-              size: signature.size ?? 0,
-              deleted: 0,
-              updated: updatedTick,
-              last_seen: null,
-              link_target: null,
-            });
-            break;
-          }
-          case "dir": {
+            size: signature.size ?? 0,
+            deleted: 0,
+            updated: updatedTick,
+            last_seen: null,
+            link_target: null,
+            hash_pending: 0,
+          });
+          break;
+        }
+        case "dir": {
             const updatedTick = nextClock();
             writeNode({
               path,
@@ -181,15 +187,16 @@ export function applySignaturesToDb(
               hash: signature.hash ?? "",
               mtime: signature.mtime ?? opTs,
               ctime: signature.ctime ?? signature.mtime ?? opTs,
-              size: 0,
-              deleted: 0,
-              updated: updatedTick,
-              last_seen: null,
-              link_target: null,
-            });
-            break;
-          }
-          case "link": {
+            size: 0,
+            deleted: 0,
+            updated: updatedTick,
+            last_seen: null,
+            link_target: null,
+            hash_pending: 0,
+          });
+          break;
+        }
+        case "link": {
             const linkTarget = target ?? "";
             const updatedTick = nextClock();
             writeNode({
@@ -198,14 +205,15 @@ export function applySignaturesToDb(
               hash: signature.hash ?? "",
               mtime: signature.mtime ?? opTs,
               ctime: signature.ctime ?? signature.mtime ?? opTs,
-              size: linkTarget.length,
-              deleted: 0,
-              updated: updatedTick,
-              last_seen: null,
-              link_target: linkTarget,
-            });
-            break;
-          }
+            size: linkTarget.length,
+            deleted: 0,
+            updated: updatedTick,
+            last_seen: null,
+            link_target: linkTarget,
+            hash_pending: 0,
+          });
+          break;
+        }
           default:
             markDeleted(path);
             break;

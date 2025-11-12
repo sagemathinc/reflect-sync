@@ -331,6 +331,7 @@ pairs AS (
     a.path,
     a.kind    AS a_kind,
     a.hash    AS a_hash,
+    a.hash_pending AS a_hash_pending,
     a.ctime   AS a_ctime,
     a.mtime   AS a_mtime,
     a.updated AS a_updated,
@@ -339,6 +340,7 @@ pairs AS (
     a.last_error AS a_error,
     b.kind    AS b_kind,
     b.hash    AS b_hash,
+    b.hash_pending AS b_hash_pending,
     b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
@@ -358,6 +360,7 @@ beta_only AS (
     b.path,
     NULL AS a_kind,
     NULL AS a_hash,
+    NULL AS a_hash_pending,
     NULL AS a_ctime,
     NULL AS a_mtime,
     NULL AS a_updated,
@@ -366,6 +369,7 @@ beta_only AS (
     NULL AS a_error,
     b.kind    AS b_kind,
     b.hash    AS b_hash,
+    b.hash_pending AS b_hash_pending,
     b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
@@ -387,6 +391,7 @@ SELECT
   diff.path,
   diff.a_kind,
   diff.a_hash,
+  diff.a_hash_pending,
   diff.a_ctime,
   diff.a_mtime,
   diff.a_updated,
@@ -395,6 +400,7 @@ SELECT
   diff.a_error,
   diff.b_kind,
   diff.b_hash,
+  diff.b_hash_pending,
   diff.b_ctime,
   diff.b_mtime,
   diff.b_updated,
@@ -403,6 +409,7 @@ SELECT
   diff.b_error,
   base.kind       AS base_kind,
   base.hash       AS base_hash,
+  base.hash_pending AS base_hash_pending,
   base.ctime      AS base_ctime,
   base.mtime      AS base_mtime,
   base.updated    AS base_updated,
@@ -728,6 +735,7 @@ type NodeRecord = {
   updated: number;
   size: number;
   deleted: number;
+  hash_pending: number;
   last_seen: number | null;
   link_target: string | null;
   last_error: string | null;
@@ -744,7 +752,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -752,8 +760,8 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@ctime,@hashed_ctime,@updated,@size,@deleted,@last_seen,@link_target,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
@@ -763,6 +771,7 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
        updated=excluded.updated,
        size=excluded.size,
        deleted=excluded.deleted,
+       hash_pending=excluded.hash_pending,
        last_seen=excluded.last_seen,
        link_target=excluded.link_target,
        last_error=excluded.last_error`,
@@ -811,6 +820,7 @@ function markNodesDeletedBatch(
           hashed_ctime: null,
           size: 0,
           updated: tick,
+          hash_pending: 0,
           last_error: null,
         }
       : {
@@ -823,6 +833,7 @@ function markNodesDeletedBatch(
           updated: tick,
           size: 0,
           deleted: 1,
+          hash_pending: 0,
           last_seen: null,
           link_target: null,
           last_error: null,
@@ -858,6 +869,7 @@ function recordNodeErrorsBatch(
           updated: tick,
           size: 0,
           deleted: 0,
+          hash_pending: 0,
           last_seen: tick,
           link_target: null,
           last_error: null,
@@ -934,6 +946,7 @@ function snapshotState(
   const size = (row as any)[suffix("size")] ?? null;
   const deleted = (row as any)[suffix("deleted")] ?? null;
   const error = (row as any)[suffix("error")] ?? null;
+  const hash_pending = (row as any)[suffix("hash_pending")] ?? null;
   if (
     kind === null &&
     hash === null &&
@@ -942,11 +955,12 @@ function snapshotState(
     updated === null &&
     size === null &&
     deleted === null &&
-    error === null
+    error === null &&
+    hash_pending === null
   ) {
     return null;
   }
-  return { kind, hash, ctime, mtime, updated, size, deleted, error };
+  return { kind, hash, ctime, mtime, updated, size, deleted, error, hash_pending };
 }
 
 function isVanishedWarning(stderr?: string | null): boolean {

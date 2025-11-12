@@ -89,6 +89,7 @@ export function getDb(dbPath: string): Database {
     updated     REAL NOT NULL,        -- logical timestamp we control
     size        INTEGER NOT NULL DEFAULT 0,
     deleted     INTEGER NOT NULL DEFAULT 0,
+    hash_pending INTEGER NOT NULL DEFAULT 0,
     last_seen   REAL,
     link_target TEXT,
     last_error  TEXT
@@ -96,6 +97,9 @@ export function getDb(dbPath: string): Database {
   CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
   `);
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
   return db;
 }
 
@@ -129,6 +133,7 @@ export function getBaseDb(dbPath: string): Database {
        updated    REAL NOT NULL,
        size       INTEGER NOT NULL DEFAULT 0,
        deleted    INTEGER NOT NULL DEFAULT 0,
+       hash_pending INTEGER NOT NULL DEFAULT 0,
        last_seen  REAL,
        link_target TEXT,
        last_error TEXT
@@ -136,5 +141,8 @@ export function getBaseDb(dbPath: string): Database {
      CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
     `);
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
   return db;
 }

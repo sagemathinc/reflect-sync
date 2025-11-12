@@ -121,10 +121,11 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     link_target?: string | null;
     last_error?: string | null;
     updated?: number;
+    hash_pending?: number;
   };
   const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -134,6 +135,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          hash_pending=excluded.hash_pending,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -151,6 +153,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       updated,
       size: params.size,
       deleted: params.deleted,
+      hash_pending: params.hash_pending ?? 0,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -183,9 +186,10 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       size: 0,
       deleted: 1,
       last_seen: existing?.last_seen ?? null,
-      updated: logicalUpdated,
+            updated: logicalUpdated,
       link_target: null,
       last_error: null,
+      hash_pending: 0,
     };
   };
   let processedRows = 0;
@@ -240,6 +244,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             updated: updatedTick,
             link_target: null,
             last_error: null,
+            hash_pending: 0,
           });
         }
       } else if (r.kind === "link") {
@@ -260,6 +265,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             updated: updatedTick,
             link_target: target,
             last_error: null,
+            hash_pending: 0,
           });
         }
       } else {
@@ -285,6 +291,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             updated: updatedTick,
             link_target: null,
             last_error: null,
+            hash_pending: 0,
           });
           insTouch.run(r.path, now);
         }

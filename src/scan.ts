@@ -300,6 +300,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     hash: string | null;
     last_seen: number;
     hashed_ctime: number | null;
+    hash_pending: number;
   };
 
   type HashMeta = {
@@ -368,10 +369,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     link_target?: string | null;
     last_error?: string | null;
     updated?: number;
+    hash_pending?: number;
   };
   const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -381,6 +383,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           updated=excluded.updated,
           size=excluded.size,
           deleted=excluded.deleted,
+          hash_pending=excluded.hash_pending,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -398,6 +401,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       updated,
       size: params.size,
       deleted: params.deleted,
+      hash_pending: params.hash_pending ?? 0,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -486,6 +490,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         deleted: 0,
         last_seen: r.scan_id,
         updated: r.op_ts,
+        hash_pending: 0,
         link_target: null,
         last_error: null,
       });
@@ -506,6 +511,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         deleted: 0,
         last_seen: r.last_seen,
         updated: r.op_ts,
+        hash_pending: r.hash_pending ?? 0,
         link_target: null,
         last_error: null,
       });
@@ -534,6 +540,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           deleted: 0,
           last_seen: meta?.last_seen ?? null,
           updated: updatedValue,
+          hash_pending: 0,
           link_target: null,
           last_error: null,
         });
@@ -566,6 +573,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         last_seen: r.scan_id,
         link_target: r.target ?? "",
         updated: r.op_ts,
+        hash_pending: 0,
         last_error: null,
       });
     }
@@ -580,8 +588,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     mtime: number;
   }; // ABS path
   type Result =
-    | { path: string; hash: string; ctime: number; mtime: number } // ABS path echoed back
-    | { path: string; error: string };
+    | {
+        path: string;
+        hash: string;
+        ctime: number;
+        mtime: number;
+        size: number;
+      } // ABS path echoed back
+    | { path: string; error: string }
+    | { path: string; skipped: true };
 
   const workers = Array.from({ length: CPU_COUNT }, () =>
     makeHashWorker(HASH_ALG),
@@ -725,8 +740,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       updated: number;
       prevUpdated: number | null;
       prevHash: string | null;
+      hash_pending: number;
     }
   >();
+
+  const timestampsClose = (a?: number, b?: number) => {
+    if (a == null || b == null) return false;
+    return Math.abs(a - b) < 0.5;
+  };
+  let skippedUnstableHashes = 0;
 
   // Handle worker replies (batched)
   for (const w of workers) {
@@ -750,24 +772,41 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           emitHashProgress();
           continue;
         }
+        if ("skipped" in r) {
+          skippedUnstableHashes += 1;
+          pendingMeta.delete(r.path);
+          fileNodeMeta.delete(rpath);
+          emitHashProgress();
+          continue;
+        }
+        if (
+          !metaToday ||
+          metaToday.size !== r.size ||
+          !timestampsClose(metaToday.mtime, r.mtime) ||
+          !timestampsClose(metaToday.ctime, r.ctime)
+        ) {
+          skippedUnstableHashes += 1;
+          pendingMeta.delete(r.path);
+          fileNodeMeta.delete(rpath);
+          emitHashProgress();
+          continue;
+        }
         hashResults.push({ path: rpath, hash: r.hash, ctime: r.ctime });
         if (await isRecent(r.path, undefined, r.mtime)) {
           touchBatch.push([rpath, Date.now()]);
         }
-        if (metaToday) {
-          if (emitDelta) {
-            emitObj({
-              path: rpath,
-              size: metaToday.size,
-              ctime: metaToday.ctime,
-              mtime: metaToday.mtime,
-              op_ts: metaToday.updated,
-              hash: r.hash,
-              deleted: 0,
-            });
-          }
-          pendingMeta.delete(r.path);
+        if (emitDelta) {
+          emitObj({
+            path: rpath,
+            size: metaToday.size,
+            ctime: metaToday.ctime,
+            mtime: metaToday.mtime,
+            op_ts: metaToday.updated,
+            hash: r.hash,
+            deleted: 0,
+          });
         }
+        pendingMeta.delete(r.path);
         if (hashResults.length >= DB_BATCH_SIZE) {
           applyHashBatch(hashResults);
           hashResults.length = 0;
@@ -783,6 +822,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   async function scan() {
     const t0 = Date.now();
     const scan_id = Date.now();
+    skippedUnstableHashes = 0;
 
     // If requested, first replay a bounded window from the DB,
     // then proceed to the actual filesystem walk (which will emit new changes).
@@ -968,6 +1008,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash: row?.hash ?? null,
           last_seen: scan_id,
           hashed_ctime: row?.hashed_ctime ?? null,
+          hash_pending: needsHash ? 1 : 0,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
@@ -988,6 +1029,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             updated: op_ts,
             prevUpdated: row?.updated ?? null,
             prevHash: row?.hash ?? null,
+            hash_pending: 1,
           });
         }
       } else if (entry.dirent.isSymbolicLink()) {
@@ -1093,6 +1135,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 hash = '',
                 hashed_ctime = NULL,
                 size = 0,
+                hash_pending = 0,
                 last_error = NULL
           WHERE last_seen <> @scan
             AND deleted = 0${restrictedClause}`,
@@ -1122,6 +1165,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       hashedResults: received,
       durationMs: Date.now() - t0,
     });
+    if (skippedUnstableHashes) {
+      logger.debug("skipped unstable hashes", {
+        skipped: skippedUnstableHashes,
+      });
+    }
   }
 
   await scan();

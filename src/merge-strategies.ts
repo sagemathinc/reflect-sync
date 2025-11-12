@@ -19,6 +19,7 @@ export type MergeDiffRow = {
   path: string;
   a_kind?: string | null;
   a_hash?: string | null;
+  a_hash_pending?: number | null;
   a_ctime?: number | null;
   a_mtime?: number | null;
   a_updated?: number | null;
@@ -27,6 +28,7 @@ export type MergeDiffRow = {
   a_error?: string | null;
   b_kind?: string | null;
   b_hash?: string | null;
+  b_hash_pending?: number | null;
   b_ctime?: number | null;
   b_mtime?: number | null;
   b_updated?: number | null;
@@ -35,6 +37,7 @@ export type MergeDiffRow = {
   b_error?: string | null;
   base_kind?: string | null;
   base_hash?: string | null;
+  base_hash_pending?: number | null;
   base_ctime?: number | null;
   base_mtime?: number | null;
   base_updated?: number | null;
@@ -112,6 +115,7 @@ type SideState = {
   hash?: string | null;
   kind?: string | null;
   ts: TimestampVector;
+  pending: boolean;
 };
 
 type Candidate = {
@@ -129,6 +133,10 @@ function planLww(
   for (const row of rows) {
     const alpha = extractState(row, "alpha", mode);
     const beta = extractState(row, "beta", mode);
+    if (alpha.pending || beta.pending) {
+      operations.push({ op: "noop", path: row.path });
+      continue;
+    }
 
     const bothMissing =
       !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
@@ -176,6 +184,7 @@ function extractState(
   const mtime = Number((row as any)[`${prefix}_mtime`]) || 0;
   const ctime = Number((row as any)[`${prefix}_ctime`]) || 0;
   const updated = Number((row as any)[`${prefix}_updated`]) || 0;
+  const pending = Boolean((row as any)[`${prefix}_hash_pending`]);
   // Default vector: updated → mtime → ctime. Legacy lww-mtime still leads with mtime.
   const ts: TimestampVector =
     mode === "mtime"
@@ -187,10 +196,12 @@ function extractState(
     hash,
     kind,
     ts,
+    pending,
   };
 }
 
 function toCandidate(state: SideState, side: MergeSide): Candidate | null {
+  if (state.pending) return null;
   if (state.exists) {
     return { side, ts: state.ts, type: "present" };
   }
