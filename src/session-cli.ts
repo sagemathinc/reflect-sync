@@ -266,6 +266,7 @@ export function registerSessionCommands(program: Command) {
         [] as string[],
       )
       .option("--json", "output JSON instead of a table", false)
+      .option("-l, --long", "show detailed columns (ignores/flags/paths)", false)
       .action((refs: string[], opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         const selectors = opts.selector || [];
@@ -320,29 +321,24 @@ export function registerSessionCommands(program: Command) {
           return;
         }
 
+        const longView = Boolean(opts.long);
+        const headings = longView
+          ? [
+              "ID",
+              "Name",
+              "State/Desired",
+              "Sync",
+              "PID",
+              "Ignores",
+              "Flags",
+              "Paths",
+            ]
+          : ["ID", "Name", "State/Desired", "Sync", "PID"];
         const table = new AsciiTable3("Sync Sessions")
-          .setHeading(
-            "ID",
-            "Name",
-            "State/Desired",
-            "Sync",
-            "PID",
-            "Ignores",
-            "Flags",
-            "Paths",
-          )
+          .setHeading(...headings)
           .setStyle("unicode-round");
 
-        const alignments = [
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-          AlignmentEnum.LEFT,
-        ];
+        const alignments = headings.map(() => AlignmentEnum.LEFT);
         alignments.forEach((align, idx) => table.setAlign(idx, align));
 
         for (const r of rows) {
@@ -352,6 +348,17 @@ export function registerSessionCommands(program: Command) {
           const betaPath = r.beta_host
             ? fmtRemoteEndpoint(r.beta_host, r.beta_port, r.beta_root)
             : fmtLocalPath(r.beta_root);
+          if (!longView) {
+            table.addRow(
+              String(r.id),
+              r.name ?? "-",
+              `${r.actual_state}/${r.desired_state}`,
+              fmtCleanMarker(r.last_clean_sync_at),
+              r.scheduler_pid ? String(r.scheduler_pid) : "-",
+            );
+            continue;
+          }
+
           const ignoreRules = deserializeIgnoreRules(
             (r as any).ignore_rules ?? null,
           );
