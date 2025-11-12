@@ -164,6 +164,17 @@ function planLww(
       continue;
     }
 
+    const alphaMatchesBase = matchesBase(row, "a");
+    const betaMatchesBase = matchesBase(row, "b");
+    if (alphaMatchesBase && !betaMatchesBase && betaCand) {
+      operations.push(candidateToOperation(betaCand, row.path));
+      continue;
+    }
+    if (betaMatchesBase && !alphaMatchesBase && alphaCand) {
+      operations.push(candidateToOperation(alphaCand, row.path));
+      continue;
+    }
+
     let intervalWinner: MergeSide | null = null;
     if (alphaCand && betaCand) {
       intervalWinner = pickIntervalWinner(alpha, beta);
@@ -359,4 +370,28 @@ function candidateToOperation(
   }
   const target = candidate.side === "alpha" ? "beta" : "alpha";
   return { op: "delete", side: target, path };
+}
+
+function matchesBase(row: MergeDiffRow, prefix: "a" | "b"): boolean {
+  const baseKind = row.base_kind ?? null;
+  const baseHash = row.base_hash ?? null;
+  const baseSize = row.base_size ?? null;
+  const baseDeleted = !!row.base_deleted;
+  const sideDeleted = !!(row as any)[`${prefix}_deleted`];
+  const sideHash = (row as any)[`${prefix}_hash`] ?? null;
+  const sideKind = (row as any)[`${prefix}_kind`] ?? null;
+  const sideSize = (row as any)[`${prefix}_size`] ?? null;
+
+  if (baseDeleted || sideDeleted) {
+    return baseDeleted === sideDeleted;
+  }
+
+  if (baseHash && sideHash) {
+    return baseHash === sideHash;
+  }
+  if (baseKind !== sideKind) return false;
+  if (baseSize != null && sideSize != null) {
+    return baseSize === sideSize;
+  }
+  return baseKind === sideKind;
 }
