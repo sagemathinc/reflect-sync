@@ -219,7 +219,7 @@ function tableOutput(
       );
     if (sess.actual_state && sess.desired_state)
       add(
-        "State (actual/desired)",
+        "State/Desired",
         `${sess.actual_state}/${sess.desired_state}`,
       );
   }

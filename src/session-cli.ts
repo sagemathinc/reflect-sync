@@ -320,13 +320,12 @@ export function registerSessionCommands(program: Command) {
           return;
         }
 
-        const table = new AsciiTable3("Sessions")
+        const table = new AsciiTable3("Sync Sessions")
           .setHeading(
             "ID",
             "Name",
-            "State (actual/desired)",
+            "State/Desired",
             "Sync",
-            "Prefer",
             "PID",
             "Ignores",
             "Flags",
@@ -335,7 +334,6 @@ export function registerSessionCommands(program: Command) {
           .setStyle("unicode-round");
 
         const alignments = [
-          AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
           AlignmentEnum.LEFT,
@@ -371,13 +369,21 @@ export function registerSessionCommands(program: Command) {
             r.name ?? "-",
             `${r.actual_state}/${r.desired_state}`,
             fmtCleanMarker(r.last_clean_sync_at),
-            r.prefer,
             r.scheduler_pid ? String(r.scheduler_pid) : "-",
             ignoreSummary,
             flagsSummary,
-            `alpha: ${alphaPath}`,
+            `alpha${r.prefer == "alpha" ? "*" : " "}: ${alphaPath}`,
           );
-          table.addRow("", "", "", "", "", "", "", "", `beta:  ${betaPath}`);
+          table.addRow(
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            `beta${r.prefer == "beta" ? "*" : " "} : ${betaPath}`,
+          );
         }
 
         console.log(table.toString());
