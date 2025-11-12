@@ -216,9 +216,9 @@ function extractState(
   const pending = Boolean((row as any)[`${prefix}_hash_pending`]);
   const start = (row as any)[`${prefix}_change_start`] ?? null;
   const end = (row as any)[`${prefix}_change_end`] ?? null;
-  // Default vector: updated → mtime → ctime. Legacy lww-mtime still leads with mtime.
+  // Default vector: prioritise mtime, then ctime, then updated for lww-mtime.
   const ts: TimestampVector =
-    mode === "mtime" ? [mtime, updated, ctime] : [updated, mtime, ctime];
+    mode === "mtime" ? [mtime, ctime, updated] : [updated, mtime, ctime];
   return {
     exists,
     deleted,
