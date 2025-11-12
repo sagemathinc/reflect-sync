@@ -153,27 +153,6 @@ function planLww(
       !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
     if (bothMissing) continue;
 
-    if (row.base_deleted) {
-      if (alpha.deleted && beta.exists) {
-        operations.push({
-          op: "copy",
-          from: "beta",
-          to: "alpha",
-          path: row.path,
-        });
-        continue;
-      }
-      if (beta.deleted && alpha.exists) {
-        operations.push({
-          op: "copy",
-          from: "alpha",
-          to: "beta",
-          path: row.path,
-        });
-        continue;
-      }
-    }
-
     const sameHash =
       alpha.exists &&
       beta.exists &&
