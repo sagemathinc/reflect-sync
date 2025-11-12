@@ -612,7 +612,7 @@ async function performDirCopies(params: {
       params.destDb,
       params.baseDb,
       unique,
-      { updateBase: params.direction === "alpha->beta" },
+      { updateBase: true },
     );
     if (params.tracer && params.opName) {
       for (const path of unique) {
@@ -714,7 +714,7 @@ async function performFileCopies(params: {
     params.destDb,
     params.baseDb,
     succeeded,
-    { updateBase: params.direction === "alpha->beta" },
+    { updateBase: true },
   );
   if (params.tracer && params.opName) {
     for (const path of succeeded) {
