@@ -45,10 +45,8 @@ parentPort.on("message", async (payload: JobBatch) => {
   for (const j of jobs) {
     try {
       const before = await fsStat(j.path);
-      const beforeMtime =
-        (before as any).mtimeMs ?? before.mtime.getTime();
-      const beforeCtime =
-        (before as any).ctimeMs ?? before.ctime.getTime();
+      const beforeMtime = (before as any).mtimeMs ?? before.mtime.getTime();
+      const beforeCtime = (before as any).ctimeMs ?? before.ctime.getTime();
       if (
         before.size !== j.size ||
         Math.abs(beforeMtime - j.mtime) > 0.5 ||
@@ -63,10 +61,8 @@ parentPort.on("message", async (payload: JobBatch) => {
 
       // Mode/uid/gid snapshot (to fold into the final hash string)
       const after = await fsStat(j.path);
-      const afterMtime =
-        (after as any).mtimeMs ?? after.mtime.getTime();
-      const afterCtime =
-        (after as any).ctimeMs ?? after.ctime.getTime();
+      const afterMtime = (after as any).mtimeMs ?? after.mtime.getTime();
+      const afterCtime = (after as any).ctimeMs ?? after.ctime.getTime();
       if (
         after.size !== before.size ||
         Math.abs(afterMtime - beforeMtime) > 0.5 ||

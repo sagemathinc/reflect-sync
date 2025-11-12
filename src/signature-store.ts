@@ -111,16 +111,16 @@ export function applySignaturesToDb(
         ctime,
         hashed_ctime: params.hashed_ctime ?? null,
         updated,
-      size: params.size,
-      deleted: params.deleted,
-      hash_pending: params.hash_pending ?? 0,
-      change_start:
-        params.change_start === undefined ? null : params.change_start,
-      change_end: params.change_end === undefined ? null : params.change_end,
-      last_seen: params.last_seen ?? null,
-      link_target: params.link_target ?? null,
-      last_error: params.last_error ?? null,
-    });
+        size: params.size,
+        deleted: params.deleted,
+        hash_pending: params.hash_pending ?? 0,
+        change_start:
+          params.change_start === undefined ? null : params.change_start,
+        change_end: params.change_end === undefined ? null : params.change_end,
+        last_seen: params.last_seen ?? null,
+        link_target: params.link_target ?? null,
+        last_error: params.last_error ?? null,
+      });
     };
     const markDeleted = (path: string, kindHint?: NodeKind) => {
       const existing = selectNodeStmt.get(path) as NodeRow | undefined;
@@ -139,7 +139,8 @@ export function applySignaturesToDb(
         updated: updatedTick,
         last_seen: existing?.last_seen ?? null,
         link_target: null,
-        change_start: existing?.change_start ?? existing?.updated ?? deleteMtime,
+        change_start:
+          existing?.change_start ?? existing?.updated ?? deleteMtime,
         change_end: null,
         hash_pending: 0,
       });
@@ -190,9 +191,9 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
             });
-          break;
-        }
-        case "dir": {
+            break;
+          }
+          case "dir": {
             const updatedTick = nextClock();
             writeNode({
               path,
@@ -209,9 +210,9 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
             });
-          break;
-        }
-        case "link": {
+            break;
+          }
+          case "link": {
             const linkTarget = target ?? "";
             const updatedTick = nextClock();
             writeNode({
@@ -229,8 +230,8 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
             });
-          break;
-        }
+            break;
+          }
           default:
             markDeleted(path);
             break;

@@ -544,11 +544,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const updatedValue = hashChanged
           ? (meta?.updated ?? scanTick)
           : (prevUpdated ?? meta?.updated ?? scanTick);
-        const changeStart =
-          meta?.change_start ??
-          meta?.updated ??
-          scanTick;
-        const changeEnd = hashChanged ? scanTick : (meta?.change_end ?? scanTick);
+        const changeStart = meta?.change_start ?? meta?.updated ?? scanTick;
+        const changeEnd = hashChanged
+          ? scanTick
+          : (meta?.change_end ?? scanTick);
         writeNode({
           path: r.path,
           kind: "f",
@@ -975,10 +974,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
         const dirChangeStart = dirChanged
           ? op_ts
-          : prev?.change_start ?? prev?.change_end ?? op_ts;
-        const dirChangeEnd = dirChanged
-          ? op_ts
-          : prev?.change_end ?? op_ts;
+          : (prev?.change_start ?? prev?.change_end ?? op_ts);
+        const dirChangeEnd = dirChanged ? op_ts : (prev?.change_end ?? op_ts);
 
         dirMetaBuf.push({
           path: rpath,
@@ -1063,7 +1060,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           changeStart = row.change_start ?? row.change_end ?? op_ts;
           changeEnd = row.change_end ?? op_ts;
         }
-        const hashPendingFlag = needsHash ? 1 : row?.hash_pending ?? 0;
+        const hashPendingFlag = needsHash ? 1 : (row?.hash_pending ?? 0);
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -1130,10 +1127,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
         const linkChangeStart = linkChanged
           ? op_ts
-          : prev?.change_start ?? prev?.change_end ?? op_ts;
-        const linkChangeEnd = linkChanged
-          ? op_ts
-          : prev?.change_end ?? op_ts;
+          : (prev?.change_start ?? prev?.change_end ?? op_ts);
+        const linkChangeEnd = linkChanged ? op_ts : (prev?.change_end ?? op_ts);
 
         linksBuf.push({
           path: rpath,

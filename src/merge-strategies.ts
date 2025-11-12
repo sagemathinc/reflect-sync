@@ -164,10 +164,20 @@ function planLww(
     if (alpha.exists && beta.exists) {
       const intervalWinner = pickIntervalWinner(alpha, beta);
       if (intervalWinner === "alpha") {
-        operations.push({ op: "copy", from: "alpha", to: "beta", path: row.path });
+        operations.push({
+          op: "copy",
+          from: "alpha",
+          to: "beta",
+          path: row.path,
+        });
         continue;
       } else if (intervalWinner === "beta") {
-        operations.push({ op: "copy", from: "beta", to: "alpha", path: row.path });
+        operations.push({
+          op: "copy",
+          from: "beta",
+          to: "alpha",
+          path: row.path,
+        });
         continue;
       }
     }
@@ -208,9 +218,7 @@ function extractState(
   const end = (row as any)[`${prefix}_change_end`] ?? null;
   // Default vector: updated → mtime → ctime. Legacy lww-mtime still leads with mtime.
   const ts: TimestampVector =
-    mode === "mtime"
-      ? [mtime, updated, ctime]
-      : [updated, mtime, ctime];
+    mode === "mtime" ? [mtime, updated, ctime] : [updated, mtime, ctime];
   return {
     exists,
     deleted,

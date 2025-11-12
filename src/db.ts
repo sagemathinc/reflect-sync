@@ -100,7 +100,9 @@ export function getDb(dbPath: string): Database {
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
   `);
   try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+    db.exec(
+      `ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`,
+    );
   } catch {}
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
@@ -152,7 +154,9 @@ export function getBaseDb(dbPath: string): Database {
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
     `);
   try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+    db.exec(
+      `ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`,
+    );
   } catch {}
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
