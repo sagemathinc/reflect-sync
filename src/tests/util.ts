@@ -71,6 +71,8 @@ export async function sync(
   strategy = "last-write-wins",
 ) {
   const order = options.scanOrder ?? ["alpha", "beta"];
+  const logicalClock = await createLogicalClock([r.aDb, r.bDb, r.baseDb]);
+  const scanTick = logicalClock.next();
   for (const side of order) {
     const root = side === "alpha" ? r.aRoot : r.bRoot;
     const db = side === "alpha" ? r.aDb : r.bDb;
@@ -85,10 +87,11 @@ export async function sync(
       r.bDb,
       "--clock-base",
       r.baseDb,
+      "--scan-tick",
+      String(scanTick),
       ...(args ?? []),
     ]);
   }
-  const logicalClock = await createLogicalClock([r.aDb, r.bDb, r.baseDb]);
   await executeThreeWayMerge({
     alphaDb: r.aDb,
     betaDb: r.bDb,

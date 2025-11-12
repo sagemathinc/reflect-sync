@@ -303,6 +303,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     hash_pending: number;
     change_start: number | null;
     change_end: number | null;
+    pending_start: number | null;
   };
 
   type HashMeta = {
@@ -544,10 +545,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const updatedValue = hashChanged
           ? (meta?.updated ?? scanTick)
           : (prevUpdated ?? meta?.updated ?? scanTick);
-        const changeStart = meta?.change_start ?? meta?.updated ?? scanTick;
-        const changeEnd = hashChanged
-          ? scanTick
-          : (meta?.change_end ?? scanTick);
+        let changeStart =
+          meta?.change_start ??
+          meta?.updated ??
+          scanTick;
+        let changeEnd = meta?.change_end ?? scanTick;
+        if (hashChanged) {
+          changeStart = meta?.pending_start ?? scanTick;
+          changeEnd = scanTick;
+        }
         writeNode({
           path: r.path,
           kind: "f",
@@ -760,6 +766,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       updated: number;
       change_start: number | null;
       change_end: number | null;
+      pending_start: number | null;
     }
   >();
   const fileNodeMeta = new Map<
@@ -775,6 +782,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       hash_pending: number;
       change_start: number | null;
       change_end: number | null;
+      pending_start: number | null;
     }
   >();
 
@@ -973,8 +981,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
         const dirChangeStart = dirChanged
-          ? (prev?.change_end ?? prev?.updated ?? op_ts)
-          : (prev?.change_start ?? prev?.change_end ?? op_ts);
+          ? op_ts
+          : prev?.change_start ?? (prev?.change_end ?? op_ts);
         const dirChangeEnd = dirChanged ? op_ts : (prev?.change_end ?? op_ts);
 
         dirMetaBuf.push({
@@ -1050,14 +1058,16 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
         let changeStart = row?.change_start ?? null;
         let changeEnd = row?.change_end ?? null;
+        let pendingStart: number | null = null;
         if (!row) {
           changeStart = op_ts;
           changeEnd = needsHash ? null : op_ts;
         } else if (needsHash) {
-          changeStart = row.change_end ?? row.updated ?? op_ts;
+          pendingStart = op_ts;
+          changeStart = row.change_start ?? row.change_end ?? op_ts;
           changeEnd = null;
         } else {
-          changeStart = row.change_start ?? row.change_end ?? op_ts;
+          changeStart = row.change_start ?? op_ts;
           changeEnd = row.change_end ?? op_ts;
         }
         const hashPendingFlag = needsHash ? 1 : (row?.hash_pending ?? 0);
@@ -1075,6 +1085,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash_pending: hashPendingFlag,
           change_start: changeStart,
           change_end: changeEnd,
+          pending_start: pendingStart,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
@@ -1090,6 +1101,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             updated: op_ts,
             change_start: changeStart,
             change_end: changeEnd,
+            pending_start: pendingStart,
           });
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
@@ -1101,11 +1113,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             last_seen: scan_id,
             updated: op_ts,
             prevUpdated: row?.updated ?? null,
-            prevHash: row?.hash ?? null,
-            hash_pending: 1,
-            change_start: changeStart,
-            change_end: changeEnd,
-          });
+          prevHash: row?.hash ?? null,
+          hash_pending: 1,
+          change_start: changeStart,
+          change_end: changeEnd,
+          pending_start: pendingStart,
+        });
         }
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";
@@ -1126,8 +1139,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
         const linkChangeStart = linkChanged
-          ? (prev?.change_end ?? prev?.updated ?? op_ts)
-          : (prev?.change_start ?? prev?.change_end ?? op_ts);
+          ? op_ts
+          : prev?.change_start ?? (prev?.change_end ?? op_ts);
         const linkChangeEnd = linkChanged ? op_ts : (prev?.change_end ?? op_ts);
 
         linksBuf.push({
