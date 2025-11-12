@@ -125,3 +125,42 @@ Typical large-tree outcomes we’ve seen:
 ---
 
 This design aims to keep the _algorithm_ you like from Mutagen, but shift its heavy lifting to **SQLite** and **rsync**, which are fast, observable, and easy to operate at scale—while keeping the codebase small and pleasant to evolve.
+
+---
+
+## Change Interval Semantics
+
+Every row in `nodes` stores `change_start` and `change_end`. Together they mean:
+
+> “The most recent transition for this path occurred **after** `change_start` and **no later than** `change_end`.”
+
+These intervals give last‑writer‑wins a concrete model to reason about ordering, even when filesystem clocks lie or watchers miss events. We treat the bounds as half‑open `(start, end]`, but persist them as numeric ticks with the guarantee that `change_start ≤ change_end`.
+
+### Sources of intervals
+
+- **Full scan discovery**  
+  - When we observe an existing entry and already had a prior observation, the new interval starts at the previous observation’s `change_end` (the moment we last knew its state) and ends at the tick for this scan (`op_ts`).  
+  - If the path never existed in our DB, the lower bound is the completion tick of the last *full* scan (or session start if unknown) because the only thing we know is “it wasn’t there the last time we finished a tree walk.”
+
+- **Hash completion**  
+  - Metadata upserts (size/mtime) tentatively extend the interval but leave `change_end = null` while hashing is in flight. Once the worker reports a stable hash, we clamp `change_end` to the hash tick and retroactively set `change_start` to the moment we queued the job. That ensures “bytes changed sometime after we noticed the mtime bump and before hashing finished.”
+
+- **Hot watcher updates / restricted scans**  
+  - Watchers only shrink certainty—they cannot shift events earlier than our last confirmed state. The lower bound for a watcher‑driven refresh is therefore `max(previous change_end, scan window start)`, while the upper bound is the tick when we re‑scanned just that path. Restricted scans behave the same way: their window gives us a tighter upper bound than waiting for the next full pass.
+
+- **Deletions**  
+  - When a scan fails to find a path that existed previously, the change interval is `(last_confirmed_presence, scan_tick]`, i.e. it must have vanished after the previous state we trusted and no later than the tick when we concluded the deletion. For resurrected paths we treat the creation interval the same way we would for any new discovery.
+
+- **Remote ingest (SSH delta stream)**  
+  - Each delta includes the remote clock tick when it was observed. We convert it into local logical time and apply the same rules: lower bound is the last confirmed state in our DB, upper bound is the adjusted remote tick (monotonic per path to compensate for out‑of‑order lines).
+
+- **Merge applications**  
+  - After rsync successfully copies or deletes a path, the scheduler records the resulting state in both the destination DB and `base.db`. The interval becomes `(previous base change_end, merge_tick]` because rsync is now the authoritative last writer.
+
+### How the planner uses intervals
+
+1. If both sides’ intervals are disjoint, the planner trusts the later upper bound.
+2. If they overlap, we fall back to additional signals in order: filesystem mtimes, “which hash diverged from base,” then ctimes, and finally the configured `prefer` side.
+3. Intervals also guard against partial knowledge: if either side has `change_end = null` (hash still pending), the planner issues a `noop` and waits for the interval to close before making a copy decision.
+
+Documenting the semantics up front lets us audit each pipeline (scan, ingest, merge) to ensure they respect the same invariant: **every observation narrows—but never contradicts—the window in which a file changed**. Once every writer follows the same rule, last‑write‑wins has a solid footing regardless of filesystem quirks or watcher drops.

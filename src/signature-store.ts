@@ -103,6 +103,17 @@ export function applySignaturesToDb(
     const writeNode = (params: NodeWriteParams) => {
       const updated = params.updated ?? nextClock();
       const ctime = params.ctime ?? params.mtime;
+      let changeStart =
+        params.change_start === undefined ? null : params.change_start;
+      let changeEnd =
+        params.change_end === undefined ? null : params.change_end;
+      if (
+        changeStart != null &&
+        changeEnd != null &&
+        changeEnd < changeStart
+      ) {
+        changeStart = changeEnd;
+      }
       nodeUpsertStmt.run({
         path: params.path,
         kind: params.kind,
@@ -114,9 +125,8 @@ export function applySignaturesToDb(
         size: params.size,
         deleted: params.deleted,
         hash_pending: params.hash_pending ?? 0,
-        change_start:
-          params.change_start === undefined ? null : params.change_start,
-        change_end: params.change_end === undefined ? null : params.change_end,
+        change_start: changeStart,
+        change_end: changeEnd,
         last_seen: params.last_seen ?? null,
         link_target: params.link_target ?? null,
         last_error: params.last_error ?? null,
