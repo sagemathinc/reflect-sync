@@ -1231,7 +1231,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 hashed_ctime = NULL,
                 size = 0,
                 change_start = COALESCE(change_start, updated, @ts),
-                change_end = NULL,
+                change_end = @ts,
                 hash_pending = 0,
                 last_error = NULL
           WHERE last_seen <> @scan

@@ -185,6 +185,13 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     const existing = selectMetaStmt.get(path) as ExistingMetaRow | undefined;
     const deleteMtime = deletionMtimeFromMeta(existing ?? {}, fallbackNow);
     const logicalUpdated = nextUpdatedTick();
+    const rawStart =
+      existing?.change_start ??
+      existing?.change_end ??
+      existing?.updated ??
+      fallbackNow;
+    const changeStart =
+      rawStart == null ? logicalUpdated : Math.min(rawStart, logicalUpdated);
     return {
       path,
       kind: existing?.kind ?? kindHint,
@@ -199,8 +206,8 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       link_target: null,
       last_error: null,
       hash_pending: 0,
-      change_start: existing?.change_start ?? existing?.updated ?? fallbackNow,
-      change_end: null,
+      change_start: changeStart,
+      change_end: logicalUpdated,
     };
   };
   let processedRows = 0;

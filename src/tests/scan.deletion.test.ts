@@ -51,7 +51,8 @@ describe("scan deletes", () => {
     try {
       const row = db
         .prepare(
-          `SELECT deleted, hash, hashed_ctime, size, mtime, last_seen FROM nodes WHERE path = ?`,
+          `SELECT deleted, hash, hashed_ctime, size, mtime, last_seen, updated, change_start, change_end
+             FROM nodes WHERE path = ?`,
         )
         .get("foo.txt") as {
         deleted: number;
@@ -60,6 +61,9 @@ describe("scan deletes", () => {
         size: number;
         mtime: number;
         last_seen: number | null;
+        updated: number;
+        change_start: number | null;
+        change_end: number | null;
       };
 
       expect(row.deleted).toBe(1);
@@ -71,6 +75,12 @@ describe("scan deletes", () => {
       }
       expect(row.last_seen).toBe(liveMeta.last_seen);
       expect(row.mtime).toBe(liveMeta.last_seen + 1);
+      expect(row.change_end).toBe(row.updated);
+      expect(row.change_end).not.toBeNull();
+      expect(row.change_start).not.toBeNull();
+      if (row.change_start !== null && row.change_end !== null) {
+        expect(row.change_start).toBeLessThanOrEqual(row.change_end);
+      }
     } finally {
       db.close();
     }

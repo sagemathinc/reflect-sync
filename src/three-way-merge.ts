@@ -833,37 +833,45 @@ function markNodesDeletedBatch(
     const existing = fetchNode(db, path);
     const tick = logicalClock ? logicalClock.next() : Date.now();
     const deleteMtime = deletionMtimeFromMeta(existing ?? {}, tick);
-    const row: NodeRecord = existing
-      ? {
-          ...existing,
-          deleted: 1,
-          mtime: deleteMtime,
-          hash: "",
-          hashed_ctime: null,
-          size: 0,
-          updated: tick,
-          change_start: existing.change_start,
-          change_end: null,
-          hash_pending: 0,
-          last_error: null,
-        }
-      : {
-          path,
-          kind: "f",
-          hash: "",
-          mtime: deleteMtime,
-          ctime: deleteMtime,
-          hashed_ctime: null,
-          updated: tick,
-          size: 0,
-          deleted: 1,
-          change_start: null,
-          change_end: null,
-          hash_pending: 0,
-          last_seen: null,
-          link_target: null,
-          last_error: null,
-        };
+    const existingStart =
+      existing?.change_start ??
+      existing?.change_end ??
+      existing?.updated ??
+      tick;
+    const resolvedStart =
+      existingStart == null ? tick : Math.min(existingStart, tick);
+    let row: NodeRecord;
+    if (existing) {
+      row = { ...existing };
+      row.deleted = 1;
+      row.mtime = deleteMtime;
+      row.hash = "";
+      row.hashed_ctime = null;
+      row.size = 0;
+      row.updated = tick;
+      row.change_start = resolvedStart;
+      row.change_end = tick;
+      row.hash_pending = 0;
+      row.last_error = null;
+    } else {
+      row = {
+        path,
+        kind: "f",
+        hash: "",
+        mtime: deleteMtime,
+        ctime: deleteMtime,
+        hashed_ctime: null,
+        updated: tick,
+        size: 0,
+        deleted: 1,
+        change_start: tick,
+        change_end: tick,
+        hash_pending: 0,
+        last_seen: null,
+        link_target: null,
+        last_error: null,
+      };
+    }
     rows.push(row);
   }
   const apply = db.transaction((entries: NodeRecord[]) => {

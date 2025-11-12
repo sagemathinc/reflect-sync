@@ -177,6 +177,30 @@ function planLww(
         });
         continue;
       }
+
+      const overlapTieBreak =
+        intervalWinner === null &&
+        alpha.start != null &&
+        alpha.end != null &&
+        beta.start != null &&
+        beta.end != null;
+      if (overlapTieBreak) {
+        const mtimeWinner = pickByTimestamp(row, "mtime");
+        if (mtimeWinner) {
+          pushCopyOperation(operations, mtimeWinner, row.path);
+          continue;
+        }
+        const hashWinner = pickByBaseHash(row);
+        if (hashWinner) {
+          pushCopyOperation(operations, hashWinner, row.path);
+          continue;
+        }
+        const ctimeWinner = pickByTimestamp(row, "ctime");
+        if (ctimeWinner) {
+          pushCopyOperation(operations, ctimeWinner, row.path);
+          continue;
+        }
+      }
     }
 
     const alphaCand = toCandidate(alpha, "alpha");
@@ -282,4 +306,51 @@ function pickIntervalWinner(
     return "alpha";
   }
   return null;
+}
+
+function pickByTimestamp(
+  row: MergeDiffRow,
+  field: "mtime" | "ctime",
+): MergeSide | null {
+  const alphaVal = readNumericField(row, `a_${field}`);
+  const betaVal = readNumericField(row, `b_${field}`);
+  if (alphaVal == null || betaVal == null) return null;
+  if (alphaVal > betaVal) return "alpha";
+  if (betaVal > alphaVal) return "beta";
+  return null;
+}
+
+function pickByBaseHash(row: MergeDiffRow): MergeSide | null {
+  if (row.base_deleted) return null;
+  const baseHash = row.base_hash ?? null;
+  if (!baseHash) return null;
+  const alphaHash = row.a_hash ?? null;
+  const betaHash = row.b_hash ?? null;
+  const alphaDiffers = alphaHash != null && alphaHash !== baseHash;
+  const betaDiffers = betaHash != null && betaHash !== baseHash;
+  if (alphaDiffers === betaDiffers) return null;
+  return alphaDiffers ? "alpha" : "beta";
+}
+
+function readNumericField(
+  row: MergeDiffRow,
+  key: keyof MergeDiffRow,
+): number | null {
+  const value = row[key];
+  if (typeof value !== "number") return null;
+  if (!Number.isFinite(value)) return null;
+  return value;
+}
+
+function pushCopyOperation(
+  ops: PlannedOperation[],
+  from: MergeSide,
+  path: string,
+) {
+  ops.push({
+    op: "copy",
+    from,
+    to: from === "alpha" ? "beta" : "alpha",
+    path,
+  });
 }

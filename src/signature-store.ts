@@ -127,6 +127,13 @@ export function applySignaturesToDb(
       const observed = Date.now();
       const deleteMtime = deletionMtimeFromMeta(existing ?? {}, observed);
       const updatedTick = nextClock();
+      const rawStart =
+        existing?.change_start ??
+        existing?.change_end ??
+        existing?.updated ??
+        deleteMtime;
+      const changeStart =
+        rawStart == null ? updatedTick : Math.min(rawStart, updatedTick);
       writeNode({
         path,
         kind: existing?.kind ?? kindHint ?? "f",
@@ -139,9 +146,8 @@ export function applySignaturesToDb(
         updated: updatedTick,
         last_seen: existing?.last_seen ?? null,
         link_target: null,
-        change_start:
-          existing?.change_start ?? existing?.updated ?? deleteMtime,
-        change_end: null,
+        change_start: changeStart,
+        change_end: updatedTick,
         hash_pending: 0,
       });
     };
