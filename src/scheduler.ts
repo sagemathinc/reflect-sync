@@ -58,6 +58,7 @@ import { executeThreeWayMerge } from "./three-way-merge.js";
 import { MERGE_STRATEGY_NAMES } from "./merge-strategies.js";
 import { runIngestDelta } from "./ingest-delta.js";
 import { runScan } from "./scan.js";
+import { createLogicalClock } from "./logical-clock.js";
 import {
   autoIgnoreForRoot,
   normalizeIgnorePatterns,
@@ -665,6 +666,7 @@ export async function runScheduler({
   }
 
   await ensureRootsExist();
+  const logicalClock = await createLogicalClock([alphaDb, betaDb, baseDb]);
 
   function rel(root: string, full: string): string {
     let r = path.relative(root, full);
@@ -703,6 +705,7 @@ export async function runScheduler({
     ignoreRules: string[];
     restrictedPaths?: string[];
     restrictedDirs?: string[];
+    scanTick?: number;
   }): Promise<{
     code: number | null;
     ms: number;
@@ -806,6 +809,8 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: stdout,
       abortSignal: abortController.signal,
+      logicalClock,
+      batchTick: params.scanTick,
     });
 
     const wait = (p: ChildProcess) =>
@@ -943,6 +948,7 @@ export async function runScheduler({
       logger: remoteLog.child("ingest"),
       input: ingestStream,
       abortSignal: ingestAbort.signal,
+      logicalClock,
     }).catch((err) => {
       if (isDiskFullCause(err)) {
         stopForDiskFull(`disk full during remote ${side} watch ingest`, err);
@@ -1254,7 +1260,7 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T,>(arr: T[], size: number): T[][] => {
+  const chunkArray = <T>(arr: T[], size: number): T[][] => {
     if (arr.length === 0) return [];
     const out: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {
@@ -1284,6 +1290,7 @@ export async function runScheduler({
     if (collected.length) {
       applySignaturesToDb(alphaDb, collected, {
         numericIds,
+        logicalClock,
       });
     }
     return collected;
@@ -1307,6 +1314,7 @@ export async function runScheduler({
     if (collected.length) {
       applySignaturesToDb(betaDb, collected, {
         numericIds,
+        logicalClock,
       });
     }
     return collected;
@@ -1366,7 +1374,9 @@ export async function runScheduler({
     const isRemote = side === "alpha" ? alphaIsRemote : betaIsRemote;
     if (isRemote) {
       const fetch =
-        side === "alpha" ? fetchAlphaRemoteSignatures : fetchBetaRemoteSignatures;
+        side === "alpha"
+          ? fetchAlphaRemoteSignatures
+          : fetchBetaRemoteSignatures;
       if (!fetch) return;
       try {
         await fetch(unique, { ignore: true, stable: true });
@@ -1382,6 +1392,7 @@ export async function runScheduler({
     if (!entries.length) return;
     applySignaturesToDb(side === "alpha" ? alphaDb : betaDb, entries, {
       numericIds,
+      logicalClock,
     });
   }
 
@@ -1533,9 +1544,7 @@ export async function runScheduler({
       }
 
       if (nodeWriterEnabled && mergeStrategy) {
-        const limitedAlpha = readyAlpha.filter(
-          (p) => p && limitedSet.has(p),
-        );
+        const limitedAlpha = readyAlpha.filter((p) => p && limitedSet.has(p));
         const limitedBeta = readyBeta.filter((p) => p && limitedSet.has(p));
         await Promise.all([
           refreshHotMetadata("alpha", limitedAlpha),
@@ -1586,6 +1595,7 @@ export async function runScheduler({
       compress,
       logger: hotLogger,
       traceLabel: "hot",
+      logicalClock,
     });
     hotLogger.info("hot merge complete", {
       strategy: mergeStrategy,
@@ -1781,7 +1791,11 @@ export async function runScheduler({
   // ---------- full cycle ----------
   async function runCycle(options: CycleOptions = {}): Promise<void> {
     if (fullCycleRunning) {
-      log("info", "scheduler", "full cycle already running; skipping nested runCycle");
+      log(
+        "info",
+        "scheduler",
+        "full cycle already running; skipping nested runCycle",
+      );
       return;
     }
     try {
@@ -1812,6 +1826,7 @@ export async function runScheduler({
 
     running = true;
     const t0 = Date.now();
+    const scanTick = logicalClock.next();
 
     // Scan alpha & beta in parallel
     let a: any, b: any;
@@ -1834,6 +1849,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+            scanTick,
           })
         : await (async () => {
             try {
@@ -1848,6 +1864,8 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+                logicalClock,
+                scanTick,
               });
               return {
                 code: 0,
@@ -1898,6 +1916,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+            scanTick,
           })
         : await (async () => {
             try {
@@ -1912,6 +1931,8 @@ export async function runScheduler({
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
+                logicalClock,
+                scanTick,
               });
               return {
                 code: 0,
@@ -1981,8 +2002,9 @@ export async function runScheduler({
     const mergeStart = Date.now();
     let mergeOk = false;
     let mergeError: unknown = null;
-    let fullMergeResult: Awaited<ReturnType<typeof executeThreeWayMerge>> | null =
-      null;
+    let fullMergeResult: Awaited<
+      ReturnType<typeof executeThreeWayMerge>
+    > | null = null;
     try {
       const execResult = await executeThreeWayMerge({
         alphaDb,
@@ -2000,6 +2022,7 @@ export async function runScheduler({
         compress,
         logger: mergeLogger,
         traceLabel: options?.label ?? (hasRestrictions ? "restricted" : "full"),
+        logicalClock,
       });
       fullMergeResult = execResult;
       mergeOk = execResult.ok;
@@ -2013,10 +2036,7 @@ export async function runScheduler({
     const mergeMs = Date.now() - mergeStart;
 
     const canUpdateCleanState =
-      !hasRestrictions &&
-      sessionDb &&
-      Number.isFinite(sessionId) &&
-      !dryRun;
+      !hasRestrictions && sessionDb && Number.isFinite(sessionId) && !dryRun;
     if (canUpdateCleanState) {
       if (fullMergeResult?.ok) {
         markSessionCleanSync(sessionDb!, sessionId!);

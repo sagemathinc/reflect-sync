@@ -125,7 +125,8 @@ function planLww(
     const alpha = extractState(row, "alpha", mode);
     const beta = extractState(row, "beta", mode);
 
-    const bothMissing = !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
+    const bothMissing =
+      !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
     if (bothMissing) continue;
 
     const sameHash =
@@ -169,8 +170,7 @@ function extractState(
   const exists = !deleted && (kind != null || hash != null || size != null);
   const mtime = Number((row as any)[`${prefix}_mtime`]) || 0;
   const updated = Number((row as any)[`${prefix}_updated`]) || 0;
-  const ts =
-    mode === "mtime" ? mtime || updated : updated || mtime;
+  const ts = mode === "mtime" ? mtime || updated : updated || mtime;
   return {
     exists,
     deleted,

@@ -84,8 +84,8 @@ export function fetchHotEvents(
 
 export function getMaxOpTs(dbPath: string): number {
   const db = getHandle(dbPath);
-  const row = db
-    .prepare(`SELECT MAX(updated) as m FROM nodes`)
-    .get() as { m: number | null };
+  const row = db.prepare(`SELECT MAX(updated) as m FROM nodes`).get() as {
+    m: number | null;
+  };
   return row?.m ?? 0;
 }

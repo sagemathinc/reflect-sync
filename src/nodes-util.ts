@@ -14,14 +14,16 @@ export function nodeKindToEntry(kind: string): EntryKind {
 }
 
 export function deletionMtimeFromMeta(
-  meta: { last_seen?: number | null; updated?: number | null; mtime?: number | null },
+  meta: {
+    last_seen?: number | null;
+    updated?: number | null;
+    mtime?: number | null;
+  },
   fallback: number,
 ): number {
-  const candidates = [
-    meta.last_seen,
-    meta.updated,
-    meta.mtime,
-  ].filter((v): v is number => Number.isFinite(v as number));
+  const candidates = [meta.last_seen, meta.updated, meta.mtime].filter(
+    (v): v is number => Number.isFinite(v as number),
+  );
   if (candidates.length) {
     return candidates[0]! + 1;
   }

@@ -37,8 +37,7 @@ export class TraceWriter {
   }): TraceWriter | null {
     if (!TRACE_ENABLED) return null;
     const traceDb =
-      opts.traceDb ??
-      path.join(path.dirname(opts.baseDb), "trace.db");
+      opts.traceDb ?? path.join(path.dirname(opts.baseDb), "trace.db");
     mkdirSync(path.dirname(traceDb), { recursive: true });
     const db = new Database(traceDb);
     db.pragma("busy_timeout = 5000");

@@ -4,7 +4,7 @@
 //
 // File & directory mode propagation + conflict resolution (mode-only).
 
-import { mkCase, sync, fileExists } from "./util";
+import { mkCase, sync, syncPrefer, fileExists } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
@@ -80,7 +80,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     await fsp.chmod(b, 0o640); // beta  wants 640
 
     // Use a large epsilon so if op_ts is close, it's treated as a tie → prefer decides.
-    await sync(r, "alpha", false, undefined);
+    await syncPrefer(r, "alpha");
 
     expect(await getMode(a)).toBe(0o600);
     expect(await getMode(b)).toBe(0o600);
@@ -101,7 +101,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
     await fsp.chmod(a, 0o640); // alpha 640
     await fsp.chmod(b, 0o644); // beta  644
 
-    await sync(r, "beta", false, undefined);
+    await syncPrefer(r, "beta");
 
     expect(await getMode(a)).toBe(0o644);
     expect(await getMode(b)).toBe(0o644);

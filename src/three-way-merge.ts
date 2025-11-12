@@ -24,6 +24,7 @@ import {
   describeOperation,
   type TracePlanEntry,
 } from "./trace.js";
+import type { LogicalClock } from "./logical-clock.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
 
 const VERY_VERBOSE = false;
@@ -38,6 +39,7 @@ export type ThreeWayMergeOptions = {
   logger?: Logger;
   traceLabel?: string;
   traceDbPath?: string;
+  logicalClock?: LogicalClock;
 };
 
 export type ThreeWayMergeResult = {
@@ -56,8 +58,6 @@ export type ExecuteThreeWayMergeOptions = ThreeWayMergeOptions & {
   verbose?: boolean | string;
   logLevel?: LogLevel;
   compress?: RsyncCompressSpec;
-  traceLabel?: string;
-  traceDbPath?: string;
 };
 
 export type ExecuteThreeWayMergeResult = {
@@ -132,6 +132,7 @@ export async function executeThreeWayMerge(
   opts: ExecuteThreeWayMergeOptions,
 ): Promise<ExecuteThreeWayMergeResult> {
   const plan = planThreeWayMerge(opts);
+  const clock = opts.logicalClock;
   const tracer =
     TraceWriter.maybeCreate({
       baseDb: opts.baseDb,
@@ -206,6 +207,7 @@ export async function executeThreeWayMerge(
       rsyncOpts: rsyncBase,
       targetDb: alphaConn,
       baseDb: baseConn,
+      logicalClock: clock,
       tracer,
       opName: operationName({ op: "delete", side: "alpha" }),
     });
@@ -220,6 +222,7 @@ export async function executeThreeWayMerge(
       rsyncOpts: rsyncBase,
       targetDb: betaConn,
       baseDb: baseConn,
+      logicalClock: clock,
       tracer,
       opName: operationName({ op: "delete", side: "beta" }),
     });
@@ -235,6 +238,7 @@ export async function executeThreeWayMerge(
       sourceDb: alphaConn,
       destDb: betaConn,
       baseDb: baseConn,
+      logicalClock: clock,
       tracer,
       opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
     });
@@ -249,6 +253,7 @@ export async function executeThreeWayMerge(
       sourceDb: betaConn,
       destDb: alphaConn,
       baseDb: baseConn,
+      logicalClock: clock,
       tracer,
       opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
     });
@@ -268,6 +273,7 @@ export async function executeThreeWayMerge(
       logger,
       tracer,
       opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
+      logicalClock: clock,
     });
     await performFileCopies({
       paths: buckets.copyBetaAlphaFiles,
@@ -284,6 +290,7 @@ export async function executeThreeWayMerge(
       logger,
       tracer,
       opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
+      logicalClock: clock,
     });
 
     return { plan, ok: true };
@@ -473,6 +480,7 @@ async function performDeletes(params: {
   rsyncOpts: RsyncBaseOptions;
   targetDb: ReturnType<typeof getDb>;
   baseDb: ReturnType<typeof getDb>;
+  logicalClock?: LogicalClock | null;
   tracer?: TraceWriter | null;
   opName?: string;
 }) {
@@ -506,8 +514,16 @@ async function performDeletes(params: {
     throw err;
   }
   const deleted = res.deleted?.length ? res.deleted : unique;
-  markNodesDeletedBatch(params.targetDb, deleted);
-  markNodesDeletedBatch(params.baseDb, deleted);
+  markNodesDeletedBatch(
+    params.targetDb,
+    deleted,
+    params.logicalClock || undefined,
+  );
+  markNodesDeletedBatch(
+    params.baseDb,
+    deleted,
+    params.logicalClock || undefined,
+  );
   if (params.tracer && params.opName) {
     for (const path of deleted) {
       params.tracer.recordResult(path, params.opName, "success");
@@ -526,6 +542,7 @@ async function performDirCopies(params: {
   sourceDb: ReturnType<typeof getDb>;
   destDb: ReturnType<typeof getDb>;
   baseDb: ReturnType<typeof getDb>;
+  logicalClock?: LogicalClock | null;
   tracer?: TraceWriter | null;
   opName?: string;
 }) {
@@ -557,29 +574,39 @@ async function performDirCopies(params: {
     );
     mirrorNodesFromSourceBatch(
       params.sourceDb,
-        params.destDb,
-        params.baseDb,
-        unique,
-      );
-      if (params.tracer && params.opName) {
-        for (const path of unique) {
-          params.tracer.recordResult(path, params.opName, "success");
-        }
+      params.destDb,
+      params.baseDb,
+      unique,
+    );
+    if (params.tracer && params.opName) {
+      for (const path of unique) {
+        params.tracer.recordResult(path, params.opName, "success");
       }
-    } catch (err) {
-      const message = `rsync dir copy failed: ${err instanceof Error ? err.message : String(err)}`;
-      recordNodeErrorsBatch(params.destDb, unique, message);
-      recordNodeErrorsBatch(params.baseDb, unique, message);
-      if (params.tracer && params.opName) {
-        for (const path of unique) {
-          params.tracer.recordResult(path, params.opName, "failure", {
-            error: err instanceof Error ? err.message : String(err),
-            phase: "dir-copy",
-          });
-        }
-      }
-      throw err;
     }
+  } catch (err) {
+    const message = `rsync dir copy failed: ${err instanceof Error ? err.message : String(err)}`;
+    recordNodeErrorsBatch(
+      params.destDb,
+      unique,
+      message,
+      params.logicalClock || undefined,
+    );
+    recordNodeErrorsBatch(
+      params.baseDb,
+      unique,
+      message,
+      params.logicalClock || undefined,
+    );
+    if (params.tracer && params.opName) {
+      for (const path of unique) {
+        params.tracer.recordResult(path, params.opName, "failure", {
+          error: err instanceof Error ? err.message : String(err),
+          phase: "dir-copy",
+        });
+      }
+    }
+    throw err;
+  }
 }
 
 async function performFileCopies(params: {
@@ -597,6 +624,7 @@ async function performFileCopies(params: {
   logger?: Logger;
   tracer?: TraceWriter | null;
   opName?: string;
+  logicalClock?: LogicalClock | null;
 }) {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
@@ -629,8 +657,18 @@ async function performFileCopies(params: {
     unique.forEach((p) => failed.add(p));
     const message = `rsync file copy failed: ${err instanceof Error ? err.message : String(err)}`;
     const failedList = Array.from(failed);
-    recordNodeErrorsBatch(params.destDb, failedList, message);
-    recordNodeErrorsBatch(params.baseDb, failedList, message);
+    recordNodeErrorsBatch(
+      params.destDb,
+      failedList,
+      message,
+      params.logicalClock || undefined,
+    );
+    recordNodeErrorsBatch(
+      params.baseDb,
+      failedList,
+      message,
+      params.logicalClock || undefined,
+    );
     throw err;
   }
 
@@ -649,8 +687,18 @@ async function performFileCopies(params: {
   if (failed.size) {
     const message = `rsync reported partial failures for ${params.direction}`;
     const failedList = Array.from(failed);
-    recordNodeErrorsBatch(params.destDb, failedList, message);
-    recordNodeErrorsBatch(params.baseDb, failedList, message);
+    recordNodeErrorsBatch(
+      params.destDb,
+      failedList,
+      message,
+      params.logicalClock || undefined,
+    );
+    recordNodeErrorsBatch(
+      params.baseDb,
+      failedList,
+      message,
+      params.logicalClock || undefined,
+    );
     if (params.tracer && params.opName) {
       for (const path of failedList) {
         params.tracer.recordResult(path, params.opName, "failure", {
@@ -739,16 +787,14 @@ function mirrorNodesFromSourceBatch(
 function markNodesDeletedBatch(
   db: ReturnType<typeof getDb>,
   paths: string[],
+  logicalClock?: LogicalClock,
 ): void {
   if (!paths.length) return;
   const rows: NodeRecord[] = [];
-  const now = Date.now();
   for (const path of paths) {
     const existing = fetchNode(db, path);
-    const deleteMtime = deletionMtimeFromMeta(
-      existing ?? {},
-      now,
-    );
+    const tick = logicalClock ? logicalClock.next() : Date.now();
+    const deleteMtime = deletionMtimeFromMeta(existing ?? {}, tick);
     const row: NodeRecord = existing
       ? {
           ...existing,
@@ -757,23 +803,23 @@ function markNodesDeletedBatch(
           hash: "",
           hashed_ctime: null,
           size: 0,
-          updated: now,
+          updated: tick,
           last_error: null,
         }
-        : {
-            path,
-            kind: "f",
-            hash: "",
-            mtime: deleteMtime,
-            ctime: deleteMtime,
-            hashed_ctime: null,
-            updated: now,
-            size: 0,
-            deleted: 1,
-            last_seen: null,
-            link_target: null,
-            last_error: null,
-          };
+      : {
+          path,
+          kind: "f",
+          hash: "",
+          mtime: deleteMtime,
+          ctime: deleteMtime,
+          hashed_ctime: null,
+          updated: tick,
+          size: 0,
+          deleted: 1,
+          last_seen: null,
+          link_target: null,
+          last_error: null,
+        };
     rows.push(row);
   }
   const apply = db.transaction((entries: NodeRecord[]) => {
@@ -786,30 +832,31 @@ function recordNodeErrorsBatch(
   db: ReturnType<typeof getDb>,
   paths: string[],
   message: string,
+  logicalClock?: LogicalClock,
 ) {
   if (!paths.length) return;
-  const now = Date.now();
   const rows: NodeRecord[] = [];
   for (const path of paths) {
     const existing = fetchNode(db, path);
+    const tick = logicalClock ? logicalClock.next() : Date.now();
     const row: NodeRecord = existing
       ? { ...existing }
       : {
           path,
           kind: "f",
           hash: "",
-          mtime: now,
-          ctime: now,
+          mtime: tick,
+          ctime: tick,
           hashed_ctime: null,
-          updated: now,
+          updated: tick,
           size: 0,
           deleted: 0,
-          last_seen: now,
+          last_seen: tick,
           link_target: null,
           last_error: null,
         };
-    row.updated = now;
-    row.last_error = JSON.stringify({ message, at: now });
+    row.updated = tick;
+    row.last_error = JSON.stringify({ message, at: tick });
     rows.push(row);
   }
   const apply = db.transaction((entries: NodeRecord[]) => {
@@ -818,7 +865,12 @@ function recordNodeErrorsBatch(
   apply(rows);
 }
 
-function operationName(op: { op: "copy" | "delete" | "noop"; from?: string; to?: string; side?: string }) {
+function operationName(op: {
+  op: "copy" | "delete" | "noop";
+  from?: string;
+  to?: string;
+  side?: string;
+}) {
   return describeOperation(op);
 }
 

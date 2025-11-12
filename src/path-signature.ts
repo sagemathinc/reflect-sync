@@ -77,8 +77,8 @@ export async function computePathSignature(
           size: st.size,
           hash,
           mode: st.mode,
-          uid: opts.numericIds ? st.uid ?? undefined : undefined,
-          gid: opts.numericIds ? st.gid ?? undefined : undefined,
+          uid: opts.numericIds ? (st.uid ?? undefined) : undefined,
+          gid: opts.numericIds ? (st.gid ?? undefined) : undefined,
         },
       };
     }

@@ -1,6 +1,9 @@
 // src/op-stamp.ts
 import { getDb } from "./db.js";
-import { nodeKindToEntry, type EntryKind as NodeEntryKind } from "./nodes-util.js";
+import {
+  nodeKindToEntry,
+  type EntryKind as NodeEntryKind,
+} from "./nodes-util.js";
 
 export type EntryKind = NodeEntryKind;
 

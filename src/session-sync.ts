@@ -240,9 +240,9 @@ async function runSyncForSession(
 
     const sample = plan.diffs.slice(0, 5).map((row) => row.path);
     console.log(
-      `session ${label}: ${plan.diffs.length} paths still differ (examples: ${sample.join(
-        ", ",
-      ) || "n/a"})`,
+      `session ${label}: ${plan.diffs.length} paths still differ (examples: ${
+        sample.join(", ") || "n/a"
+      })`,
     );
 
     if (attempt === maxCycles) {
@@ -259,7 +259,9 @@ async function runSyncForSession(
 export function registerSessionSync(sessionCmd: Command) {
   sessionCmd
     .command("sync")
-    .description("trigger immediate sync cycle(s) and verify no differences remain")
+    .description(
+      "trigger immediate sync cycle(s) and verify no differences remain",
+    )
     .argument("<id-or-name...>", "session id(s) or name(s)")
     .option(
       "--session-db <file>",

@@ -2,7 +2,6 @@ import { mkCase, sync, fileExists } from "./util";
 import fsp from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
-import { setMtimeMs } from "./util";
 
 describe("LWW: delete vs modify", () => {
   let tmp: string;
@@ -25,7 +24,6 @@ describe("LWW: delete vs modify", () => {
 
     // modify alpha (older op_ts)
     await fsp.writeFile(a, "alpha-old");
-    await setMtimeMs(a, Date.now() - 20_000);
 
     // delete beta now (delete op_ts observed at scan time, i.e. ~now)
     await fsp.rm(b);
@@ -49,9 +47,7 @@ describe("LWW: delete vs modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     // then modify alpha later (newer op_ts)
     await fsp.writeFile(a, "alpha-newer");
-    await setMtimeMs(a, Date.now() + 5000);
-
-    await sync(r, "beta", false, undefined); // prefer irrelevant; newer op_ts should restore to beta
+    await sync(r, "beta", false, undefined, { scanOrder: ["beta", "alpha"] }); // alpha scanned last → newer
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-newer");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha-newer");
   });

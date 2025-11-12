@@ -20,6 +20,7 @@ import { cliEntrypoint } from "./cli-util.js";
 import { CLI_NAME } from "./constants.js";
 import { ConsoleLogger, type Logger, type LogLevel } from "./logger.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
+import type { LogicalClock } from "./logical-clock.js";
 
 // SAFETY_MS, FUTURE_SLACK_MS and CAP_BACKOFF_MS are for skew/future handling.
 // See comments in the original version for rationale.
@@ -42,6 +43,8 @@ export interface IngestDeltaOptions {
   logLevel?: LogLevel;
   input?: NodeJS.ReadableStream;
   abortSignal?: AbortSignal;
+  logicalClock?: LogicalClock;
+  batchTick?: number;
 }
 
 export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
@@ -51,8 +54,21 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     logLevel = "info",
     input = process.stdin,
     abortSignal,
+    logicalClock,
+    batchTick,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
+  const clock = logicalClock;
+  let standaloneClock = Date.now();
+  const fixedTick = batchTick ?? null;
+  const nextUpdatedTick = () => {
+    if (fixedTick != null) return fixedTick;
+    if (clock) return clock.next();
+    const now = Date.now();
+    const next = Math.max(now, standaloneClock + 1);
+    standaloneClock = next;
+    return next;
+  };
 
   let skew: number | null = null; // local time = remote time + skew
   const nowLocal = () => Date.now();
@@ -79,6 +95,18 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 
   // ---------- db ----------
   const db = getDb(dbPath);
+  if (!clock) {
+    try {
+      const row = db
+        .prepare(`SELECT MAX(updated) AS max_updated FROM nodes`)
+        .get() as { max_updated?: number };
+      if (row && Number.isFinite(row.max_updated)) {
+        standaloneClock = Math.max(standaloneClock, Number(row.max_updated));
+      }
+    } catch {
+      // ignore
+    }
+  }
   type NodeKind = "f" | "d" | "l";
   type NodeWriteParams = {
     path: string;
@@ -111,7 +139,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           last_error=excluded.last_error
       `);
   const writeNode = (params: NodeWriteParams) => {
-    const updated = params.updated ?? Date.now();
+    const updated = params.updated ?? nextUpdatedTick();
     const ctime = params.ctime ?? params.mtime;
     nodeUpsertStmt.run({
       path: params.path,
@@ -140,11 +168,11 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
   const buildDeleteParams = (
     path: string,
     kindHint: NodeKind,
-    updatedTs: number,
     fallbackNow: number,
   ): NodeWriteParams => {
     const existing = selectMetaStmt.get(path) as ExistingMetaRow | undefined;
     const deleteMtime = deletionMtimeFromMeta(existing ?? {}, fallbackNow);
+    const logicalUpdated = nextUpdatedTick();
     return {
       path,
       kind: existing?.kind ?? kindHint,
@@ -155,7 +183,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       size: 0,
       deleted: 1,
       last_seen: existing?.last_seen ?? null,
-      updated: updatedTs,
+      updated: logicalUpdated,
       link_target: null,
       last_error: null,
     };
@@ -197,8 +225,9 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
 
       if (r.kind === "dir") {
         if (isDelete) {
-          writeNode(buildDeleteParams(r.path, "d", op_ts, now));
+          writeNode(buildDeleteParams(r.path, "d", now));
         } else {
+          const updatedTick = nextUpdatedTick();
           writeNode({
             path: r.path,
             kind: "d",
@@ -208,7 +237,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             size: 0,
             deleted: 0,
             last_seen: now,
-            updated: op_ts,
+            updated: updatedTick,
             link_target: null,
             last_error: null,
           });
@@ -216,8 +245,9 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       } else if (r.kind === "link") {
         const target = r.target ?? "";
         if (isDelete) {
-          writeNode(buildDeleteParams(r.path, "l", op_ts, now));
+          writeNode(buildDeleteParams(r.path, "l", now));
         } else {
+          const updatedTick = nextUpdatedTick();
           writeNode({
             path: r.path,
             kind: "l",
@@ -227,7 +257,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             size: Buffer.byteLength(target, "utf8"),
             deleted: 0,
             last_seen: now,
-            updated: op_ts,
+            updated: updatedTick,
             link_target: target,
             last_error: null,
           });
@@ -235,12 +265,13 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       } else {
         if (isDelete) {
           writeNode({
-            ...buildDeleteParams(r.path, "f", op_ts, now),
+            ...buildDeleteParams(r.path, "f", now),
           });
           insTouch.run(r.path, now);
         } else if (r.hash == null) {
           insTouch.run(r.path, now);
         } else {
+          const updatedTick = nextUpdatedTick();
           writeNode({
             path: r.path,
             kind: "f",
@@ -251,7 +282,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             size: r.size ?? 0,
             deleted: 0,
             last_seen: now,
-            updated: op_ts,
+            updated: updatedTick,
             link_target: null,
             last_error: null,
           });

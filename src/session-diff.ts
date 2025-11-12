@@ -27,7 +27,9 @@ export function diffSession(
   const betaDb = resolveDbPath(session, "beta");
   const baseDb = resolveDbPath(session, "base");
   const prefer =
-    session.prefer && session.prefer.toLowerCase() === "beta" ? "beta" : "alpha";
+    session.prefer && session.prefer.toLowerCase() === "beta"
+      ? "beta"
+      : "alpha";
   const plan = planThreeWayMerge({
     alphaDb,
     betaDb,

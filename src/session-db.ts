@@ -846,10 +846,7 @@ export function markSessionCleanSync(
   }
 }
 
-export function clearSessionCleanSync(
-  sessionDbPath: string,
-  id: number,
-): void {
+export function clearSessionCleanSync(sessionDbPath: string, id: number): void {
   const db = open(sessionDbPath);
   try {
     db.prepare(

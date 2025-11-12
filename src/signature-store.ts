@@ -2,6 +2,7 @@ import { getDb } from "./db.js";
 import type { SendSignature } from "./recent-send.js";
 import { withUpdatedMetadataHash } from "./hash-meta.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
+import type { LogicalClock } from "./logical-clock.js";
 
 export interface SignatureEntry {
   path: string;
@@ -17,12 +18,33 @@ export interface SignatureEntry {
 export function applySignaturesToDb(
   dbPath: string,
   entries: SignatureEntry[],
-  opts: { numericIds?: boolean } = {},
+  opts: { numericIds?: boolean; logicalClock?: LogicalClock } = {},
 ): void {
   if (!entries.length) return;
   const db = getDb(dbPath);
   try {
+    const clock = opts.logicalClock;
     const now = Date.now();
+    let standaloneClock = now;
+    if (!clock) {
+      try {
+        const row = db
+          .prepare(`SELECT MAX(updated) AS max_updated FROM nodes`)
+          .get() as { max_updated?: number };
+        if (row && Number.isFinite(row.max_updated)) {
+          standaloneClock = Math.max(standaloneClock, Number(row.max_updated));
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const nextClock = () => {
+      if (clock) return clock.next();
+      const tick = Date.now();
+      const next = Math.max(tick, standaloneClock + 1);
+      standaloneClock = next;
+      return next;
+    };
     type NodeKind = "f" | "d" | "l";
     type NodeRow = {
       kind: NodeKind;
@@ -70,7 +92,7 @@ export function applySignaturesToDb(
           last_error=excluded.last_error
       `);
     const writeNode = (params: NodeWriteParams) => {
-      const updated = params.updated ?? now;
+      const updated = params.updated ?? nextClock();
       const ctime = params.ctime ?? params.mtime;
       nodeUpsertStmt.run({
         path: params.path,
@@ -87,10 +109,11 @@ export function applySignaturesToDb(
         last_error: params.last_error ?? null,
       });
     };
-    const markDeleted = (path: string, opTs: number, kindHint?: NodeKind) => {
+    const markDeleted = (path: string, kindHint?: NodeKind) => {
       const existing = selectNodeStmt.get(path) as NodeRow | undefined;
       const observed = Date.now();
       const deleteMtime = deletionMtimeFromMeta(existing ?? {}, observed);
+      const updatedTick = nextClock();
       writeNode({
         path,
         kind: existing?.kind ?? kindHint ?? "f",
@@ -100,7 +123,7 @@ export function applySignaturesToDb(
         hashed_ctime: null,
         size: 0,
         deleted: 1,
-        updated: opTs,
+        updated: updatedTick,
         last_seen: existing?.last_seen ?? null,
         link_target: null,
       });
@@ -114,7 +137,9 @@ export function applySignaturesToDb(
             let hashValue = signature.hash ?? null;
             if (!hashValue && (signature.mode != null || opts.numericIds)) {
               try {
-                const existing = selectNodeStmt.get(path) as NodeRow | undefined;
+                const existing = selectNodeStmt.get(path) as
+                  | NodeRow
+                  | undefined;
                 hashValue = existing?.hash ?? null;
               } catch {}
             }
@@ -132,6 +157,7 @@ export function applySignaturesToDb(
                 hashValue = updatedHash;
               }
             }
+            const updatedTick = nextClock();
             writeNode({
               path,
               kind: "f",
@@ -141,13 +167,14 @@ export function applySignaturesToDb(
               hashed_ctime: signature.ctime ?? null,
               size: signature.size ?? 0,
               deleted: 0,
-              updated: opTs,
+              updated: updatedTick,
               last_seen: null,
               link_target: null,
             });
             break;
           }
-          case "dir":
+          case "dir": {
+            const updatedTick = nextClock();
             writeNode({
               path,
               kind: "d",
@@ -156,13 +183,15 @@ export function applySignaturesToDb(
               ctime: signature.ctime ?? signature.mtime ?? opTs,
               size: 0,
               deleted: 0,
-              updated: opTs,
+              updated: updatedTick,
               last_seen: null,
               link_target: null,
             });
             break;
+          }
           case "link": {
             const linkTarget = target ?? "";
+            const updatedTick = nextClock();
             writeNode({
               path,
               kind: "l",
@@ -171,14 +200,14 @@ export function applySignaturesToDb(
               ctime: signature.ctime ?? signature.mtime ?? opTs,
               size: linkTarget.length,
               deleted: 0,
-              updated: opTs,
+              updated: updatedTick,
               last_seen: null,
               link_target: linkTarget,
             });
             break;
           }
           default:
-            markDeleted(path, opTs);
+            markDeleted(path);
             break;
         }
       }

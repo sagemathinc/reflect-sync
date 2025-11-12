@@ -21,13 +21,7 @@ describe("scan deletes", () => {
   });
 
   async function runScanCli(extra: string[] = []) {
-    await runDist("scan.js", [
-      "--root",
-      root,
-      "--db",
-      dbPath,
-      ...extra,
-    ]);
+    await runDist("scan.js", ["--root", root, "--db", dbPath, ...extra]);
   }
 
   test("removing a file clears hash and size when marked deleted", async () => {
@@ -40,9 +34,10 @@ describe("scan deletes", () => {
     {
       const db = getDb(dbPath);
       try {
-        liveMeta = db
-          .prepare(`SELECT last_seen FROM nodes WHERE path = ?`)
-          .get("foo.txt") as { last_seen: number } | undefined ?? null;
+        liveMeta =
+          (db
+            .prepare(`SELECT last_seen FROM nodes WHERE path = ?`)
+            .get("foo.txt") as { last_seen: number } | undefined) ?? null;
       } finally {
         db.close();
       }

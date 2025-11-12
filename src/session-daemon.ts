@@ -401,25 +401,30 @@ export function registerSessionDaemon(program: Command) {
         "start the daemon even if a pid file already exists or the pid appears alive",
         false,
       )
-      .action(async (opts: { sessionDb?: string; force?: boolean }, command: Command) => {
-        const sessionDb = resolveSessionDb(opts, command);
-        const existing = readPidSync();
-        const running = isPidAlive(existing);
-        if (!opts.force && running) {
-          console.log(`daemon already running (pid ${existing})`);
-          return;
-        }
-        if (existing) {
-          removePidSync();
-          if (opts.force && running) {
-            console.log(
-              `ignoring existing pid ${existing}; forcing new daemon start`,
-            );
+      .action(
+        async (
+          opts: { sessionDb?: string; force?: boolean },
+          command: Command,
+        ) => {
+          const sessionDb = resolveSessionDb(opts, command);
+          const existing = readPidSync();
+          const running = isPidAlive(existing);
+          if (!opts.force && running) {
+            console.log(`daemon already running (pid ${existing})`);
+            return;
           }
-        }
-        const pid = spawnDetachedDaemon(sessionDb);
-        console.log(`daemon starting (child pid ${pid})`);
-      }),
+          if (existing) {
+            removePidSync();
+            if (opts.force && running) {
+              console.log(
+                `ignoring existing pid ${existing}; forcing new daemon start`,
+              );
+            }
+          }
+          const pid = spawnDetachedDaemon(sessionDb);
+          console.log(`daemon starting (child pid ${pid})`);
+        },
+      ),
   );
 
   addSessionDbOption(

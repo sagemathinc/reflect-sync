@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Database } from "../db";
 import { executeThreeWayMerge } from "../three-way-merge.js";
+import { createLogicalClock } from "../logical-clock.js";
 
 const DIST = resolve(__dirname, "../../dist");
 
@@ -57,16 +58,37 @@ export async function mkCase(tmpBase: string, name: string): Promise<Roots> {
   return { aRoot, bRoot, aDb, bDb, baseDb };
 }
 
+type SyncOptions = {
+  scanOrder?: ("alpha" | "beta")[];
+};
+
 export async function sync(
   r: Roots,
   prefer: "alpha" | "beta" = "alpha",
   _verbose: boolean | undefined = undefined,
   args?: string[],
-  _args2?: string[],
+  options: SyncOptions = {},
   strategy = "last-write-wins",
 ) {
-  await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb, ...(args ?? [])]);
-  await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb, ...(args ?? [])]);
+  const order = options.scanOrder ?? ["alpha", "beta"];
+  for (const side of order) {
+    const root = side === "alpha" ? r.aRoot : r.bRoot;
+    const db = side === "alpha" ? r.aDb : r.bDb;
+    await runDist("scan.js", [
+      "--root",
+      root,
+      "--db",
+      db,
+      "--clock-base",
+      r.aDb,
+      "--clock-base",
+      r.bDb,
+      "--clock-base",
+      r.baseDb,
+      ...(args ?? []),
+    ]);
+  }
+  const logicalClock = await createLogicalClock([r.aDb, r.bDb, r.baseDb]);
   await executeThreeWayMerge({
     alphaDb: r.aDb,
     betaDb: r.bDb,
@@ -75,6 +97,7 @@ export async function sync(
     strategyName: strategy,
     alphaRoot: r.aRoot,
     betaRoot: r.bRoot,
+    logicalClock,
   });
 }
 
@@ -82,9 +105,9 @@ export async function syncPrefer(
   r: Roots,
   prefer: "alpha" | "beta" = "alpha",
   args?: string[],
-  args2?: string[],
+  options?: SyncOptions,
 ) {
-  await sync(r, prefer, undefined, args, args2, "prefer");
+  await sync(r, prefer, undefined, args, options ?? {}, "prefer");
 }
 
 export async function waitFor<T>(
@@ -126,11 +149,6 @@ export function countSchedulerCycles(baseDb: string): number {
   } finally {
     db.close();
   }
-}
-
-export async function setMtimeMs(p: string, whenMs: number) {
-  const st = await fsp.stat(p);
-  await fsp.utimes(p, st.atimeMs / 1000, whenMs / 1000);
 }
 
 export async function dirExists(p: string) {

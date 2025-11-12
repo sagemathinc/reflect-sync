@@ -377,17 +377,7 @@ export function registerSessionCommands(program: Command) {
             flagsSummary,
             `alpha: ${alphaPath}`,
           );
-          table.addRow(
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            `beta:  ${betaPath}`,
-          );
+          table.addRow("", "", "", "", "", "", "", "", `beta:  ${betaPath}`);
         }
 
         console.log(table.toString());
@@ -618,11 +608,7 @@ export function registerSessionCommands(program: Command) {
           .choices(Array.from(MERGE_STRATEGY_NAMES) as string[])
           .conflicts("clearMergeStrategy"),
       )
-      .option(
-        "--clear-merge-strategy",
-        "remove merge strategy override",
-        false,
-      )
+      .option("--clear-merge-strategy", "remove merge strategy override", false)
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -954,7 +940,11 @@ export function registerSessionCommands(program: Command) {
       .description("Restart one or more sync sessions")
       .argument("<id-or-name...>", "session id(s) or name(s)")
       .action(
-        async (refs: string[], opts: { sessionDb?: string }, command: Command) => {
+        async (
+          refs: string[],
+          opts: { sessionDb?: string },
+          command: Command,
+        ) => {
           const sessionDb = resolveSessionDb(opts, command);
           for (const ref of refs) {
             let row: SessionRow;
@@ -967,7 +957,9 @@ export function registerSessionCommands(program: Command) {
             const label = row.name ?? String(row.id);
             const status = stopSessionRow(sessionDb, row);
             if (status === "stopped") {
-              console.log(`stopped session ${label} (pid ${row.scheduler_pid})`);
+              console.log(
+                `stopped session ${label} (pid ${row.scheduler_pid})`,
+              );
             } else if (status === "failed") {
               console.log(
                 `failed to stop session ${label} (pid ${row.scheduler_pid}); attempting restart`,

@@ -4,15 +4,18 @@ import path from "node:path";
 import { getDb } from "../db.js";
 import { planThreeWayMerge } from "../three-way-merge.js";
 
-function insertNode(dbPath: string, row: {
-  path: string;
-  kind: "f" | "d" | "l";
-  hash: string;
-  mtime: number;
-  updated: number;
-  size?: number;
-  deleted?: number;
-}) {
+function insertNode(
+  dbPath: string,
+  row: {
+    path: string;
+    kind: "f" | "d" | "l";
+    hash: string;
+    mtime: number;
+    updated: number;
+    size?: number;
+    deleted?: number;
+  },
+) {
   const db = getDb(dbPath);
   try {
     db.prepare(
@@ -85,9 +88,7 @@ describe("three-way merge planner", () => {
 
     expect(plan.diffs.find((row) => row.path === target)).toBeUndefined();
     expect(
-      plan.operations.find(
-        (op) => "path" in op && op.path === target,
-      ),
+      plan.operations.find((op) => "path" in op && op.path === target),
     ).toBeUndefined();
   });
 });

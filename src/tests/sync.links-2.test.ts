@@ -43,7 +43,7 @@ describe("reflex-sync: more symlink edge case tests", () => {
     await fsp.writeFile(aFile, "A1"); // hash change
 
     // Use a large epsilon so it's treated as a tie, then prefer alpha
-    await sync(r, "alpha", false, undefined);
+    await syncPrefer(r, "alpha");
 
     await expect(isRegularFile(bPath)).resolves.toBe(true);
     await expect(fsp.readFile(bPath, "utf8")).resolves.toBe("A1");

@@ -36,6 +36,8 @@ import {
   dedupeRestrictedList,
   dirnameRel,
 } from "./restrict.js";
+import { createLogicalClock } from "./logical-clock.js";
+import type { LogicalClock } from "./logical-clock.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -115,6 +117,16 @@ export function configureScanCommand(
       "gitignore-style ignore rule (repeat or comma-separated)",
       collectIgnoreOption,
       [] as string[],
+    )
+    .option(
+      "--clock-base <db>",
+      "path to an additional db used to seed the logical clock",
+      collectListOption,
+      [] as string[],
+    )
+    .option(
+      "--scan-tick <number>",
+      "(internal) override logical timestamp used for this scan",
     );
 }
 
@@ -140,6 +152,9 @@ type ScanOptions = {
   restrictedDirs?: string[];
   restrictedPath?: string[] | string;
   restrictedDir?: string[] | string;
+  logicalClock?: LogicalClock;
+  clockBase?: string[];
+  scanTick?: number;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -161,8 +176,20 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     restrictedDirs: restrictedDirsOpt = [],
     restrictedPath: restrictedPathOpt = [],
     restrictedDir: restrictedDirOpt = [],
+    logicalClock,
+    scanTick: scanTickOverride,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
+  const clock = logicalClock;
+  let standaloneClock = Date.now();
+  const newClockValue = () => {
+    if (clock) return clock.next();
+    const now = Date.now();
+    const next = Math.max(now, standaloneClock + 1);
+    standaloneClock = next;
+    return next;
+  };
+  const scanTick = scanTickOverride ?? newClockValue();
   const ignoreRaw: string[] = [];
   if (Array.isArray(ignoreRulesOpt)) ignoreRaw.push(...ignoreRulesOpt);
   if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
@@ -315,6 +342,18 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
+  if (!clock) {
+    try {
+      const row = db
+        .prepare(`SELECT MAX(updated) AS max_updated FROM nodes`)
+        .get() as { max_updated?: number };
+      if (row && Number.isFinite(row.max_updated)) {
+        standaloneClock = Math.max(standaloneClock, Number(row.max_updated));
+      }
+    } catch {
+      // ignore
+    }
+  }
   type NodeKind = "f" | "d" | "l";
   type NodeWriteParams = {
     path: string;
@@ -347,7 +386,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           last_error=excluded.last_error
       `);
   const writeNode = (params: NodeWriteParams) => {
-    const updated = params.updated ?? Date.now();
+    const updated = params.updated ?? newClockValue();
     const ctime = params.ctime ?? params.mtime;
     nodeUpsertStmt.run({
       path: params.path,
@@ -478,6 +517,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     (rows: { path: string; hash: string; ctime: number }[]) => {
       for (const r of rows) {
         const meta = fileNodeMeta.get(r.path);
+        const prevHash = meta?.prevHash ?? null;
+        const prevUpdated = meta?.prevUpdated ?? null;
+        const hashChanged = !prevHash || prevHash !== r.hash;
+        const updatedValue = hashChanged
+          ? (meta?.updated ?? scanTick)
+          : (prevUpdated ?? meta?.updated ?? scanTick);
         writeNode({
           path: r.path,
           kind: "f",
@@ -488,7 +533,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           size: meta?.size ?? 0,
           deleted: 0,
           last_seen: meta?.last_seen ?? null,
-          updated: meta?.mtime ?? r.ctime ?? Date.now(),
+          updated: updatedValue,
           link_target: null,
           last_error: null,
         });
@@ -652,12 +697,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       emitObj({
         kind: kind === "d" ? "dir" : kind === "l" ? "link" : undefined,
         path: r.path,
-        size: kind === "f" ? r.size ?? 0 : undefined,
+        size: kind === "f" ? (r.size ?? 0) : undefined,
         ctime: r.ctime ?? undefined,
         mtime: r.mtime ?? undefined,
         op_ts: r.op_ts,
         hash: r.hash ?? undefined,
-        target: kind === "l" ? r.link_target ?? undefined : undefined,
+        target: kind === "l" ? (r.link_target ?? undefined) : undefined,
         deleted: r.deleted,
       });
     }
@@ -668,11 +713,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   // then translate to rpath when emitting/applying results.
   const pendingMeta = new Map<
     string, // ABS
-    { size: number; ctime: number; mtime: number }
+    { size: number; ctime: number; mtime: number; updated: number }
   >();
   const fileNodeMeta = new Map<
     string,
-    { size: number; mtime: number; ctime: number; last_seen: number }
+    {
+      size: number;
+      mtime: number;
+      ctime: number;
+      last_seen: number;
+      updated: number;
+      prevUpdated: number | null;
+      prevHash: string | null;
+    }
   >();
 
   // Handle worker replies (batched)
@@ -708,7 +761,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               size: metaToday.size,
               ctime: metaToday.ctime,
               mtime: metaToday.mtime,
-              op_ts: metaToday.mtime,
+              op_ts: metaToday.updated,
               hash: r.hash,
               deleted: 0,
             });
@@ -794,19 +847,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
-      `SELECT size, ctime, mtime, hashed_ctime, hash
+      `SELECT size, ctime, mtime, hashed_ctime, hash, updated, deleted
          FROM nodes
         WHERE path = ? AND kind = 'f'`,
     );
 
-  const getExistingDir = db.prepare(
-    `SELECT ctime, mtime, hash, deleted, updated
+    const getExistingDir = db.prepare(
+      `SELECT ctime, mtime, hash, deleted, updated
          FROM nodes
         WHERE path = ? AND kind = 'd'`,
-  );
+    );
 
     const getExistingLink = db.prepare(
-      `SELECT ctime, mtime, hash, link_target AS target, deleted
+      `SELECT ctime, mtime, hash, link_target AS target, deleted, updated
          FROM nodes
         WHERE path = ? AND kind = 'l'`,
     );
@@ -830,23 +883,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const prev = getExistingDir.get(rpath);
         let hash = modeHash(st.mode);
         if (numericIds) {
-          // NOTE: it is only a good idea to use this when
-          // the user is root for both alpha and beta
           hash += `|${st.uid}:${st.gid}`;
         }
 
-        // Decide whether to emit NDJSON for this dir (delta-only)
-        let dirChanged = !prev;
-        if (prev) {
-          dirChanged = prev.deleted === 1 || prev.hash !== hash;
-        }
+        const dirChanged = !prev || prev.deleted === 1 || prev.hash !== hash;
 
-        const op_ts =
-          dirChanged || !prev
-            ? Date.now()
-            : prev.updated ?? prev.mtime ?? mtime;
+        const op_ts = dirChanged
+          ? scanTick
+          : (prev?.updated ?? prev?.mtime ?? mtime);
 
-        // Always upsert to bump last_seen (so deletion detection works)
         dirMetaBuf.push({
           path: rpath,
           ctime,
@@ -860,7 +905,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           dirMetaBuf.length = 0;
         }
 
-        // Only emit if changed/new/resurrected
         if (emitDelta && dirChanged) {
           emitObj({
             kind: "dir",
@@ -876,7 +920,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         continue;
       } else if (entry.dirent.isFile()) {
         const size = st.size;
-        const op_ts = mtime;
         const modeHex = modeHash(st.mode);
 
         const row = getExisting.get(rpath) as
@@ -886,8 +929,34 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               ctime: number | null;
               mtime: number | null;
               size: number | null;
+              updated: number | null;
+              deleted: 0 | 1;
             }
           | undefined;
+
+        const resurrecting = row?.deleted === 1;
+        let needsHash =
+          resurrecting ||
+          !row ||
+          row.hashed_ctime !== ctime ||
+          row.size !== size ||
+          row.mtime !== mtime;
+        if (!needsHash && row?.hash) {
+          const meta = parseHashMeta(row.hash);
+          if (meta.modeHash && meta.modeHash !== modeHex) {
+            needsHash = true;
+          } else if (
+            numericIds &&
+            meta.uid !== undefined &&
+            meta.gid !== undefined &&
+            (meta.uid !== st.uid || meta.gid !== st.gid)
+          ) {
+            needsHash = true;
+          }
+        }
+
+        const op_ts =
+          needsHash || !row ? scanTick : (row?.updated ?? row?.mtime ?? mtime);
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -906,24 +975,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           metaBuf.length = 0;
         }
 
-        // Decide if we need to hash: only when ctime changed (or brand new)
-        let needsHash = !row || row.hashed_ctime !== ctime;
-        if (!needsHash && row?.hash) {
-          const meta = parseHashMeta(row.hash);
-          if (meta.modeHash && meta.modeHash !== modeHex) {
-            needsHash = true;
-          } else if (
-            numericIds &&
-            meta.uid !== undefined &&
-            meta.gid !== undefined &&
-            (meta.uid !== st.uid || meta.gid !== st.gid)
-          ) {
-            needsHash = true;
-          }
-        }
-
         if (needsHash) {
-          pendingMeta.set(abs, { size, ctime, mtime });
+          pendingMeta.set(abs, { size, ctime, mtime, updated: op_ts });
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
           hashTotalBytes += size;
@@ -932,6 +985,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             mtime,
             ctime,
             last_seen: scan_id,
+            updated: op_ts,
+            prevUpdated: row?.updated ?? null,
+            prevHash: row?.hash ?? null,
           });
         }
       } else if (entry.dirent.isSymbolicLink()) {
@@ -939,23 +995,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         try {
           target = await readlink(abs);
         } catch {}
-        const op_ts = mtime; // LWW uses op_ts consistently
         const hash = stringDigest(HASH_ALG, target);
+        const prev = getExistingLink.get(rpath);
+        const linkChanged =
+          !prev ||
+          prev.deleted === 1 ||
+          prev.mtime !== mtime ||
+          prev.ctime !== ctime ||
+          prev.hash !== hash ||
+          prev.target !== target;
+        const op_ts = linkChanged
+          ? scanTick
+          : (prev?.updated ?? prev?.mtime ?? mtime);
 
-        // Decide whether to emit NDJSON for this link (delta-only)
-        let linkChanged = true;
-        if (emitDelta) {
-          const prev = getExistingLink.get(rpath);
-          linkChanged =
-            !prev ||
-            prev.deleted === 1 ||
-            prev.mtime !== mtime ||
-            prev.ctime !== ctime ||
-            prev.hash !== hash ||
-            prev.target !== target;
-        }
-
-        // Always upsert to bump last_seen
         linksBuf.push({
           path: rpath,
           target,
@@ -970,7 +1022,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           linksBuf.length = 0;
         }
 
-        // Only emit if changed/new/resurrected
         if (emitDelta && linkChanged) {
           emitObj({
             kind: "link",
@@ -1028,7 +1079,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       .all(scan_id) as { path: string; kind: NodeKind }[];
 
     if (toDeleteNodes.length) {
-      const deleteTs = Date.now();
+      const deleteTs = scanTick;
       db.prepare(
         `UPDATE nodes
             SET deleted = 1,
@@ -1099,6 +1150,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 }
 
 // ---------- CLI entry (preserved) ----------
-cliEntrypoint<ScanOptions>(import.meta.url, buildProgram, runScan, {
-  label: "scan",
-});
+cliEntrypoint<ScanOptions>(
+  import.meta.url,
+  buildProgram,
+  async (options) => {
+    let clock = options.logicalClock;
+    if (!clock && options.clockBase && options.clockBase.length) {
+      clock = await createLogicalClock([options.db, ...options.clockBase]);
+    }
+    const scanTickOverride =
+      options.scanTick !== undefined && options.scanTick !== null
+        ? Number(options.scanTick)
+        : undefined;
+    await runScan({
+      ...options,
+      logicalClock: clock,
+      scanTick: scanTickOverride,
+    });
+  },
+  {
+    label: "scan",
+  },
+);
