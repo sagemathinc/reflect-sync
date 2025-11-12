@@ -826,16 +826,31 @@ function mirrorNodesFromSourceBatch(
   for (const path of paths) {
     const row = fetchNode(sourceDb, path);
     if (!row) continue;
-    destRows.push({ ...row, last_error: null, copy_pending: 1 });
+    const destRow = { ...row, last_error: null, copy_pending: 1 };
+    destRows.push(destRow);
     if (opts.updateBase) {
       baseRows.push({ ...row, last_error: null, copy_pending: 0 });
     }
   }
   if (!destRows.length) return;
-  const applyDest = destDb.transaction((entries: NodeRecord[]) => {
-    for (const entry of entries) upsertNode(destDb, entry);
-  });
+  const applyDest = destDb.transaction(
+    (entries: NodeRecord[], clearCopy?: boolean) => {
+      for (const entry of entries) {
+        if (clearCopy) entry.copy_pending = 0;
+        upsertNode(destDb, entry);
+      }
+    },
+  );
   applyDest(destRows);
+  if (opts.updateBase) {
+    const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
+      for (const entry of entries) {
+        entry.copy_pending = 0;
+        upsertNode(baseDb, entry);
+      }
+    });
+    applyBase(baseRows);
+  }
   if (opts.updateBase && baseRows.length) {
     const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
       for (const entry of entries) upsertNode(baseDb, entry);
