@@ -87,6 +87,7 @@ export function getDb(dbPath: string): Database {
     ctime       REAL NOT NULL,
     change_start REAL,
     change_end REAL,
+    confirmed_at REAL,
     hashed_ctime REAL,
     updated     REAL NOT NULL,        -- logical timestamp we control
     size        INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +110,9 @@ export function getDb(dbPath: string): Database {
   } catch {}
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
   } catch {}
   return db;
 }
@@ -141,6 +145,7 @@ export function getBaseDb(dbPath: string): Database {
        ctime      REAL NOT NULL,
        change_start REAL,
        change_end REAL,
+       confirmed_at REAL,
        hashed_ctime REAL,
        updated    REAL NOT NULL,
        size       INTEGER NOT NULL DEFAULT 0,
@@ -163,6 +168,9 @@ export function getBaseDb(dbPath: string): Database {
   } catch {}
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
   } catch {}
   return db;
 }

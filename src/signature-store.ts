@@ -59,6 +59,7 @@ export function applySignaturesToDb(
       hash_pending?: number | null;
       change_start?: number | null;
       change_end?: number | null;
+      confirmed_at?: number | null;
     };
     type NodeWriteParams = {
       path: string;
@@ -76,14 +77,15 @@ export function applySignaturesToDb(
       hash_pending?: number;
       change_start?: number | null;
       change_end?: number | null;
+      confirmed_at?: number | null;
     };
 
     const selectNodeStmt = db.prepare(
-      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime, hash_pending, change_start, change_end FROM nodes WHERE path = ?`,
+      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime, hash_pending, change_start, change_end, confirmed_at FROM nodes WHERE path = ?`,
     );
     const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, change_start, change_end, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @change_start, @change_end, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -96,6 +98,7 @@ export function applySignaturesToDb(
           hash_pending=excluded.hash_pending,
           change_start=excluded.change_start,
           change_end=excluded.change_end,
+          confirmed_at=excluded.confirmed_at,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -127,6 +130,8 @@ export function applySignaturesToDb(
         hash_pending: params.hash_pending ?? 0,
         change_start: changeStart,
         change_end: changeEnd,
+        confirmed_at:
+          params.confirmed_at === undefined ? null : params.confirmed_at,
         last_seen: params.last_seen ?? null,
         link_target: params.link_target ?? null,
         last_error: params.last_error ?? null,
@@ -159,6 +164,7 @@ export function applySignaturesToDb(
         change_start: changeStart,
         change_end: updatedTick,
         hash_pending: 0,
+        confirmed_at: updatedTick,
       });
     };
 
@@ -206,6 +212,7 @@ export function applySignaturesToDb(
               hash_pending: 0,
               change_start: opTs,
               change_end: updatedTick,
+              confirmed_at: updatedTick,
             });
             break;
           }
@@ -225,6 +232,7 @@ export function applySignaturesToDb(
               hash_pending: 0,
               change_start: opTs,
               change_end: updatedTick,
+              confirmed_at: updatedTick,
             });
             break;
           }
@@ -245,6 +253,7 @@ export function applySignaturesToDb(
               hash_pending: 0,
               change_start: opTs,
               change_end: updatedTick,
+              confirmed_at: updatedTick,
             });
             break;
           }

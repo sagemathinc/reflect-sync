@@ -19,8 +19,8 @@ function insertNode(
   const db = getDb(dbPath);
   try {
     db.prepare(
-      `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-       VALUES(@path, @kind, @hash, @mtime, @mtime, NULL, @updated, @size, @deleted, NULL, NULL, NULL)`,
+      `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, confirmed_at, last_seen, link_target, last_error)
+       VALUES(@path, @kind, @hash, @mtime, @mtime, NULL, @updated, @size, @deleted, @updated, NULL, NULL, NULL)`,
     ).run({
       ...row,
       size: row.size ?? 0,

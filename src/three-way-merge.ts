@@ -747,6 +747,7 @@ type NodeRecord = {
   ctime: number;
   change_start: number | null;
   change_end: number | null;
+  confirmed_at: number | null;
   hashed_ctime: number | null;
   updated: number;
   size: number;
@@ -768,7 +769,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -776,8 +777,8 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@confirmed_at,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
@@ -785,6 +786,7 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
        ctime=excluded.ctime,
        change_start=excluded.change_start,
        change_end=excluded.change_end,
+       confirmed_at=excluded.confirmed_at,
        hashed_ctime=excluded.hashed_ctime,
        updated=excluded.updated,
        size=excluded.size,
@@ -797,6 +799,7 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
     ...row,
     change_start: row.change_start ?? null,
     change_end: row.change_end ?? null,
+    confirmed_at: row.confirmed_at ?? null,
   });
 }
 
@@ -851,6 +854,7 @@ function markNodesDeletedBatch(
       row.updated = tick;
       row.change_start = resolvedStart;
       row.change_end = tick;
+      row.confirmed_at = tick;
       row.hash_pending = 0;
       row.last_error = null;
     } else {
@@ -866,6 +870,7 @@ function markNodesDeletedBatch(
         deleted: 1,
         change_start: tick,
         change_end: tick,
+        confirmed_at: tick,
         hash_pending: 0,
         last_seen: null,
         link_target: null,
@@ -905,6 +910,7 @@ function recordNodeErrorsBatch(
           deleted: 0,
           change_start: tick,
           change_end: tick,
+          confirmed_at: tick,
           hash_pending: 0,
           last_seen: tick,
           link_target: null,

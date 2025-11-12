@@ -134,28 +134,30 @@ Every row in `nodes` stores `change_start` and `change_end`. Together they mean:
 
 > “The most recent transition for this path occurred **after** `change_start` and **no later than** `change_end`.”
 
-These intervals give last‑writer‑wins a concrete model to reason about ordering, even when filesystem clocks lie or watchers miss events. We treat the bounds as half‑open `(start, end]`, but persist them as numeric ticks with the guarantee that `change_start ≤ change_end`.
+These intervals give last-writer-wins a concrete model to reason about ordering, even when filesystem clocks lie or watchers miss events. We treat the bounds as half-open `(start, end]`; in storage we allow `change_start = change_end` to represent the degenerate case where the best information we have is a single logical instant.
+
+Separately, we track a **confirmation tick** (call it `confirmed_at`) that records the most recent time we verified the *current* state had not changed. This does **not** alter the existing interval—it simply becomes the lower bound we will use the next time a change is detected. Double stats, watcher stability checks, or any other “still matches” validations update `confirmed_at`.
 
 ### Sources of intervals
 
-- **Full scan discovery**  
-  - When we observe an existing entry and already had a prior observation, the new interval starts at the previous observation’s `change_end` (the moment we last knew its state) and ends at the tick for this scan (`op_ts`).  
-  - If the path never existed in our DB, the lower bound is the completion tick of the last *full* scan (or session start if unknown) because the only thing we know is “it wasn’t there the last time we finished a tree walk.”
+- **Full scans \(discoveries vs confirmations\)**
+  - If we perform back\-to\-back observations and the file is unchanged \(double stat after hashing, finishing a restricted scan that sees identical metadata, etc.\), we set `confirmed_at` to the later observation. The stored interval `(change_start, change_end]` for the most recent change stays the same, but now we have a tighter lower bound ready for the next change.
+  - When a scan detects an actual change \(new file, modified contents, or resurrected entry\) and we have no such `confirmed_at` confirmation, the best lower bound we have is the **start** of the previous full scan. As soon as that scan began we stopped observing the old state, so the change could have occurred moments later. Therefore a change noticed during scan N is known to have happened sometime after scan N‑1 started and no later than the tick when scan N recorded it \(unless `confirmed_at` gives us a later lower bound\).
 
-- **Hash completion**  
-  - Metadata upserts (size/mtime) tentatively extend the interval but leave `change_end = null` while hashing is in flight. Once the worker reports a stable hash, we clamp `change_end` to the hash tick and retroactively set `change_start` to the moment we queued the job. That ensures “bytes changed sometime after we noticed the mtime bump and before hashing finished.”
+- **Hash completion**
+  - Metadata upserts \(size/mtime\) tentatively extend the interval but leave `change_end = null` while hashing is in flight. Once the worker reports a stable hash \(and we re\-stat to ensure metadata still matches\), we clamp `change_end` to the hash tick and set `change_start` to the best lower bound we have _before_ the change happened—namely the previous `confirmed_at` \(falling back to the start of the prior full scan if no confirmation exists\). We also set `confirmed_at = hash_tick` because we now know the current contents were valid at that instant. This keeps the interval aligned with when the change could have occurred, not merely when we noticed it.
 
-- **Hot watcher updates / restricted scans**  
-  - Watchers only shrink certainty—they cannot shift events earlier than our last confirmed state. The lower bound for a watcher‑driven refresh is therefore `max(previous change_end, scan window start)`, while the upper bound is the tick when we re‑scanned just that path. Restricted scans behave the same way: their window gives us a tighter upper bound than waiting for the next full pass.
+- **Hot watcher updates / restricted scans**
+  - Watchers only shrink certainty—they can never shift events earlier than our last confirmation. The lower bound for a watcher\-driven refresh is therefore `confirmed_at` \(falling back to the previous scan start if no confirmation exists\), while the upper bound is the tick when the restricted scan finished. Restricted scans behave the same way: their short window gives us a more recent upper bound than waiting for the next full pass.
 
-- **Deletions**  
-  - When a scan fails to find a path that existed previously, the change interval is `(last_confirmed_presence, scan_tick]`, i.e. it must have vanished after the previous state we trusted and no later than the tick when we concluded the deletion. For resurrected paths we treat the creation interval the same way we would for any new discovery.
+- **Deletions**
+  - When a scan fails to find a path that existed previously, the change interval is `(last_confirmed_presence, scan_tick]`, i.e., the deletion occurred after the last time we definitely saw it and no later than the tick when we concluded it was gone. Any subsequent resurrection reuses the same logic as a new discovery.
 
-- **Remote ingest (SSH delta stream)**  
-  - Each delta includes the remote clock tick when it was observed. We convert it into local logical time and apply the same rules: lower bound is the last confirmed state in our DB, upper bound is the adjusted remote tick (monotonic per path to compensate for out‑of‑order lines).
+- **Remote ingest \(SSH delta stream\)**
+  - Each delta includes the remote clock tick when it was observed. We convert it into our logical clock and apply the same rules: lower bound is whichever confirmation we have locally, upper bound is the adjusted remote tick \(kept monotonic per path to handle out\-of\-order lines\). If the remote side confirms stability \(e.g., double stat before hashing\), we can adopt that tighter lower bound locally too. When the remote scanner provides extra context—such as how long after the scan started the hash was confirmed—we use that delta to reconstruct a tighter `confirmed_at` on the receiving side.
 
-- **Merge applications**  
-  - After rsync successfully copies or deletes a path, the scheduler records the resulting state in both the destination DB and `base.db`. The interval becomes `(previous base change_end, merge_tick]` because rsync is now the authoritative last writer.
+- **Merge applications**
+  - After rsync successfully copies or deletes a path, the scheduler records the resulting state in the destination DB and `base.db`. The interval becomes `(previous base change_end, merge_tick]`, because rsync is the definitive last writer at that moment, and we set `confirmed_at = merge_tick` on both destination and base rows. A follow\-up verification \(double stat or restricted rescan\) can further tighten the lower bound before the next change.
 
 ### How the planner uses intervals
 
@@ -164,3 +166,19 @@ These intervals give last‑writer‑wins a concrete model to reason about order
 3. Intervals also guard against partial knowledge: if either side has `change_end = null` (hash still pending), the planner issues a `noop` and waits for the interval to close before making a copy decision.
 
 Documenting the semantics up front lets us audit each pipeline (scan, ingest, merge) to ensure they respect the same invariant: **every observation narrows—but never contradicts—the window in which a file changed**. Once every writer follows the same rule, last‑write‑wins has a solid footing regardless of filesystem quirks or watcher drops.
+
+---
+
+## Practical Assumptions & Verification
+
+Reflect’s incremental scans assume that any **observable** change to a file will manifest through metadata differences we can see via `stat`: `ctime`, `mtime`, size, mode, or ownership. In most workflows and filesystems that is true, but it is *not* an absolute guarantee:
+
+- Filesystems expose metadata at finite resolution (1 ns–1 s).  Two quick edits inside the same tick may report identical `ctime`/`mtime`/`size`.
+- Privileged software can explicitly set timestamps back to old values (`utimensat`, `touch -r`, overlay copies that preserve metadata).
+- Some network/overlay layers forward metadata from a lower layer, so byte content can change without a corresponding timestamp bump.
+
+Our scan pipeline therefore treats “two identical stat snapshots” as evidence that nothing changed between them, but it remains a **heuristic**. If applications rapidly rewrite a file and intentionally preserve timestamps, incremental scans can miss those edits until some other observable attribute differs.
+
+To counter that, we expose an optional **full-verify scan** mode (planned for the CLI) that rehashes every file regardless of metadata. Users can run it on demand or schedule it (e.g., nightly) to ensure there are no silent divergences. Full scans are slower, but they provide cryptographic certainty and complement the fast incremental watches.
+
+Longer term, some filesystems (e.g., btrfs snapshots, ZFS events) offer native change tracking between checkpoints. Reflect could eventually integrate with those hooks to obtain ground-truth deltas directly from the filesystem, further reducing reliance on POSIX metadata heuristics.
