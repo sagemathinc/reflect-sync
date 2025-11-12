@@ -35,11 +35,12 @@ describe("rfsync: scan → merge-rsync simple tests and conflicts (part 2)", () 
     const buf1 = crypto.randomBytes(1024);
     const buf2 = crypto.randomBytes(1024);
     await fsp.writeFile(a, buf1);
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, { scanOrder: ["beta", "alpha"] });
     expect((await fsp.readFile(b)).equals(buf1)).toBe(true);
     await fsp.writeFile(a, buf2);
-    await sync(r, "alpha");
-    expect((await fsp.readFile(b)).equals(buf2)).toBe(true);
+    await sync(r, "alpha", undefined, undefined, { scanOrder: ["beta", "alpha"] });
+    const bufB = await fsp.readFile(b);
+    expect(bufB.equals(buf2)).toBe(true);
   });
 
   test("type flip at same path: file→dir", async () => {

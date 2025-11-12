@@ -973,7 +973,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
         const dirChangeStart = dirChanged
-          ? op_ts
+          ? (prev?.change_end ?? prev?.updated ?? op_ts)
           : (prev?.change_start ?? prev?.change_end ?? op_ts);
         const dirChangeEnd = dirChanged ? op_ts : (prev?.change_end ?? op_ts);
 
@@ -1054,9 +1054,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           changeStart = op_ts;
           changeEnd = needsHash ? null : op_ts;
         } else if (needsHash) {
-          changeStart = op_ts;
+          changeStart = row.change_end ?? row.updated ?? op_ts;
           changeEnd = null;
-        } else if (row && !needsHash) {
+        } else {
           changeStart = row.change_start ?? row.change_end ?? op_ts;
           changeEnd = row.change_end ?? op_ts;
         }
@@ -1126,7 +1126,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
         const linkChangeStart = linkChanged
-          ? op_ts
+          ? (prev?.change_end ?? prev?.updated ?? op_ts)
           : (prev?.change_start ?? prev?.change_end ?? op_ts);
         const linkChangeEnd = linkChanged ? op_ts : (prev?.change_end ?? op_ts);
 

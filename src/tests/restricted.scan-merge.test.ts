@@ -73,9 +73,9 @@ describe("restricted scan and merge", () => {
     await fsp.writeFile(path.join(r.aRoot, "dirA/fileA.txt"), "alpha-dir-file");
     await fsp.writeFile(path.join(r.aRoot, "excluded.txt"), "alpha-excluded");
 
-    // Full scans to seed DBs
-    await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb]);
+    // Full scans to seed DBs (beta first so alpha's change is newer)
     await runDist("scan.js", ["--root", r.bRoot, "--db", r.bDb]);
+    await runDist("scan.js", ["--root", r.aRoot, "--db", r.aDb]);
 
     // Restricted merge should only copy include.txt and dirA/*
     await executeThreeWayMerge({
