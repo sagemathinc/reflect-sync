@@ -611,6 +611,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         } else {
           confirmedAt = scanTick;
         }
+        let copyPendingState = meta?.copy_pending ?? 0;
+        if (copyPendingState === 1) {
+          copyPendingState = 2;
+        }
         writeNode({
           path: r.path,
           kind: "f",
@@ -626,7 +630,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_end: changeEnd,
           hash_pending: 0,
           confirmed_at: confirmedAt ?? scanTick,
-          copy_pending: 0,
+          copy_pending: copyPendingState,
           link_target: null,
           last_error: null,
         });
@@ -1042,6 +1046,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               mtime: number | null;
               deleted: number | null;
               updated: number | null;
+              copy_pending: number | null;
               change_start: number | null;
               change_end: number | null;
               confirmed_at: number | null;
@@ -1066,6 +1071,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const dirConfirmedAt = dirChanged
           ? op_ts
           : prev?.confirmed_at ?? op_ts;
+        let dirCopyPending = prev?.copy_pending ?? 0;
+        if (dirCopyPending === 1) dirCopyPending = 2;
 
         dirMetaBuf.push({
           path: rpath,
@@ -1077,7 +1084,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_start: dirChangeStart,
           change_end: dirChangeEnd,
           confirmed_at: dirConfirmedAt,
-          copy_pending: 0,
+          copy_pending: dirCopyPending,
         });
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
           applyDirBatch(dirMetaBuf);
@@ -1228,6 +1235,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               target: string | null;
               deleted: number | null;
               updated: number | null;
+              copy_pending: number | null;
               change_start: number | null;
               change_end: number | null;
               confirmed_at: number | null;
@@ -1252,6 +1260,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const linkConfirmedAt = linkChanged
           ? op_ts
           : prev?.confirmed_at ?? op_ts;
+        let linkCopyPending = prev?.copy_pending ?? 0;
+        if (linkCopyPending === 1) linkCopyPending = 2;
 
         linksBuf.push({
           path: rpath,
@@ -1264,7 +1274,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_start: linkChangeStart,
           change_end: linkChangeEnd,
           confirmed_at: linkConfirmedAt,
-          copy_pending: 0,
+          copy_pending: linkCopyPending,
         });
         if (linksBuf.length >= DB_BATCH_SIZE) {
           applyLinksBatch(linksBuf);

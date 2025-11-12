@@ -36,6 +36,7 @@ import {
 } from "./session-db.js";
 import { PassThrough } from "node:stream";
 import { getBaseDb, getDb } from "./db.js";
+import { syncConfirmedCopiesToBase } from "./copy-pending.js";
 import {
   expandHome,
   isRoot,
@@ -1831,6 +1832,7 @@ export async function runScheduler({
     // Scan alpha & beta in parallel
     let a: any, b: any;
     const scanAlpha = async () => {
+      const alphaTick = logicalClock.next();
       const tAlphaStart = Date.now();
       const scanLogger = scoped("scan.alpha");
       log(
@@ -1865,7 +1867,7 @@ export async function runScheduler({
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
                 logicalClock,
-                scanTick,
+                scanTick: alphaTick,
               });
               return {
                 code: 0,
@@ -1898,6 +1900,7 @@ export async function runScheduler({
       }
     };
     const scanBeta = async () => {
+      const betaTick = logicalClock.next();
       const tBetaStart = Date.now();
       const scanLogger = scoped("scan.beta");
       log(
@@ -1932,7 +1935,7 @@ export async function runScheduler({
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
                 logicalClock,
-                scanTick,
+                scanTick: betaTick,
               });
               return {
                 code: 0,
@@ -1994,6 +1997,15 @@ export async function runScheduler({
       lastCycleMs = MIN_INTERVAL_MS;
       running = false;
       return;
+    }
+
+    const confirmedAlpha = syncConfirmedCopiesToBase(alphaDb, baseDb);
+    const confirmedBeta = syncConfirmedCopiesToBase(betaDb, baseDb);
+    if (confirmedAlpha || confirmedBeta) {
+      log("info", "scan", "synced confirmed copies to base", {
+        alpha: confirmedAlpha,
+        beta: confirmedBeta,
+      });
     }
 
     // Merge/rsync (full)

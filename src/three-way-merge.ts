@@ -612,6 +612,7 @@ async function performDirCopies(params: {
       params.destDb,
       params.baseDb,
       unique,
+      { updateBase: params.direction === "alpha->beta" },
     );
     if (params.tracer && params.opName) {
       for (const path of unique) {
@@ -713,6 +714,7 @@ async function performFileCopies(params: {
     params.destDb,
     params.baseDb,
     succeeded,
+    { updateBase: params.direction === "alpha->beta" },
   );
   if (params.tracer && params.opName) {
     for (const path of succeeded) {
@@ -817,6 +819,7 @@ function mirrorNodesFromSourceBatch(
   destDb: ReturnType<typeof getDb>,
   baseDb: ReturnType<typeof getDb>,
   paths: string[],
+  opts: { updateBase: boolean },
 ): void {
   const destRows: NodeRecord[] = [];
   const baseRows: NodeRecord[] = [];
@@ -824,17 +827,21 @@ function mirrorNodesFromSourceBatch(
     const row = fetchNode(sourceDb, path);
     if (!row) continue;
     destRows.push({ ...row, last_error: null, copy_pending: 1 });
-    baseRows.push({ ...row, last_error: null, copy_pending: 0 });
+    if (opts.updateBase) {
+      baseRows.push({ ...row, last_error: null, copy_pending: 0 });
+    }
   }
   if (!destRows.length) return;
   const applyDest = destDb.transaction((entries: NodeRecord[]) => {
     for (const entry of entries) upsertNode(destDb, entry);
   });
-  const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
-    for (const entry of entries) upsertNode(baseDb, entry);
-  });
   applyDest(destRows);
-  applyBase(baseRows);
+  if (opts.updateBase && baseRows.length) {
+    const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
+      for (const entry of entries) upsertNode(baseDb, entry);
+    });
+    applyBase(baseRows);
+  }
 }
 
 function markNodesDeletedBatch(
