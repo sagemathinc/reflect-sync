@@ -85,6 +85,8 @@ export function getDb(dbPath: string): Database {
     hash        TEXT NOT NULL,        -- sha256 (files), symlink target, or '' for dirs
     mtime       REAL NOT NULL,
     ctime       REAL NOT NULL,
+    change_start REAL,
+    change_end REAL,
     hashed_ctime REAL,
     updated     REAL NOT NULL,        -- logical timestamp we control
     size        INTEGER NOT NULL DEFAULT 0,
@@ -99,6 +101,12 @@ export function getDb(dbPath: string): Database {
   `);
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
   } catch {}
   return db;
 }
@@ -129,6 +137,8 @@ export function getBaseDb(dbPath: string): Database {
        hash       TEXT NOT NULL,
        mtime      REAL NOT NULL,
        ctime      REAL NOT NULL,
+       change_start REAL,
+       change_end REAL,
        hashed_ctime REAL,
        updated    REAL NOT NULL,
        size       INTEGER NOT NULL DEFAULT 0,
@@ -143,6 +153,12 @@ export function getBaseDb(dbPath: string): Database {
     `);
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
   } catch {}
   return db;
 }

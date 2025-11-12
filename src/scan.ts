@@ -301,6 +301,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     last_seen: number;
     hashed_ctime: number | null;
     hash_pending: number;
+    change_start: number | null;
+    change_end: number | null;
   };
 
   type HashMeta = {
@@ -370,10 +372,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     last_error?: string | null;
     updated?: number;
     hash_pending?: number;
+    change_start?: number | null;
+    change_end?: number | null;
   };
   const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, change_start, change_end, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @change_start, @change_end, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -384,6 +388,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           size=excluded.size,
           deleted=excluded.deleted,
           hash_pending=excluded.hash_pending,
+          change_start=excluded.change_start,
+          change_end=excluded.change_end,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -402,6 +408,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       size: params.size,
       deleted: params.deleted,
       hash_pending: params.hash_pending ?? 0,
+      change_start:
+        params.change_start === undefined ? null : params.change_start,
+      change_end: params.change_end === undefined ? null : params.change_end,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -476,6 +485,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     op_ts: number;
     scan_id: number;
     hash: string;
+    change_start: number | null;
+    change_end: number | null;
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
@@ -491,6 +502,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         last_seen: r.scan_id,
         updated: r.op_ts,
         hash_pending: 0,
+        change_start: r.change_start ?? r.op_ts,
+        change_end: r.change_end ?? r.op_ts,
         link_target: null,
         last_error: null,
       });
@@ -512,6 +525,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         last_seen: r.last_seen,
         updated: r.op_ts,
         hash_pending: r.hash_pending ?? 0,
+        change_start: r.change_start ?? r.op_ts,
+        change_end: r.change_end ?? (r.hash_pending ? null : r.op_ts),
         link_target: null,
         last_error: null,
       });
@@ -529,6 +544,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const updatedValue = hashChanged
           ? (meta?.updated ?? scanTick)
           : (prevUpdated ?? meta?.updated ?? scanTick);
+        const changeStart =
+          meta?.change_start ??
+          meta?.updated ??
+          scanTick;
+        const changeEnd = hashChanged ? scanTick : (meta?.change_end ?? scanTick);
         writeNode({
           path: r.path,
           kind: "f",
@@ -540,6 +560,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           deleted: 0,
           last_seen: meta?.last_seen ?? null,
           updated: updatedValue,
+          change_start: changeStart,
+          change_end: changeEnd,
           hash_pending: 0,
           link_target: null,
           last_error: null,
@@ -558,6 +580,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     op_ts: number;
     hash: string;
     scan_id: number;
+    change_start: number | null;
+    change_end: number | null;
   };
 
   const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
@@ -573,6 +597,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         last_seen: r.scan_id,
         link_target: r.target ?? "",
         updated: r.op_ts,
+        change_start: r.change_start ?? r.op_ts,
+        change_end: r.change_end ?? r.op_ts,
         hash_pending: 0,
         last_error: null,
       });
@@ -728,7 +754,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   // then translate to rpath when emitting/applying results.
   const pendingMeta = new Map<
     string, // ABS
-    { size: number; ctime: number; mtime: number; updated: number }
+    {
+      size: number;
+      ctime: number;
+      mtime: number;
+      updated: number;
+      change_start: number | null;
+      change_end: number | null;
+    }
   >();
   const fileNodeMeta = new Map<
     string,
@@ -741,6 +774,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       prevUpdated: number | null;
       prevHash: string | null;
       hash_pending: number;
+      change_start: number | null;
+      change_end: number | null;
     }
   >();
 
@@ -807,6 +842,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           });
         }
         pendingMeta.delete(r.path);
+        const meta = fileNodeMeta.get(rpath);
+        if (meta) {
+          meta.change_start =
+            meta.change_start ?? meta.change_end ?? meta.updated;
+          meta.change_end = scanTick;
+        }
         if (hashResults.length >= DB_BATCH_SIZE) {
           applyHashBatch(hashResults);
           hashResults.length = 0;
@@ -887,19 +928,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
-      `SELECT size, ctime, mtime, hashed_ctime, hash, updated, deleted
+      `SELECT size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, change_start, change_end
          FROM nodes
         WHERE path = ? AND kind = 'f'`,
     );
 
     const getExistingDir = db.prepare(
-      `SELECT ctime, mtime, hash, deleted, updated
+      `SELECT ctime, mtime, hash, deleted, updated, change_start, change_end
          FROM nodes
         WHERE path = ? AND kind = 'd'`,
     );
 
     const getExistingLink = db.prepare(
-      `SELECT ctime, mtime, hash, link_target AS target, deleted, updated
+      `SELECT ctime, mtime, hash, link_target AS target, deleted, updated, change_start, change_end
          FROM nodes
         WHERE path = ? AND kind = 'l'`,
     );
@@ -932,6 +973,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           ? scanTick
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
+        const dirChangeStart = dirChanged
+          ? op_ts
+          : prev?.change_start ?? prev?.change_end ?? op_ts;
+        const dirChangeEnd = dirChanged
+          ? op_ts
+          : prev?.change_end ?? op_ts;
+
         dirMetaBuf.push({
           path: rpath,
           ctime,
@@ -939,6 +987,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash,
           scan_id,
           op_ts,
+          change_start: dirChangeStart,
+          change_end: dirChangeEnd,
         });
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
           applyDirBatch(dirMetaBuf);
@@ -971,6 +1021,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               size: number | null;
               updated: number | null;
               deleted: 0 | 1;
+              hash_pending: number | null;
+              change_start: number | null;
+              change_end: number | null;
             }
           | undefined;
 
@@ -998,6 +1051,20 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const op_ts =
           needsHash || !row ? scanTick : (row?.updated ?? row?.mtime ?? mtime);
 
+        let changeStart = row?.change_start ?? null;
+        let changeEnd = row?.change_end ?? null;
+        if (!row) {
+          changeStart = op_ts;
+          changeEnd = needsHash ? null : op_ts;
+        } else if (needsHash) {
+          changeStart = op_ts;
+          changeEnd = null;
+        } else if (row && !needsHash) {
+          changeStart = row.change_start ?? row.change_end ?? op_ts;
+          changeEnd = row.change_end ?? op_ts;
+        }
+        const hashPendingFlag = needsHash ? 1 : row?.hash_pending ?? 0;
+
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
           path: rpath,
@@ -1008,7 +1075,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash: row?.hash ?? null,
           last_seen: scan_id,
           hashed_ctime: row?.hashed_ctime ?? null,
-          hash_pending: needsHash ? 1 : 0,
+          hash_pending: hashPendingFlag,
+          change_start: changeStart,
+          change_end: changeEnd,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
@@ -1017,7 +1086,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         }
 
         if (needsHash) {
-          pendingMeta.set(abs, { size, ctime, mtime, updated: op_ts });
+          pendingMeta.set(abs, {
+            size,
+            ctime,
+            mtime,
+            updated: op_ts,
+            change_start: changeStart,
+            change_end: changeEnd,
+          });
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
           hashTotalBytes += size;
@@ -1030,6 +1106,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             prevUpdated: row?.updated ?? null,
             prevHash: row?.hash ?? null,
             hash_pending: 1,
+            change_start: changeStart,
+            change_end: changeEnd,
           });
         }
       } else if (entry.dirent.isSymbolicLink()) {
@@ -1050,6 +1128,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           ? scanTick
           : (prev?.updated ?? prev?.mtime ?? mtime);
 
+        const linkChangeStart = linkChanged
+          ? op_ts
+          : prev?.change_start ?? prev?.change_end ?? op_ts;
+        const linkChangeEnd = linkChanged
+          ? op_ts
+          : prev?.change_end ?? op_ts;
+
         linksBuf.push({
           path: rpath,
           target,
@@ -1058,6 +1143,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           op_ts,
           hash,
           scan_id,
+          change_start: linkChangeStart,
+          change_end: linkChangeEnd,
         });
         if (linksBuf.length >= DB_BATCH_SIZE) {
           applyLinksBatch(linksBuf);
@@ -1135,6 +1222,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 hash = '',
                 hashed_ctime = NULL,
                 size = 0,
+                change_start = COALESCE(change_start, updated, @ts),
+                change_end = NULL,
                 hash_pending = 0,
                 last_error = NULL
           WHERE last_seen <> @scan

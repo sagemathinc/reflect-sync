@@ -21,6 +21,8 @@ export type MergeDiffRow = {
   a_hash?: string | null;
   a_hash_pending?: number | null;
   a_ctime?: number | null;
+  a_change_start?: number | null;
+  a_change_end?: number | null;
   a_mtime?: number | null;
   a_updated?: number | null;
   a_size?: number | null;
@@ -30,6 +32,8 @@ export type MergeDiffRow = {
   b_hash?: string | null;
   b_hash_pending?: number | null;
   b_ctime?: number | null;
+  b_change_start?: number | null;
+  b_change_end?: number | null;
   b_mtime?: number | null;
   b_updated?: number | null;
   b_size?: number | null;
@@ -39,6 +43,8 @@ export type MergeDiffRow = {
   base_hash?: string | null;
   base_hash_pending?: number | null;
   base_ctime?: number | null;
+  base_change_start?: number | null;
+  base_change_end?: number | null;
   base_mtime?: number | null;
   base_updated?: number | null;
   base_size?: number | null;
@@ -116,6 +122,8 @@ type SideState = {
   kind?: string | null;
   ts: TimestampVector;
   pending: boolean;
+  start: number | null;
+  end: number | null;
 };
 
 type Candidate = {
@@ -153,6 +161,17 @@ function planLww(
       continue;
     }
 
+    if (alpha.exists && beta.exists) {
+      const intervalWinner = pickIntervalWinner(alpha, beta);
+      if (intervalWinner === "alpha") {
+        operations.push({ op: "copy", from: "alpha", to: "beta", path: row.path });
+        continue;
+      } else if (intervalWinner === "beta") {
+        operations.push({ op: "copy", from: "beta", to: "alpha", path: row.path });
+        continue;
+      }
+    }
+
     const alphaCand = toCandidate(alpha, "alpha");
     const betaCand = toCandidate(beta, "beta");
     const winner = pickWinner(alphaCand, betaCand, prefer);
@@ -185,6 +204,8 @@ function extractState(
   const ctime = Number((row as any)[`${prefix}_ctime`]) || 0;
   const updated = Number((row as any)[`${prefix}_updated`]) || 0;
   const pending = Boolean((row as any)[`${prefix}_hash_pending`]);
+  const start = (row as any)[`${prefix}_change_start`] ?? null;
+  const end = (row as any)[`${prefix}_change_end`] ?? null;
   // Default vector: updated → mtime → ctime. Legacy lww-mtime still leads with mtime.
   const ts: TimestampVector =
     mode === "mtime"
@@ -197,6 +218,8 @@ function extractState(
     kind,
     ts,
     pending,
+    start: typeof start === "number" ? start : null,
+    end: typeof end === "number" ? end : null,
   };
 }
 
@@ -233,4 +256,25 @@ function compareVectors(a: TimestampVector, b: TimestampVector): number {
     if (av < bv) return -1;
   }
   return 0;
+}
+
+function pickIntervalWinner(
+  alpha: SideState,
+  beta: SideState,
+): MergeSide | null {
+  if (
+    alpha.start == null ||
+    alpha.end == null ||
+    beta.start == null ||
+    beta.end == null
+  ) {
+    return null;
+  }
+  if (alpha.end <= beta.start) {
+    return "beta";
+  }
+  if (beta.end <= alpha.start) {
+    return "alpha";
+  }
+  return null;
 }

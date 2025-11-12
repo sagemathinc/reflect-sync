@@ -332,6 +332,8 @@ pairs AS (
     a.kind    AS a_kind,
     a.hash    AS a_hash,
     a.hash_pending AS a_hash_pending,
+    a.change_start AS a_change_start,
+    a.change_end AS a_change_end,
     a.ctime   AS a_ctime,
     a.mtime   AS a_mtime,
     a.updated AS a_updated,
@@ -341,6 +343,8 @@ pairs AS (
     b.kind    AS b_kind,
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
+    b.change_start AS b_change_start,
+    b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
@@ -361,6 +365,8 @@ beta_only AS (
     NULL AS a_kind,
     NULL AS a_hash,
     NULL AS a_hash_pending,
+    NULL AS a_change_start,
+    NULL AS a_change_end,
     NULL AS a_ctime,
     NULL AS a_mtime,
     NULL AS a_updated,
@@ -370,6 +376,8 @@ beta_only AS (
     b.kind    AS b_kind,
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
+    b.change_start AS b_change_start,
+    b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
@@ -392,6 +400,8 @@ SELECT
   diff.a_kind,
   diff.a_hash,
   diff.a_hash_pending,
+  diff.a_change_start,
+  diff.a_change_end,
   diff.a_ctime,
   diff.a_mtime,
   diff.a_updated,
@@ -401,6 +411,8 @@ SELECT
   diff.b_kind,
   diff.b_hash,
   diff.b_hash_pending,
+  diff.b_change_start,
+  diff.b_change_end,
   diff.b_ctime,
   diff.b_mtime,
   diff.b_updated,
@@ -410,6 +422,8 @@ SELECT
   base.kind       AS base_kind,
   base.hash       AS base_hash,
   base.hash_pending AS base_hash_pending,
+  base.change_start AS base_change_start,
+  base.change_end AS base_change_end,
   base.ctime      AS base_ctime,
   base.mtime      AS base_mtime,
   base.updated    AS base_updated,
@@ -731,6 +745,8 @@ type NodeRecord = {
   hash: string;
   mtime: number;
   ctime: number;
+  change_start: number | null;
+  change_end: number | null;
   hashed_ctime: number | null;
   updated: number;
   size: number;
@@ -752,7 +768,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -760,13 +776,15 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@ctime,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
        mtime=excluded.mtime,
        ctime=excluded.ctime,
+       change_start=excluded.change_start,
+       change_end=excluded.change_end,
        hashed_ctime=excluded.hashed_ctime,
        updated=excluded.updated,
        size=excluded.size,
@@ -775,7 +793,11 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
        last_seen=excluded.last_seen,
        link_target=excluded.link_target,
        last_error=excluded.last_error`,
-  ).run(row);
+  ).run({
+    ...row,
+    change_start: row.change_start ?? null,
+    change_end: row.change_end ?? null,
+  });
 }
 
 function mirrorNodesFromSourceBatch(
@@ -820,6 +842,8 @@ function markNodesDeletedBatch(
           hashed_ctime: null,
           size: 0,
           updated: tick,
+          change_start: existing.change_start,
+          change_end: null,
           hash_pending: 0,
           last_error: null,
         }
@@ -833,6 +857,8 @@ function markNodesDeletedBatch(
           updated: tick,
           size: 0,
           deleted: 1,
+          change_start: null,
+          change_end: null,
           hash_pending: 0,
           last_seen: null,
           link_target: null,
@@ -869,6 +895,8 @@ function recordNodeErrorsBatch(
           updated: tick,
           size: 0,
           deleted: 0,
+          change_start: tick,
+          change_end: tick,
           hash_pending: 0,
           last_seen: tick,
           link_target: null,
@@ -947,6 +975,8 @@ function snapshotState(
   const deleted = (row as any)[suffix("deleted")] ?? null;
   const error = (row as any)[suffix("error")] ?? null;
   const hash_pending = (row as any)[suffix("hash_pending")] ?? null;
+  const change_start = (row as any)[suffix("change_start")] ?? null;
+  const change_end = (row as any)[suffix("change_end")] ?? null;
   if (
     kind === null &&
     hash === null &&
@@ -956,11 +986,25 @@ function snapshotState(
     size === null &&
     deleted === null &&
     error === null &&
-    hash_pending === null
+    hash_pending === null &&
+    change_start === null &&
+    change_end === null
   ) {
     return null;
   }
-  return { kind, hash, ctime, mtime, updated, size, deleted, error, hash_pending };
+  return {
+    kind,
+    hash,
+    ctime,
+    mtime,
+    updated,
+    size,
+    deleted,
+    error,
+    hash_pending,
+    change_start,
+    change_end,
+  };
 }
 
 function isVanishedWarning(stderr?: string | null): boolean {
