@@ -125,10 +125,11 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     change_start?: number | null;
     change_end?: number | null;
     confirmed_at?: number | null;
+    copy_pending?: number;
   };
   const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -139,6 +140,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           size=excluded.size,
           deleted=excluded.deleted,
           hash_pending=excluded.hash_pending,
+          copy_pending=excluded.copy_pending,
           change_start=excluded.change_start,
           change_end=excluded.change_end,
           confirmed_at=excluded.confirmed_at,
@@ -171,6 +173,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       size: params.size,
       deleted: params.deleted,
       hash_pending: params.hash_pending ?? 0,
+      copy_pending: params.copy_pending ?? 0,
       change_start: changeStart,
       change_end: changeEnd,
       confirmed_at:
@@ -188,9 +191,10 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     change_start?: number | null;
     change_end?: number | null;
     confirmed_at?: number | null;
+    copy_pending?: number | null;
   };
   const selectMetaStmt = db.prepare(
-    `SELECT kind, last_seen, updated, mtime, change_start, change_end, confirmed_at FROM nodes WHERE path = ?`,
+    `SELECT kind, last_seen, updated, mtime, change_start, change_end, confirmed_at, copy_pending FROM nodes WHERE path = ?`,
   );
   const buildDeleteParams = (
     path: string,
@@ -201,6 +205,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     const deleteMtime = deletionMtimeFromMeta(existing ?? {}, fallbackNow);
     const logicalUpdated = nextUpdatedTick();
     const rawStart =
+      existing?.confirmed_at ??
       existing?.change_start ??
       existing?.change_end ??
       existing?.updated ??
@@ -224,6 +229,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       change_start: changeStart,
       change_end: logicalUpdated,
       confirmed_at: logicalUpdated,
+      copy_pending: 0,
     };
   };
   let processedRows = 0;

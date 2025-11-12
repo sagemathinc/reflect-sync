@@ -77,6 +77,13 @@ export function getDb(dbPath: string): Database {
     db.exec(`ALTER TABLE recent_send ADD COLUMN signature TEXT`);
   } catch {}
 
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT
+  );
+`);
+
   // --- Node schema (new implementation) -----------------------------------
   db.exec(`
   CREATE TABLE IF NOT EXISTS nodes (
@@ -93,6 +100,7 @@ export function getDb(dbPath: string): Database {
     size        INTEGER NOT NULL DEFAULT 0,
     deleted     INTEGER NOT NULL DEFAULT 0,
     hash_pending INTEGER NOT NULL DEFAULT 0,
+    copy_pending INTEGER NOT NULL DEFAULT 0,
     last_seen   REAL,
     link_target TEXT,
     last_error  TEXT
@@ -114,6 +122,10 @@ export function getDb(dbPath: string): Database {
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN copy_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+
   return db;
 }
 
@@ -151,6 +163,7 @@ export function getBaseDb(dbPath: string): Database {
        size       INTEGER NOT NULL DEFAULT 0,
        deleted    INTEGER NOT NULL DEFAULT 0,
        hash_pending INTEGER NOT NULL DEFAULT 0,
+       copy_pending INTEGER NOT NULL DEFAULT 0,
        last_seen  REAL,
        link_target TEXT,
        last_error TEXT
@@ -172,5 +185,14 @@ export function getBaseDb(dbPath: string): Database {
   try {
     db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN copy_pending INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT
+    );
+  `);
   return db;
 }

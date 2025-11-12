@@ -20,6 +20,7 @@ export type MergeDiffRow = {
   a_kind?: string | null;
   a_hash?: string | null;
   a_hash_pending?: number | null;
+  a_copy_pending?: number | null;
   a_ctime?: number | null;
   a_change_start?: number | null;
   a_change_end?: number | null;
@@ -31,6 +32,7 @@ export type MergeDiffRow = {
   b_kind?: string | null;
   b_hash?: string | null;
   b_hash_pending?: number | null;
+  b_copy_pending?: number | null;
   b_ctime?: number | null;
   b_change_start?: number | null;
   b_change_end?: number | null;
@@ -42,6 +44,7 @@ export type MergeDiffRow = {
   base_kind?: string | null;
   base_hash?: string | null;
   base_hash_pending?: number | null;
+  base_copy_pending?: number | null;
   base_ctime?: number | null;
   base_change_start?: number | null;
   base_change_end?: number | null;
@@ -143,9 +146,33 @@ function planLww(
       continue;
     }
 
+    const alphaCand = toCandidate(alpha, "alpha");
+    const betaCand = toCandidate(beta, "beta");
+
     const bothMissing =
       !alpha.exists && !beta.exists && !alpha.deleted && !beta.deleted;
     if (bothMissing) continue;
+
+    if (row.base_deleted) {
+      if (alpha.deleted && beta.exists) {
+        operations.push({
+          op: "copy",
+          from: "beta",
+          to: "alpha",
+          path: row.path,
+        });
+        continue;
+      }
+      if (beta.deleted && alpha.exists) {
+        operations.push({
+          op: "copy",
+          from: "alpha",
+          to: "beta",
+          path: row.path,
+        });
+        continue;
+      }
+    }
 
     const sameHash =
       alpha.exists &&
@@ -158,26 +185,20 @@ function planLww(
       continue;
     }
 
-    if (alpha.exists && beta.exists) {
-      const intervalWinner = pickIntervalWinner(alpha, beta);
+    let intervalWinner: MergeSide | null = null;
+    if (alphaCand && betaCand) {
+      intervalWinner = pickIntervalWinner(alpha, beta);
       if (intervalWinner === "alpha") {
-        operations.push({
-          op: "copy",
-          from: "alpha",
-          to: "beta",
-          path: row.path,
-        });
-        continue;
-      } else if (intervalWinner === "beta") {
-        operations.push({
-          op: "copy",
-          from: "beta",
-          to: "alpha",
-          path: row.path,
-        });
+        operations.push(candidateToOperation(alphaCand, row.path));
         continue;
       }
+      if (intervalWinner === "beta") {
+        operations.push(candidateToOperation(betaCand, row.path));
+        continue;
+      }
+    }
 
+    if (alpha.exists && beta.exists) {
       const overlapTieBreak =
         intervalWinner === null &&
         alpha.start != null &&
@@ -203,19 +224,10 @@ function planLww(
       }
     }
 
-    const alphaCand = toCandidate(alpha, "alpha");
-    const betaCand = toCandidate(beta, "beta");
     const winner = pickWinner(alphaCand, betaCand, prefer);
     if (!winner) continue;
 
-    if (winner.type === "present") {
-      const from = winner.side;
-      const to = from === "alpha" ? "beta" : "alpha";
-      operations.push({ op: "copy", from, to, path: row.path });
-    } else {
-      const target = winner.side === "alpha" ? "beta" : "alpha";
-      operations.push({ op: "delete", side: target, path: row.path });
-    }
+    operations.push(candidateToOperation(winner, row.path));
   }
   return operations;
 }
@@ -234,7 +246,9 @@ function extractState(
   const mtime = Number((row as any)[`${prefix}_mtime`]) || 0;
   const ctime = Number((row as any)[`${prefix}_ctime`]) || 0;
   const updated = Number((row as any)[`${prefix}_updated`]) || 0;
-  const pending = Boolean((row as any)[`${prefix}_hash_pending`]);
+  const hashPending = Boolean((row as any)[`${prefix}_hash_pending`]);
+  const copyPending = Boolean((row as any)[`${prefix}_copy_pending`]);
+  const pending = hashPending || copyPending;
   const start = (row as any)[`${prefix}_change_start`] ?? null;
   const end = (row as any)[`${prefix}_change_end`] ?? null;
   // Default vector: prioritise mtime, then ctime.
@@ -353,4 +367,17 @@ function pushCopyOperation(
     to: from === "alpha" ? "beta" : "alpha",
     path,
   });
+}
+
+function candidateToOperation(
+  candidate: Candidate,
+  path: string,
+): PlannedOperation {
+  if (candidate.type === "present") {
+    const from = candidate.side;
+    const to = from === "alpha" ? "beta" : "alpha";
+    return { op: "copy", from, to, path };
+  }
+  const target = candidate.side === "alpha" ? "beta" : "alpha";
+  return { op: "delete", side: target, path };
 }

@@ -60,6 +60,7 @@ export function applySignaturesToDb(
       change_start?: number | null;
       change_end?: number | null;
       confirmed_at?: number | null;
+      copy_pending?: number | null;
     };
     type NodeWriteParams = {
       path: string;
@@ -78,14 +79,15 @@ export function applySignaturesToDb(
       change_start?: number | null;
       change_end?: number | null;
       confirmed_at?: number | null;
+      copy_pending?: number;
     };
 
     const selectNodeStmt = db.prepare(
-      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime, hash_pending, change_start, change_end, confirmed_at FROM nodes WHERE path = ?`,
+      `SELECT kind, hash, size, ctime, hashed_ctime, link_target, last_seen, updated, mtime, hash_pending, change_start, change_end, confirmed_at, copy_pending FROM nodes WHERE path = ?`,
     );
     const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -96,6 +98,7 @@ export function applySignaturesToDb(
           size=excluded.size,
           deleted=excluded.deleted,
           hash_pending=excluded.hash_pending,
+          copy_pending=excluded.copy_pending,
           change_start=excluded.change_start,
           change_end=excluded.change_end,
           confirmed_at=excluded.confirmed_at,
@@ -128,6 +131,7 @@ export function applySignaturesToDb(
         size: params.size,
         deleted: params.deleted,
         hash_pending: params.hash_pending ?? 0,
+        copy_pending: params.copy_pending ?? 0,
         change_start: changeStart,
         change_end: changeEnd,
         confirmed_at:
@@ -143,6 +147,7 @@ export function applySignaturesToDb(
       const deleteMtime = deletionMtimeFromMeta(existing ?? {}, observed);
       const updatedTick = nextClock();
       const rawStart =
+        existing?.confirmed_at ??
         existing?.change_start ??
         existing?.change_end ??
         existing?.updated ??
@@ -165,6 +170,7 @@ export function applySignaturesToDb(
         change_end: updatedTick,
         hash_pending: 0,
         confirmed_at: updatedTick,
+        copy_pending: 0,
       });
     };
 
@@ -213,6 +219,7 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
               confirmed_at: updatedTick,
+              copy_pending: 0,
             });
             break;
           }
@@ -233,6 +240,7 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
               confirmed_at: updatedTick,
+              copy_pending: 0,
             });
             break;
           }
@@ -254,6 +262,7 @@ export function applySignaturesToDb(
               change_start: opTs,
               change_end: updatedTick,
               confirmed_at: updatedTick,
+              copy_pending: 0,
             });
             break;
           }

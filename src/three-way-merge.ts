@@ -332,6 +332,7 @@ pairs AS (
     a.kind    AS a_kind,
     a.hash    AS a_hash,
     a.hash_pending AS a_hash_pending,
+    a.copy_pending AS a_copy_pending,
     a.change_start AS a_change_start,
     a.change_end AS a_change_end,
     a.ctime   AS a_ctime,
@@ -343,6 +344,7 @@ pairs AS (
     b.kind    AS b_kind,
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
+    b.copy_pending AS b_copy_pending,
     b.change_start AS b_change_start,
     b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
@@ -365,6 +367,7 @@ beta_only AS (
     NULL AS a_kind,
     NULL AS a_hash,
     NULL AS a_hash_pending,
+    NULL AS a_copy_pending,
     NULL AS a_change_start,
     NULL AS a_change_end,
     NULL AS a_ctime,
@@ -376,6 +379,7 @@ beta_only AS (
     b.kind    AS b_kind,
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
+    b.copy_pending AS b_copy_pending,
     b.change_start AS b_change_start,
     b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
@@ -400,6 +404,7 @@ SELECT
   diff.a_kind,
   diff.a_hash,
   diff.a_hash_pending,
+  diff.a_copy_pending,
   diff.a_change_start,
   diff.a_change_end,
   diff.a_ctime,
@@ -411,6 +416,7 @@ SELECT
   diff.b_kind,
   diff.b_hash,
   diff.b_hash_pending,
+  diff.b_copy_pending,
   diff.b_change_start,
   diff.b_change_end,
   diff.b_ctime,
@@ -422,6 +428,7 @@ SELECT
   base.kind       AS base_kind,
   base.hash       AS base_hash,
   base.hash_pending AS base_hash_pending,
+  base.copy_pending AS base_copy_pending,
   base.change_start AS base_change_start,
   base.change_end AS base_change_end,
   base.ctime      AS base_ctime,
@@ -753,6 +760,7 @@ type NodeRecord = {
   size: number;
   deleted: number;
   hash_pending: number;
+  copy_pending: number;
   last_seen: number | null;
   link_target: string | null;
   last_error: string | null;
@@ -769,7 +777,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -777,8 +785,8 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, last_seen, link_target, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@confirmed_at,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@last_seen,@link_target,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@confirmed_at,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@copy_pending,@last_seen,@link_target,@last_error)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
@@ -792,6 +800,7 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
        size=excluded.size,
        deleted=excluded.deleted,
        hash_pending=excluded.hash_pending,
+       copy_pending=excluded.copy_pending,
        last_seen=excluded.last_seen,
        link_target=excluded.link_target,
        last_error=excluded.last_error`,
@@ -809,20 +818,23 @@ function mirrorNodesFromSourceBatch(
   baseDb: ReturnType<typeof getDb>,
   paths: string[],
 ): void {
-  const rows: NodeRecord[] = [];
+  const destRows: NodeRecord[] = [];
+  const baseRows: NodeRecord[] = [];
   for (const path of paths) {
     const row = fetchNode(sourceDb, path);
-    if (row) rows.push({ ...row, last_error: null });
+    if (!row) continue;
+    destRows.push({ ...row, last_error: null, copy_pending: 1 });
+    baseRows.push({ ...row, last_error: null, copy_pending: 0 });
   }
-  if (!rows.length) return;
+  if (!destRows.length) return;
   const applyDest = destDb.transaction((entries: NodeRecord[]) => {
     for (const entry of entries) upsertNode(destDb, entry);
   });
   const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
     for (const entry of entries) upsertNode(baseDb, entry);
   });
-  applyDest(rows);
-  applyBase(rows);
+  applyDest(destRows);
+  applyBase(baseRows);
 }
 
 function markNodesDeletedBatch(
@@ -856,6 +868,7 @@ function markNodesDeletedBatch(
       row.change_end = tick;
       row.confirmed_at = tick;
       row.hash_pending = 0;
+      row.copy_pending = 0;
       row.last_error = null;
     } else {
       row = {
@@ -872,6 +885,7 @@ function markNodesDeletedBatch(
         change_end: tick,
         confirmed_at: tick,
         hash_pending: 0,
+        copy_pending: 0,
         last_seen: null,
         link_target: null,
         last_error: null,
@@ -911,11 +925,12 @@ function recordNodeErrorsBatch(
           change_start: tick,
           change_end: tick,
           confirmed_at: tick,
-          hash_pending: 0,
-          last_seen: tick,
-          link_target: null,
-          last_error: null,
-        };
+        hash_pending: 0,
+        copy_pending: 0,
+        last_seen: tick,
+        link_target: null,
+        last_error: null,
+      };
     row.updated = tick;
     row.last_error = JSON.stringify({ message, at: tick });
     rows.push(row);
