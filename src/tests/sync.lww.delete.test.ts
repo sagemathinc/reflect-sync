@@ -20,16 +20,23 @@ describe("LWW: delete vs modify", () => {
     const b = join(r.bRoot, "x.txt");
 
     await fsp.writeFile(a, "seed");
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, {
+      scanOrder: ["alpha", "beta"],
+    });
 
     // modify alpha (older op_ts)
     await fsp.writeFile(a, "alpha-old");
+    await sync(r, "alpha", undefined, undefined, {
+      scanOrder: ["alpha", "beta"],
+    });
 
     // delete beta now (delete op_ts observed at scan time, i.e. ~now)
     await fsp.rm(b);
 
     // prefer doesn't matter; LWW by op_ts(delete) should win
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, {
+      scanOrder: ["beta", "alpha"],
+    });
     expect(await fileExists(a)).toBe(false);
     expect(await fileExists(b)).toBe(false);
   });
@@ -47,7 +54,9 @@ describe("LWW: delete vs modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     // then modify alpha later (newer op_ts)
     await fsp.writeFile(a, "alpha-newer");
-    await sync(r, "beta", false, undefined, { scanOrder: ["beta", "alpha"] }); // alpha scanned last → newer
+    await sync(r, "beta", false, undefined, {
+      scanOrder: ["beta", "alpha"],
+    }); // alpha scanned last → newer
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-newer");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha-newer");
   });

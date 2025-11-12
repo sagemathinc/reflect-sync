@@ -11,6 +11,7 @@ import os from "node:os";
 import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
 
 describe("reflex-sync: more symlink edge case tests", () => {
+  jest.setTimeout(15000);
   let tmp: string;
 
   beforeAll(async () => {

@@ -72,10 +72,10 @@ export async function sync(
 ) {
   const order = options.scanOrder ?? ["alpha", "beta"];
   const logicalClock = await createLogicalClock([r.aDb, r.bDb, r.baseDb]);
-  const scanTick = logicalClock.next();
   for (const side of order) {
     const root = side === "alpha" ? r.aRoot : r.bRoot;
     const db = side === "alpha" ? r.aDb : r.bDb;
+    const scanTick = logicalClock.next();
     await runDist("scan.js", [
       "--root",
       root,

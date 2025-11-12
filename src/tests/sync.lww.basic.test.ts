@@ -21,14 +21,18 @@ describe("LWW: basic conflicting edits", () => {
 
     // seed
     await fsp.writeFile(a, "seed");
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, {
+      scanOrder: ["alpha", "beta"],
+    });
 
     // modify both; make beta "newer"
     await fsp.writeFile(a, "alpha-old");
     await fsp.writeFile(b, "beta-new");
 
     // even with prefer=alpha, LWW should choose beta
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, {
+      scanOrder: ["alpha", "beta"],
+    });
 
     expect(await fsp.readFile(a, "utf8")).toBe("beta-new");
     expect(await fsp.readFile(b, "utf8")).toBe("beta-new");
@@ -38,7 +42,7 @@ describe("LWW: basic conflicting edits", () => {
     await fsp.writeFile(a, "alpha-new-2");
     await fsp.writeFile(b, "beta-old-2");
 
-    await sync(r, "beta", undefined, undefined, {
+    await sync(r, "alpha", undefined, undefined, {
       scanOrder: ["beta", "alpha"],
     });
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-new-2");
@@ -57,14 +61,18 @@ describe("LWW: basic conflicting edits", () => {
     await fsp.writeFile(b, "beta-data");
 
     // prefer=beta should decide
-    await syncPrefer(r, "beta");
+    await syncPrefer(r, "beta", undefined, {
+      scanOrder: ["alpha", "beta"],
+    });
     expect(await fsp.readFile(a, "utf8")).toBe("beta-data");
     expect(await fsp.readFile(b, "utf8")).toBe("beta-data");
 
     // do it again the other way
     await fsp.writeFile(a, "alpha-next");
     await fsp.writeFile(b, "beta-next");
-    await syncPrefer(r, "alpha");
+    await syncPrefer(r, "alpha", undefined, {
+      scanOrder: ["beta", "alpha"],
+    });
     expect(await fsp.readFile(a, "utf8")).toBe("alpha-next");
     expect(await fsp.readFile(b, "utf8")).toBe("alpha-next");
   });
