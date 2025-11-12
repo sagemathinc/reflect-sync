@@ -331,6 +331,7 @@ pairs AS (
     a.path,
     a.kind    AS a_kind,
     a.hash    AS a_hash,
+    a.ctime   AS a_ctime,
     a.mtime   AS a_mtime,
     a.updated AS a_updated,
     a.size    AS a_size,
@@ -338,6 +339,7 @@ pairs AS (
     a.last_error AS a_error,
     b.kind    AS b_kind,
     b.hash    AS b_hash,
+    b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
     b.size    AS b_size,
@@ -356,6 +358,7 @@ beta_only AS (
     b.path,
     NULL AS a_kind,
     NULL AS a_hash,
+    NULL AS a_ctime,
     NULL AS a_mtime,
     NULL AS a_updated,
     NULL AS a_size,
@@ -363,6 +366,7 @@ beta_only AS (
     NULL AS a_error,
     b.kind    AS b_kind,
     b.hash    AS b_hash,
+    b.ctime   AS b_ctime,
     b.mtime   AS b_mtime,
     b.updated AS b_updated,
     b.size    AS b_size,
@@ -383,6 +387,7 @@ SELECT
   diff.path,
   diff.a_kind,
   diff.a_hash,
+  diff.a_ctime,
   diff.a_mtime,
   diff.a_updated,
   diff.a_size,
@@ -390,6 +395,7 @@ SELECT
   diff.a_error,
   diff.b_kind,
   diff.b_hash,
+  diff.b_ctime,
   diff.b_mtime,
   diff.b_updated,
   diff.b_size,
@@ -397,6 +403,7 @@ SELECT
   diff.b_error,
   base.kind       AS base_kind,
   base.hash       AS base_hash,
+  base.ctime      AS base_ctime,
   base.mtime      AS base_mtime,
   base.updated    AS base_updated,
   base.size       AS base_size,
@@ -921,6 +928,7 @@ function snapshotState(
     prefix === "base" ? `base_${key}` : `${prefix}_${key}`;
   const kind = (row as any)[suffix("kind")] ?? null;
   const hash = (row as any)[suffix("hash")] ?? null;
+  const ctime = (row as any)[suffix("ctime")] ?? null;
   const mtime = (row as any)[suffix("mtime")] ?? null;
   const updated = (row as any)[suffix("updated")] ?? null;
   const size = (row as any)[suffix("size")] ?? null;
@@ -929,6 +937,7 @@ function snapshotState(
   if (
     kind === null &&
     hash === null &&
+    ctime === null &&
     mtime === null &&
     updated === null &&
     size === null &&
@@ -937,7 +946,7 @@ function snapshotState(
   ) {
     return null;
   }
-  return { kind, hash, mtime, updated, size, deleted, error };
+  return { kind, hash, ctime, mtime, updated, size, deleted, error };
 }
 
 function isVanishedWarning(stderr?: string | null): boolean {

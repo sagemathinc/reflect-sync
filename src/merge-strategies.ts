@@ -19,6 +19,7 @@ export type MergeDiffRow = {
   path: string;
   a_kind?: string | null;
   a_hash?: string | null;
+  a_ctime?: number | null;
   a_mtime?: number | null;
   a_updated?: number | null;
   a_size?: number | null;
@@ -26,6 +27,7 @@ export type MergeDiffRow = {
   a_error?: string | null;
   b_kind?: string | null;
   b_hash?: string | null;
+  b_ctime?: number | null;
   b_mtime?: number | null;
   b_updated?: number | null;
   b_size?: number | null;
@@ -33,6 +35,7 @@ export type MergeDiffRow = {
   b_error?: string | null;
   base_kind?: string | null;
   base_hash?: string | null;
+  base_ctime?: number | null;
   base_mtime?: number | null;
   base_updated?: number | null;
   base_size?: number | null;
@@ -101,17 +104,19 @@ function planMirror(rows: MergeDiffRow[], target: MergeSide) {
 
 type TimestampMode = "mtime" | "updated";
 
+type TimestampVector = [number, number, number];
+
 type SideState = {
   exists: boolean;
   deleted: boolean;
   hash?: string | null;
   kind?: string | null;
-  ts: number;
+  ts: TimestampVector;
 };
 
 type Candidate = {
   side: MergeSide;
-  ts: number;
+  ts: TimestampVector;
   type: "present" | "deleted";
 };
 
@@ -169,8 +174,13 @@ function extractState(
   const size = (row as any)[`${prefix}_size`];
   const exists = !deleted && (kind != null || hash != null || size != null);
   const mtime = Number((row as any)[`${prefix}_mtime`]) || 0;
+  const ctime = Number((row as any)[`${prefix}_ctime`]) || 0;
   const updated = Number((row as any)[`${prefix}_updated`]) || 0;
-  const ts = mode === "mtime" ? mtime || updated : updated || mtime;
+  // Default vector: updated → mtime → ctime. Legacy lww-mtime still leads with mtime.
+  const ts: TimestampVector =
+    mode === "mtime"
+      ? [mtime, updated, ctime]
+      : [updated, mtime, ctime];
   return {
     exists,
     deleted,
@@ -196,9 +206,20 @@ function pickWinner(
   prefer: MergeSide,
 ): Candidate | null {
   if (alpha && beta) {
-    if (alpha.ts > beta.ts) return alpha;
-    if (beta.ts > alpha.ts) return beta;
+    const cmp = compareVectors(alpha.ts, beta.ts);
+    if (cmp > 0) return alpha;
+    if (cmp < 0) return beta;
     return prefer === "alpha" ? alpha : beta;
   }
   return alpha ?? beta ?? null;
+}
+
+function compareVectors(a: TimestampVector, b: TimestampVector): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av > bv) return 1;
+    if (av < bv) return -1;
+  }
+  return 0;
 }
