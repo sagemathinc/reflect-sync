@@ -68,8 +68,7 @@ export type MergeStrategy = (
 
 export const MERGE_STRATEGY_NAMES = [
   "last-write-wins",
-  "lww-mtime",
-  "lww-updated",
+  "lww-updated", // not sure we should keep this
   "mirror-to-beta",
   "mirror-to-alpha",
   "prefer",
@@ -78,7 +77,7 @@ export const MERGE_STRATEGY_NAMES = [
 export function resolveMergeStrategy(name?: string | null): MergeStrategy {
   switch (name?.trim().toLowerCase()) {
     case "last-write-wins":
-      return (rows, ctx) => planLww(rows, "updated", ctx.prefer);
+      return (rows, ctx) => planLww(rows, "mtime", ctx.prefer);
     case "mirror-to-alpha":
       return (rows) => planMirror(rows, "alpha");
     case "mirror-to-beta":
@@ -86,8 +85,6 @@ export function resolveMergeStrategy(name?: string | null): MergeStrategy {
     case "prefer":
       return (rows, ctx) =>
         planMirror(rows, ctx.prefer === "alpha" ? "beta" : "alpha");
-    case "lww-mtime":
-      return (rows, ctx) => planLww(rows, "mtime", ctx.prefer);
     case "lww-updated":
       return (rows, ctx) => planLww(rows, "updated", ctx.prefer);
     default:
@@ -216,7 +213,7 @@ function extractState(
   const pending = Boolean((row as any)[`${prefix}_hash_pending`]);
   const start = (row as any)[`${prefix}_change_start`] ?? null;
   const end = (row as any)[`${prefix}_change_end`] ?? null;
-  // Default vector: prioritise mtime, then ctime, then updated for lww-mtime.
+  // Default vector: prioritise mtime, then ctime.
   const ts: TimestampVector =
     mode === "mtime" ? [mtime, ctime, updated] : [updated, mtime, ctime];
   return {
