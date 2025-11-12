@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { Database } from "../db";
 import { executeThreeWayMerge } from "../three-way-merge.js";
 import { createLogicalClock } from "../logical-clock.js";
+import { syncConfirmedCopiesToBase } from "../copy-pending.js";
 
 const DIST = resolve(__dirname, "../../dist");
 
@@ -60,6 +61,9 @@ export async function mkCase(tmpBase: string, name: string): Promise<Roots> {
 
 type SyncOptions = {
   scanOrder?: ("alpha" | "beta")[];
+  extraCycles?: number;
+  traceDbPath?: string;
+  traceLabel?: string;
 };
 
 export async function sync(
@@ -70,38 +74,45 @@ export async function sync(
   options: SyncOptions = {},
   strategy = "last-write-wins",
 ) {
-  const order = options.scanOrder ?? ["alpha", "beta"];
+  const cycles = Math.max(1, (options.extraCycles ?? 0) + 1);
   const logicalClock = await createLogicalClock([r.aDb, r.bDb, r.baseDb]);
-  for (const side of order) {
-    const root = side === "alpha" ? r.aRoot : r.bRoot;
-    const db = side === "alpha" ? r.aDb : r.bDb;
-    const scanTick = logicalClock.next();
-    await runDist("scan.js", [
-      "--root",
-      root,
-      "--db",
-      db,
-      "--clock-base",
-      r.aDb,
-      "--clock-base",
-      r.bDb,
-      "--clock-base",
-      r.baseDb,
-      "--scan-tick",
-      String(scanTick),
-      ...(args ?? []),
-    ]);
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    const order = options.scanOrder ?? ["alpha", "beta"];
+    for (const side of order) {
+      const root = side === "alpha" ? r.aRoot : r.bRoot;
+      const db = side === "alpha" ? r.aDb : r.bDb;
+      const scanTick = logicalClock.next();
+      await runDist("scan.js", [
+        "--root",
+        root,
+        "--db",
+        db,
+        "--clock-base",
+        r.aDb,
+        "--clock-base",
+        r.bDb,
+        "--clock-base",
+        r.baseDb,
+        "--scan-tick",
+        String(scanTick),
+        ...(args ?? []),
+      ]);
+    }
+    syncConfirmedCopiesToBase(r.aDb, r.baseDb);
+    syncConfirmedCopiesToBase(r.bDb, r.baseDb);
+    await executeThreeWayMerge({
+      alphaDb: r.aDb,
+      betaDb: r.bDb,
+      baseDb: r.baseDb,
+      prefer,
+      strategyName: strategy,
+      alphaRoot: r.aRoot,
+      betaRoot: r.bRoot,
+      logicalClock,
+      traceDbPath: options.traceDbPath,
+      traceLabel: options.traceLabel,
+    });
   }
-  await executeThreeWayMerge({
-    alphaDb: r.aDb,
-    betaDb: r.bDb,
-    baseDb: r.baseDb,
-    prefer,
-    strategyName: strategy,
-    alphaRoot: r.aRoot,
-    betaRoot: r.bRoot,
-    logicalClock,
-  });
 }
 
 export async function syncPrefer(

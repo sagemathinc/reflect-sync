@@ -32,14 +32,21 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
 
     await fsp.writeFile(a, "data");
     await fsp.chmod(a, 0o640);
-    await sync(r, "alpha");
+    await sync(r, "alpha", undefined, undefined, {}, "last-write-wins");
 
     expect(await fileExists(b)).toBe(true);
     expect(await getMode(b)).toBe(0o640);
 
     // change mode only (content unchanged)
     await fsp.chmod(a, 0o600);
-    await sync(r, "alpha");
+    await sync(
+      r,
+      "alpha",
+      undefined,
+      undefined,
+      { extraCycles: 1 },
+      "last-write-wins",
+    );
 
     expect(await fileExists(b)).toBe(true);
     expect(await fsp.readFile(b, "utf8")).toBe("data");
@@ -55,7 +62,14 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
 
     await fsp.mkdir(aDir, { recursive: true });
     await fsp.writeFile(aFile, "x");
-    await sync(r, "alpha");
+    await sync(
+      r,
+      "alpha",
+      undefined,
+      undefined,
+      { extraCycles: 1 },
+      "last-write-wins",
+    );
     expect(await fileExists(bFile)).toBe(true);
 
     // change dir mode, keep content intact

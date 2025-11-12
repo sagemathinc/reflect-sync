@@ -21,7 +21,17 @@ reflect terminate o || true
 export REFLECT_TRACE_ALL=1
 reflect daemon stop
 reflect daemon start
-reflect create --disable-hot-sync  --name=o $upperdir2 $upperdir
+
+# this fails very quickly with fb68a88f18ae81ec5cf5c546226399fcfd825349
+
+reflect create --name=o $upperdir2 $upperdir
+
+# passed 17 in a row with fb68a88f18ae81ec5cf5c546226399fcfd825349
+#reflect create --disable-hot-sync  --name=o $upperdir2 $upperdir
+
+# trying this with fb68a88f18ae81ec5cf5c546226399fcfd825349:
+#reflect create --disable-hot-sync  --name=o localhost:$upperdir2 $upperdir
+
 #reflect create --name=o localhost:$upperdir2 $upperdir
 
 #podman run -it --rm --rootfs "$root" bash /stress.sh

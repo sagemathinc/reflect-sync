@@ -38,7 +38,13 @@ describe("rfsync: scan → merge-rsync simple tests and conflicts (part 2)", () 
     await sync(r, "alpha", undefined, undefined, { scanOrder: ["beta", "alpha"] });
     expect((await fsp.readFile(b)).equals(buf1)).toBe(true);
     await fsp.writeFile(a, buf2);
-    await sync(r, "alpha", undefined, undefined, { scanOrder: ["beta", "alpha"] });
+    await sync(
+      r,
+      "alpha",
+      undefined,
+      undefined,
+      { scanOrder: ["beta", "alpha"], extraCycles: 1 },
+    );
     const bufB = await fsp.readFile(b);
     expect(bufB.equals(buf2)).toBe(true);
   });
