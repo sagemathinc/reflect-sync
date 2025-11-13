@@ -584,7 +584,7 @@ async function performDirCopies(params: {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
   try {
-    await rsyncCopyDirsChunked(
+    const copiedDirs = await rsyncCopyDirsChunked(
       params.workDir,
       params.fromRoot,
       params.toRoot,
@@ -594,29 +594,57 @@ async function performDirCopies(params: {
         ...params.rsyncOpts,
         direction: params.direction,
         tempDir: params.tempDir,
+        captureTransfers: true,
       },
     );
-    await rsyncFixMetaDirsChunked(
-      params.workDir,
-      params.fromRoot,
-      params.toRoot,
-      unique,
-      `${params.direction} dirs meta`,
-      {
-        ...params.rsyncOpts,
-        direction: params.direction,
-      },
-    );
-    mirrorNodesFromSourceBatch(
-      params.sourceDb,
-      params.destDb,
-      params.baseDb,
-      unique,
-      { updateBase: true },
-    );
-    if (params.tracer && params.opName) {
-      for (const path of unique) {
-        params.tracer.recordResult(path, params.opName, "success");
+    const copiedSet = new Set(copiedDirs);
+    if (copiedDirs.length) {
+      await rsyncFixMetaDirsChunked(
+        params.workDir,
+        params.fromRoot,
+        params.toRoot,
+        copiedDirs,
+        `${params.direction} dirs meta`,
+        {
+          ...params.rsyncOpts,
+          direction: params.direction,
+        },
+      );
+      mirrorNodesFromSourceBatch(
+        params.sourceDb,
+        params.destDb,
+        params.baseDb,
+        copiedDirs,
+        { updateBase: true },
+      );
+      if (params.tracer && params.opName) {
+        for (const path of copiedDirs) {
+          params.tracer.recordResult(path, params.opName, "success");
+        }
+      }
+    }
+    const missingDirs = unique.filter((path) => !copiedSet.has(path));
+    if (missingDirs.length) {
+      const message = `rsync ${params.direction} dir copy missing transfers`;
+      recordNodeErrorsBatch(
+        params.destDb,
+        missingDirs,
+        message,
+        params.logicalClock || undefined,
+      );
+      recordNodeErrorsBatch(
+        params.baseDb,
+        missingDirs,
+        message,
+        params.logicalClock || undefined,
+      );
+      if (params.tracer && params.opName) {
+        for (const path of missingDirs) {
+          params.tracer.recordResult(path, params.opName, "failure", {
+            error: message,
+            phase: "dir-copy",
+          });
+        }
       }
     }
   } catch (err) {
@@ -674,8 +702,9 @@ async function performFileCopies(params: {
       chunk.forEach((p) => failed.add(p));
     }
   };
+  let transferred: string[] = [];
   try {
-    await rsyncCopyChunked(
+    const res = await rsyncCopyChunked(
       params.workDir,
       params.fromRoot,
       params.toRoot,
@@ -689,6 +718,7 @@ async function performFileCopies(params: {
         onChunkResult,
       },
     );
+    transferred = res.transferred ?? [];
   } catch (err) {
     unique.forEach((p) => failed.add(p));
     const message = `rsync file copy failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -708,19 +738,52 @@ async function performFileCopies(params: {
     throw err;
   }
 
-  const succeeded = failed.size ? unique.filter((p) => !failed.has(p)) : unique;
-  mirrorNodesFromSourceBatch(
-    params.sourceDb,
-    params.destDb,
-    params.baseDb,
-    succeeded,
-    { updateBase: true },
-  );
-  if (params.tracer && params.opName) {
-    for (const path of succeeded) {
-      params.tracer.recordResult(path, params.opName, "success");
+  const transferredSet = new Set(transferred);
+  const succeeded: string[] = [];
+  const missing: string[] = [];
+  for (const path of unique) {
+    if (failed.has(path)) continue;
+    if (transferredSet.has(path)) succeeded.push(path);
+    else missing.push(path);
+  }
+
+  if (succeeded.length) {
+    mirrorNodesFromSourceBatch(
+      params.sourceDb,
+      params.destDb,
+      params.baseDb,
+      succeeded,
+      { updateBase: true },
+    );
+    if (params.tracer && params.opName) {
+      for (const path of succeeded) {
+        params.tracer.recordResult(path, params.opName, "success");
+      }
     }
   }
+
+  if (missing.length) {
+    const message = `rsync ${params.direction} did not report a transfer (source may have vanished)`;
+    params.logger?.debug?.("file copy missing transfers", {
+      direction: params.direction,
+      count: missing.length,
+    });
+    recordNodeErrorsBatch(
+      params.destDb,
+      missing,
+      message,
+      params.logicalClock || undefined,
+    );
+    if (params.tracer && params.opName) {
+      for (const path of missing) {
+        params.tracer.recordResult(path, params.opName, "failure", {
+          error: message,
+          phase: "file-copy",
+        });
+      }
+    }
+  }
+
   if (failed.size) {
     const message = `rsync reported partial failures for ${params.direction}`;
     const failedList = Array.from(failed);
@@ -932,27 +995,8 @@ function recordNodeErrorsBatch(
   for (const path of paths) {
     const existing = fetchNode(db, path);
     const tick = logicalClock ? logicalClock.next() : Date.now();
-    const row: NodeRecord = existing
-      ? { ...existing }
-      : {
-          path,
-          kind: "f",
-          hash: "",
-          mtime: tick,
-          ctime: tick,
-          hashed_ctime: null,
-          updated: tick,
-          size: 0,
-          deleted: 0,
-          change_start: tick,
-          change_end: tick,
-          confirmed_at: tick,
-        hash_pending: 0,
-        copy_pending: 0,
-        last_seen: tick,
-        link_target: null,
-        last_error: null,
-      };
+    if (!existing) continue;
+    const row: NodeRecord = { ...existing };
     row.updated = tick;
     row.last_error = JSON.stringify({ message, at: tick });
     rows.push(row);

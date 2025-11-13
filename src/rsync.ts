@@ -183,9 +183,10 @@ export async function rsyncCopyDirsChunked(
     tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
+    captureTransfers?: boolean;
   } = {},
-): Promise<void> {
-  if (!dirRpaths.length) return;
+): Promise<string[]> {
+  if (!dirRpaths.length) return [];
   const { logger, debug } = resolveLogContext(opts);
   const chunkSize = opts.chunkSize ?? REFLECT_DIR_CHUNK;
   const concurrency = opts.concurrency ?? Math.min(4, REFLECT_COPY_CONCURRENCY);
@@ -210,25 +211,28 @@ export async function rsyncCopyDirsChunked(
     listFiles.push(lf);
   }
 
-  const { progressScope, progressMeta } = opts;
+  const { captureTransfers, ...forwardOpts } = opts;
+  const { progressScope, progressMeta } = forwardOpts;
   const scope = progressScope ?? label;
+  const transferredSet = captureTransfers ? new Set<string>() : null;
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
     if (debug) {
       logger.debug(`>>> rsync mkdir ${label} [${idx + 1}/${listFiles.length}]`);
     }
-    await rsyncCopyDirs(
+    const chunkPaths = batches[idx];
+    const res = await rsyncCopyDirs(
       fromRoot,
       toRoot,
       lf,
       `${label} (dirs chunk ${idx + 1})`,
       {
-        direction: opts.direction,
-        dryRun: opts.dryRun,
-        verbose: opts.verbose,
+        direction: forwardOpts.direction,
+        dryRun: forwardOpts.dryRun,
+        verbose: forwardOpts.verbose,
         logger,
-        logLevel: opts.logLevel,
-        sshPort: opts.sshPort,
-        tempDir: opts.tempDir,
+        logLevel: forwardOpts.logLevel,
+        sshPort: forwardOpts.sshPort,
+        tempDir: forwardOpts.tempDir,
         progressScope: scope,
         progressMeta: {
           ...(progressMeta ?? {}),
@@ -236,9 +240,17 @@ export async function rsyncCopyDirsChunked(
           chunkIndex: idx + 1,
           chunkCount: listFiles.length,
         },
+        captureDirs: captureTransfers ? chunkPaths : undefined,
       },
     );
+    if (captureTransfers && res.transferred.length) {
+      for (const entry of res.transferred) transferredSet!.add(entry);
+    }
   });
+  if (!captureTransfers) {
+    return [];
+  }
+  return Array.from(transferredSet ?? []);
 }
 
 // rsync does not reliably update directory metadata (perms/uid/gid/mtime)
@@ -1025,7 +1037,7 @@ export async function rsyncCopyDirs(
     tempDir?: string;
     progressScope?: string;
     progressMeta?: Record<string, unknown>;
-    captureDirs?: boolean;
+    captureDirs?: readonly string[];
   } = {},
 ): Promise<{ ok: boolean; zero: boolean; transferred: string[] }> {
   const { logger, debug } = resolveLogContext(opts);
@@ -1056,12 +1068,19 @@ export async function rsyncCopyDirs(
         });
       }
     : undefined;
+  const captureList =
+    Array.isArray(opts.captureDirs) && opts.captureDirs.length
+      ? opts.captureDirs
+      : undefined;
+  const plannedSet = captureList
+    ? new Set(captureList.map((p) => normalizeTransferPath(p)))
+    : undefined;
   const res = await run("rsync", args, [0, 23, 24], {
     ...runOpts,
     onProgress: progressHandler,
     tempDir: opts.tempDir,
     direction: opts.direction,
-    captureTransfers: opts.captureDirs ? { paths: [] } : undefined,
+    captureTransfers: captureList ? { paths: captureList } : undefined,
   });
   assertRsyncOk(`${label} (dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
@@ -1071,10 +1090,10 @@ export async function rsyncCopyDirs(
     });
   }
   const transferred =
-    opts.captureDirs && res.transfers?.length
+    captureList && res.transfers?.length
       ? res.transfers
-          .filter((entry) => entry.path)
           .map((entry) => normalizeTransferPath(entry.path))
+          .filter((p) => (plannedSet ? plannedSet.has(p) : true))
       : [];
   return { ok: true, zero: res.zero, transferred };
 }
