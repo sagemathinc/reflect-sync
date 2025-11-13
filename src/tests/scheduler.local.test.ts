@@ -139,7 +139,6 @@ describe("scheduler (local watchers + hot-sync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      extraArgs: ["--disable-full-sync"],
     });
 
     try {
@@ -208,7 +207,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
     }
   }, 20_000);
 
-  test("disable full cycle prevents additional automatic cycles", async () => {
+  test("disable full cycle prevents any automatic cycles", async () => {
     const child = startScheduler({
       alphaRoot,
       betaRoot,
@@ -220,23 +219,12 @@ describe("scheduler (local watchers + hot-sync)", () => {
     });
 
     try {
-      const baseline = countSchedulerCycles(baseDb);
-      await waitFor(
-        () => countSchedulerCycles(baseDb),
-        (n) => n >= baseline + 1,
-        10_000,
-        100,
-      );
-      const cyclesAfterFirst = countSchedulerCycles(baseDb);
-      expect(cyclesAfterFirst).toBe(baseline + 1);
-
-      await new Promise((resolve) => setTimeout(resolve, 7000));
-      const cyclesAfterWait = countSchedulerCycles(baseDb);
-      expect(cyclesAfterWait).toBe(cyclesAfterFirst);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      expect(countSchedulerCycles(baseDb)).toEqual(0);
     } finally {
       await stopScheduler(child);
     }
-  }, 20_000);
+  }, 10_000);
 
   test("disable hot sync defers propagation until the next full cycle", async () => {
     const child = startScheduler({
