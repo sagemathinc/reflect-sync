@@ -31,7 +31,11 @@ import {
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
-import { collectListOption, dedupeRestrictedList } from "./restrict.js";
+import {
+  collectListOption,
+  dedupeRestrictedList,
+  includeAncestors,
+} from "./restrict.js";
 import { createLogicalClock } from "./logical-clock.js";
 import type { LogicalClock } from "./logical-clock.js";
 
@@ -206,6 +210,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   let restrictedPathList = dedupeRestrictedList(restrictedPathRaw);
   if (restrictedPathList.includes("")) {
     restrictedPathList = [];
+  } else if (restrictedPathList.length) {
+    restrictedPathList = dedupeRestrictedList(
+      includeAncestors(restrictedPathList),
+    );
   }
   const hasRestrictions = restrictedPathList.length > 0;
 

@@ -52,7 +52,7 @@ describe("restricted scan and merge", () => {
         )
         .all()
         .map((row: { path: string }) => row.path);
-      expect(dirs).toEqual([]);
+      expect(dirs).toEqual(["dirA"]);
     } finally {
       db.close();
     }

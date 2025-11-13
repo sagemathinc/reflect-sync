@@ -36,6 +36,27 @@ export function dirnameRel(rel: string): string {
   return dir === "." ? "" : dir;
 }
 
+export function includeAncestors(paths: string[]): string[] {
+  if (!paths.length) return [];
+  const expanded = new Set<string>();
+  const addChain = (rel: string) => {
+    let current = rel;
+    while (current) {
+      if (expanded.has(current)) break;
+      expanded.add(current);
+      const parent = dirnameRel(current);
+      if (!parent || parent === current) break;
+      current = parent;
+    }
+  };
+  for (const rel of paths) {
+    if (!rel) continue;
+    expanded.add(rel);
+    addChain(dirnameRel(rel));
+  }
+  return Array.from(expanded);
+}
+
 export function collectListOption(
   value: string,
   previous: string[] = [],
