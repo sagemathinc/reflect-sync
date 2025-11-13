@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -x  # or: set -v
 
+# wait for sync to init
+sleep 5
+
 for ((run=1; ; run++)); do
   echo "=== Run #$run ===" >> /log
 
