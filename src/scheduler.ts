@@ -366,7 +366,6 @@ export async function runScheduler({
     backoffMs = 0;
 
   let fatalTriggered = false;
-  let initialCycleDone = false;
 
   const DISK_FULL_PATTERNS = [
     "enospc",
@@ -2130,45 +2129,40 @@ export async function runScheduler({
       if (fatalTriggered) {
         throw new FatalSchedulerError("disk full detected");
       }
-      if (!running) {
+      if (!running && !disableFullSync) {
         pending = false;
-        const shouldRunCycle = !disableFullSync || !initialCycleDone;
-        if (shouldRunCycle) {
-          try {
-            await runCycle();
-            initialCycleDone = true;
-          } catch (err) {
-            if (err instanceof RemoteRootUnavailableError) {
-              const delay = clamp(
-                backoffMs || MIN_INTERVAL_MS,
-                MIN_INTERVAL_MS,
-                MAX_INTERVAL_MS,
-              );
-              log(
-                "info",
-                "scheduler",
-                `remote root unavailable; retrying in ${delay} ms`,
-              );
-              await idleWaitWithCommandPolling(delay);
-              continue;
-            }
-            if (err instanceof FatalSchedulerError) {
-              throw err;
-            }
+        try {
+          await runCycle();
+        } catch (err) {
+          if (err instanceof RemoteRootUnavailableError) {
+            const delay = clamp(
+              backoffMs || MIN_INTERVAL_MS,
+              MIN_INTERVAL_MS,
+              MAX_INTERVAL_MS,
+            );
+            log(
+              "info",
+              "scheduler",
+              `remote root unavailable; retrying in ${delay} ms`,
+            );
+            await idleWaitWithCommandPolling(delay);
+            continue;
+          }
+          if (err instanceof FatalSchedulerError) {
             throw err;
           }
-          ensureRemoteStreams(); // recreate if they died during the cycle
-          const baseNext = clamp(
-            lastCycleMs * 2,
-            MIN_INTERVAL_MS,
-            MAX_INTERVAL_MS,
-          );
-          nextDelayMs =
-            baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));
-        } else if (disableFullSync) {
-          await ensureRemoteStreams();
+          throw err;
         }
+        const baseNext = clamp(
+          lastCycleMs * 2,
+          MIN_INTERVAL_MS,
+          MAX_INTERVAL_MS,
+        );
+        nextDelayMs =
+          baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));
       }
+
+      await ensureRemoteStreams(); // recreate if they died
 
       if (pending) {
         if (!disableFullSync) {
@@ -2183,7 +2177,7 @@ export async function runScheduler({
         log(
           "info",
           "scheduler",
-          "watching: automatic full cycles disabled; awaiting commands",
+          "watching: automatic full cycles disabled; awaiting commands and hot sync",
         );
       } else {
         log(
