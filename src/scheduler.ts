@@ -45,7 +45,7 @@ import {
   RemoteConnectionError,
 } from "./remote.js";
 import type { SendSignature } from "./recent-send.js";
-import { applySignaturesToDb, type SignatureEntry } from "./signature-store.js";
+import type { SignatureEntry } from "./signature-store.js";
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
@@ -69,17 +69,12 @@ import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList } from "./restrict.js";
-import { computePathSignature } from "./path-signature.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
 // never sync more than this many files at once using hot sync
 // (discards more)
 const MAX_HOT_SYNC = 200;
-const HOT_SIG_CONCURRENCY = Math.max(
-  1,
-  Number(process.env.REFLECT_HOT_SIG_CONCURRENCY ?? 4),
-);
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -371,22 +366,6 @@ export async function runScheduler({
   if (!alphaHost) autoIgnores.push(...autoIgnoreForRoot(alphaRoot, syncHome));
   if (!betaHost) autoIgnores.push(...autoIgnoreForRoot(betaRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns([...baseIgnore, ...autoIgnores]);
-  const nodeWriterEnabled = !!mergeStrategy;
-  const expandWithAncestors = (paths: string[]): string[] => {
-    const set = new Set<string>();
-    for (const rel of paths) {
-      if (!rel) continue;
-      let current = rel;
-      while (current && !set.has(current)) {
-        set.add(current);
-        const parent = parentDir(current);
-        if (!parent || parent === current) break;
-        current = parent;
-      }
-    }
-    return Array.from(set);
-  };
-
   // ---------- scheduler state ----------
   let running = false,
     pending = false,
@@ -1261,142 +1240,6 @@ export async function runScheduler({
   let alphaStream: StreamControl | null = null;
   let betaStream: StreamControl | null = null;
 
-  const chunkArray = <T>(arr: T[], size: number): T[][] => {
-    if (arr.length === 0) return [];
-    const out: T[][] = [];
-    for (let i = 0; i < arr.length; i += size) {
-      out.push(arr.slice(i, i + size));
-    }
-    return out;
-  };
-  const dedupePaths = (paths: string[]) =>
-    Array.from(new Set(paths.filter(Boolean)));
-  const hotMetaLogger = scoped("hot.meta");
-
-  const fetchAlphaRemoteSignatures = async (
-    paths: string[],
-    opts: { ignore: boolean; stable?: boolean } = { ignore: false },
-  ): Promise<SignatureEntry[]> => {
-    if (!paths.length) return [];
-    if (!alphaStream?.stat) {
-      await ensureRemoteStreams();
-    }
-    if (!alphaStream?.stat) return [];
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    const collected: SignatureEntry[] = [];
-    for (const batch of chunkArray(unique, 1000)) {
-      const entries = await alphaStream.stat(batch, opts);
-      if (entries.length) collected.push(...entries);
-    }
-    if (collected.length) {
-      applySignaturesToDb(alphaDb, collected, {
-        numericIds,
-        logicalClock,
-      });
-    }
-    return collected;
-  };
-
-  const fetchBetaRemoteSignatures = async (
-    paths: string[],
-    opts: { ignore: boolean; stable?: boolean } = { ignore: false },
-  ): Promise<SignatureEntry[]> => {
-    if (!paths.length) return [];
-    if (!betaStream?.stat) {
-      await ensureRemoteStreams();
-    }
-    if (!betaStream?.stat) return [];
-    const unique = Array.from(new Set(paths.filter(Boolean)));
-    const collected: SignatureEntry[] = [];
-    for (const batch of chunkArray(unique, 1000)) {
-      const entries = await betaStream.stat(batch, opts);
-      if (entries.length) collected.push(...entries);
-    }
-    if (collected.length) {
-      applySignaturesToDb(betaDb, collected, {
-        numericIds,
-        logicalClock,
-      });
-    }
-    return collected;
-  };
-
-  async function collectLocalSignatureEntries(
-    side: "alpha" | "beta",
-    relPaths: string[],
-  ): Promise<SignatureEntry[]> {
-    const unique = dedupePaths(relPaths);
-    if (!unique.length) return [];
-    const root = side === "alpha" ? alphaRoot : betaRoot;
-    const entries: SignatureEntry[] = [];
-    let index = 0;
-    const concurrency = Math.min(HOT_SIG_CONCURRENCY, unique.length);
-    await Promise.all(
-      Array.from({ length: concurrency }, async () => {
-        while (true) {
-          const current = index++;
-          if (current >= unique.length) break;
-          const rel = unique[current];
-          const abs = path.join(root, rel);
-          try {
-            const result = await computePathSignature(abs, {
-              hashAlg: hash,
-              numericIds,
-            });
-            entries.push({
-              path: rel,
-              signature: result.signature,
-              target: result.target,
-            });
-          } catch (err: any) {
-            hotMetaLogger.debug("local signature failed", {
-              side,
-              path: rel,
-              error: String(err?.message || err),
-            });
-            entries.push({
-              path: rel,
-              signature: { kind: "missing", opTs: Date.now() },
-            });
-          }
-        }
-      }),
-    );
-    return entries;
-  }
-
-  async function refreshHotMetadata(
-    side: "alpha" | "beta",
-    relPaths: string[],
-  ): Promise<void> {
-    if (!nodeWriterEnabled || !mergeStrategy) return;
-    const unique = dedupePaths(relPaths);
-    if (!unique.length) return;
-    const isRemote = side === "alpha" ? alphaIsRemote : betaIsRemote;
-    if (isRemote) {
-      const fetch =
-        side === "alpha"
-          ? fetchAlphaRemoteSignatures
-          : fetchBetaRemoteSignatures;
-      if (!fetch) return;
-      try {
-        await fetch(unique, { ignore: true, stable: true });
-      } catch (err: any) {
-        hotMetaLogger.warn("remote signature refresh failed", {
-          side,
-          error: String(err?.message || err),
-        });
-      }
-      return;
-    }
-    const entries = await collectLocalSignatureEntries(side, unique);
-    if (!entries.length) return;
-    applySignaturesToDb(side === "alpha" ? alphaDb : betaDb, entries, {
-      numericIds,
-      logicalClock,
-    });
-  }
-
   async function partitionStablePaths(side: "alpha" | "beta", paths: string[]) {
     if (!stabilityEnabled || !paths.length) {
       return { ready: paths, pending: [] as string[] };
@@ -1544,20 +1387,10 @@ export async function runScheduler({
         if (p && !limitedSet.has(p)) hotBeta.add(p);
       }
 
-      if (nodeWriterEnabled && mergeStrategy) {
-        const limitedAlpha = readyAlpha.filter((p) => p && limitedSet.has(p));
-        const limitedBeta = readyBeta.filter((p) => p && limitedSet.has(p));
-        await Promise.all([
-          refreshHotMetadata("alpha", limitedAlpha),
-          refreshHotMetadata("beta", limitedBeta),
-        ]);
-        await runHotNodeMerge(limitedPaths);
-      } else {
-        await runCycle({
-          restrictedPaths: limitedPaths,
-          label: "hot",
-        });
-      }
+      await runCycle({
+        restrictedPaths: limitedPaths,
+        label: "hot",
+      });
     } catch (e: any) {
       for (const rel of rpathsAlpha) {
         if (rel) hotAlpha.add(rel);
@@ -1570,119 +1403,6 @@ export async function runScheduler({
       } else {
         log("warn", "realtime", "restricted cycle failed", {
           err: String(e?.message || e),
-        });
-      }
-    }
-  }
-
-  async function runHotNodeMerge(limitedPaths: string[]) {
-    const hotLogger = scoped("merge.hot");
-    const expanded = expandWithAncestors(limitedPaths);
-    if (!expanded.length) return;
-    await confirmRestrictedScans(expanded);
-    const result = await executeThreeWayMerge({
-      alphaDb,
-      betaDb,
-      baseDb,
-      prefer,
-      strategyName: mergeStrategy,
-      restrictedPaths: expanded,
-      alphaRoot,
-      betaRoot,
-      alphaHost,
-      alphaPort,
-      betaHost,
-      betaPort,
-      dryRun,
-      compress,
-      logger: hotLogger,
-      traceLabel: "hot",
-      logicalClock,
-    });
-    hotLogger.info("hot merge complete", {
-      strategy: mergeStrategy,
-      restrictedPaths: expanded.length,
-      diffCount: result.plan.diffs.length,
-      operations: result.plan.operations.length,
-    });
-  }
-
-  async function confirmRestrictedScans(paths: string[]) {
-    if (!paths.length) return;
-    await Promise.all([
-      runRestrictedScan("alpha", paths),
-      runRestrictedScan("beta", paths),
-    ]);
-    const confirmedAlpha = syncConfirmedCopiesToBase(alphaDb, baseDb);
-    const confirmedBeta = syncConfirmedCopiesToBase(betaDb, baseDb);
-    if (confirmedAlpha || confirmedBeta) {
-      log("info", "scan", "restricted copy confirmations synced", {
-        alpha: confirmedAlpha,
-        beta: confirmedBeta,
-      });
-    }
-  }
-
-  async function runRestrictedScan(side: "alpha" | "beta", paths: string[]) {
-    if (!paths.length) return;
-    const restrictedPaths = dedupeRestrictedList(paths);
-    if (!restrictedPaths.length) return;
-    const scanTick = logicalClock.next();
-    const scanLogger = scoped(`scan.${side}.restricted`);
-    if (side === "alpha") {
-      if (alphaIsRemote) {
-        await sshScanIntoMirror({
-          host: alphaHost!,
-          port: alphaPort,
-          root: alphaRoot,
-          localDb: alphaDb,
-          remoteDb: alphaRemoteDb!,
-          numericIds,
-          ignoreRules,
-          restrictedPaths,
-          scanTick,
-        });
-      } else {
-        await runScan({
-          root: alphaRoot,
-          db: alphaDb,
-          emitDelta: false,
-          hash,
-          vacuum: false,
-          numericIds,
-          logger: scanLogger,
-          ignoreRules,
-          restrictedPaths,
-          logicalClock,
-          scanTick,
-        });
-      }
-    } else {
-      if (betaIsRemote) {
-        await sshScanIntoMirror({
-          host: betaHost!,
-          port: betaPort,
-          root: betaRoot,
-          localDb: betaDb,
-          remoteDb: betaRemoteDb!,
-          numericIds,
-          ignoreRules,
-          restrictedPaths,
-          scanTick,
-        });
-      } else {
-        await runScan({
-          root: betaRoot,
-          db: betaDb,
-          emitDelta: false,
-          hash,
-          vacuum: false,
-          numericIds,
-          logger: scanLogger,
-          ignoreRules,
-          restrictedPaths,
-          logicalClock,
-          scanTick,
         });
       }
     }
