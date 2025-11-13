@@ -218,10 +218,7 @@ function tableOutput(
         `${fmtAgo(sess.created_at)} on ${new Date(sess.created_at)}`,
       );
     if (sess.actual_state && sess.desired_state)
-      add(
-        "State/Desired",
-        `${sess.actual_state}/${sess.desired_state}`,
-      );
+      add("State/Desired", `${sess.actual_state}/${sess.desired_state}`);
   }
 
   // Runtime

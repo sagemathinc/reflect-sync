@@ -41,20 +41,18 @@ describe("restricted scan confirmation", () => {
   function readNode(dbPath: string, rel: string) {
     const db = new Database(dbPath);
     try {
-      return (
-        db
-          .prepare(
-            `SELECT path, hash, deleted, copy_pending FROM nodes WHERE path = ?`,
-          )
-          .get(rel) as
-          | {
-              path: string;
-              hash: string;
-              deleted: number;
-              copy_pending: number;
-            }
-          | undefined
-      );
+      return db
+        .prepare(
+          `SELECT path, hash, deleted, copy_pending FROM nodes WHERE path = ?`,
+        )
+        .get(rel) as
+        | {
+            path: string;
+            hash: string;
+            deleted: number;
+            copy_pending: number;
+          }
+        | undefined;
     } finally {
       db.close();
     }

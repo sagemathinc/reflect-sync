@@ -113,11 +113,7 @@ export function applySignaturesToDb(
         params.change_start === undefined ? null : params.change_start;
       let changeEnd =
         params.change_end === undefined ? null : params.change_end;
-      if (
-        changeStart != null &&
-        changeEnd != null &&
-        changeEnd < changeStart
-      ) {
+      if (changeStart != null && changeEnd != null && changeEnd < changeStart) {
         changeStart = changeEnd;
       }
       nodeUpsertStmt.run({

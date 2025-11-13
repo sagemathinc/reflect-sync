@@ -49,9 +49,7 @@ describe("three-way merge copy tracking", () => {
     const db = new Database(dbPath);
     try {
       return db
-        .prepare(
-          `SELECT deleted, copy_pending FROM nodes WHERE path = ?`,
-        )
+        .prepare(`SELECT deleted, copy_pending FROM nodes WHERE path = ?`)
         .get(rel) as { deleted: number; copy_pending: number } | undefined;
     } finally {
       db.close();

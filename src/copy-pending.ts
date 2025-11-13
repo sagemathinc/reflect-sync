@@ -85,10 +85,7 @@ export function syncConfirmedCopiesToBase(
     );
     const upsertTx = baseDb.transaction((entries: CopyPendingRow[]) => {
       for (const entry of entries) {
-        const {
-          copy_pending: _ignored,
-          ...bindings
-        } = entry;
+        const { copy_pending: _ignored, ...bindings } = entry;
         upsert.run(bindings);
       }
     });

@@ -266,7 +266,11 @@ export function registerSessionCommands(program: Command) {
         [] as string[],
       )
       .option("--json", "output JSON instead of a table", false)
-      .option("-l, --long", "show detailed columns (ignores/flags/paths)", false)
+      .option(
+        "-l, --long",
+        "show detailed columns (ignores/flags/paths)",
+        false,
+      )
       .action((refs: string[], opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         const selectors = opts.selector || [];

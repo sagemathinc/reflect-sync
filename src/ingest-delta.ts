@@ -153,13 +153,8 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     const ctime = params.ctime ?? params.mtime;
     let changeStart =
       params.change_start === undefined ? null : params.change_start;
-    let changeEnd =
-      params.change_end === undefined ? null : params.change_end;
-    if (
-      changeStart != null &&
-      changeEnd != null &&
-      changeEnd < changeStart
-    ) {
+    let changeEnd = params.change_end === undefined ? null : params.change_end;
+    if (changeStart != null && changeEnd != null && changeEnd < changeStart) {
       changeStart = changeEnd;
     }
     nodeUpsertStmt.run({
