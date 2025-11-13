@@ -1647,7 +1647,7 @@ export async function runScheduler({
             remoteDb: alphaRemoteDb!,
             numericIds,
             ignoreRules,
-            restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+            restrictedPaths,
             scanTick,
           })
         : await (async () => {
@@ -1661,7 +1661,7 @@ export async function runScheduler({
                 numericIds,
                 logger: scanLogger,
                 ignoreRules,
-                restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+                restrictedPaths,
                 logicalClock,
                 scanTick: alphaTick,
               });

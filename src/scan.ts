@@ -143,7 +143,6 @@ type ScanOptions = {
   ignoreRules?: string[];
   ignore?: string[];
   restrictedPaths?: string[];
-  restrictedPath?: string[] | string;
   logicalClock?: LogicalClock;
   clockBase?: string[];
   scanTick?: number;
@@ -164,8 +163,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     logLevel = "info",
     ignoreRules: ignoreRulesOpt = [],
     ignore: ignoreCliOpt = [],
-    restrictedPaths: restrictedPathsOpt = [],
-    restrictedPath: restrictedPathOpt = [],
+    restrictedPaths = [],
     logicalClock,
     scanTick: scanTickOverride,
   } = opts;
@@ -199,22 +197,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
-  const restrictedPathRaw = [
-    ...(Array.isArray(restrictedPathsOpt) ? restrictedPathsOpt : []),
-    ...(Array.isArray(restrictedPathOpt)
-      ? restrictedPathOpt
-      : restrictedPathOpt
-        ? [restrictedPathOpt]
-        : []),
-  ];
-  let restrictedPathList = dedupeRestrictedList(restrictedPathRaw);
-  if (restrictedPathList.includes("")) {
-    restrictedPathList = [];
-  } else if (restrictedPathList.length) {
-    restrictedPathList = dedupeRestrictedList(
-      includeAncestors(restrictedPathList),
-    );
-  }
+  const restrictedPathList = dedupeRestrictedList(
+    includeAncestors(restrictedPaths),
+  );
   const hasRestrictions = restrictedPathList.length > 0;
 
   // Rows written to DB always use rpaths now.
@@ -275,15 +260,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
-  const metaSelectStmt = db.prepare(
-    `SELECT value FROM meta WHERE key = ?`,
-  );
+  const metaSelectStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
   const metaUpsertStmt = db.prepare(
     `INSERT INTO meta(key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   );
   const readMetaNumber = (key: string): number | null => {
     try {
-      const row = metaSelectStmt.get(key) as { value: string | number | null } | undefined;
+      const row = metaSelectStmt.get(key) as
+        | { value: string | number | null }
+        | undefined;
       if (!row || row.value == null) return null;
       const num = Number(row.value);
       return Number.isFinite(num) ? num : null;
@@ -300,8 +285,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const scanWindowStart = newClockValue();
   const scanTick = scanTickOverride ?? newClockValue();
   const previousFullScanStart = readMetaNumber(META_LAST_FULL_SCAN_START);
-  const fallbackLowerBoundBase =
-    previousFullScanStart ?? scanWindowStart;
+  const fallbackLowerBoundBase = previousFullScanStart ?? scanWindowStart;
   const lowerBoundFor = (confirmed?: number | null) =>
     confirmed != null ? confirmed : fallbackLowerBoundBase;
   if (!clock) {
@@ -362,13 +346,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const ctime = params.ctime ?? params.mtime;
     let changeStart =
       params.change_start === undefined ? null : params.change_start;
-    let changeEnd =
-      params.change_end === undefined ? null : params.change_end;
-    if (
-      changeStart != null &&
-      changeEnd != null &&
-      changeEnd < changeStart
-    ) {
+    let changeEnd = params.change_end === undefined ? null : params.change_end;
+    if (changeStart != null && changeEnd != null && changeEnd < changeStart) {
       changeStart = changeEnd;
     }
     nodeUpsertStmt.run({
@@ -928,15 +907,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const ig = createIgnorer(ignoreRules);
 
     // stream entries with stats so we avoid a second stat in main thread
-  const stream: AsyncIterable<{
-    dirent: import("fs").Dirent;
-    path: string;
-    stats?: import("fs").Stats;
-  }> = hasRestrictions
-      ? (restrictedEntryStream(
-          absRoot,
-          restrictedPathList,
-        ) as AsyncIterable<{
+    const stream: AsyncIterable<{
+      dirent: import("fs").Dirent;
+      path: string;
+      stats?: import("fs").Stats;
+    }> = hasRestrictions
+      ? (restrictedEntryStream(absRoot, restrictedPathList) as AsyncIterable<{
           dirent: import("fs").Dirent;
           path: string;
           stats?: import("fs").Stats;
@@ -1044,11 +1020,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const dirBaseline = lowerBoundFor(prev?.confirmed_at ?? null);
         const dirChangeStart = dirChanged
           ? dirBaseline
-          : prev?.change_start ?? (prev?.change_end ?? dirBaseline);
+          : (prev?.change_start ?? prev?.change_end ?? dirBaseline);
         const dirChangeEnd = dirChanged ? op_ts : (prev?.change_end ?? op_ts);
         const dirConfirmedAt = dirChanged
           ? op_ts
-          : prev?.confirmed_at ?? op_ts;
+          : (prev?.confirmed_at ?? op_ts);
         let dirCopyPending = prev?.copy_pending ?? 0;
         if (dirCopyPending === 1) dirCopyPending = 2;
 
@@ -1151,7 +1127,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           changeEnd = null;
         } else {
           changeStart = row.change_start ?? baseline;
-          changeEnd = row.change_end ?? (row.change_start ?? baseline);
+          changeEnd = row.change_end ?? row.change_start ?? baseline;
         }
         const hashPendingFlag = needsHash ? 1 : (row?.hash_pending ?? 0);
         let copyPendingState = copyPending;
@@ -1161,7 +1137,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const confirmedValue =
           !needsHash && copyPendingState > 0
             ? scanTick
-            : rowConfirmed ?? null;
+            : (rowConfirmed ?? null);
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -1251,11 +1227,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         const linkBaseline = lowerBoundFor(prev?.confirmed_at ?? null);
         const linkChangeStart = linkChanged
           ? linkBaseline
-          : prev?.change_start ?? (prev?.change_end ?? linkBaseline);
+          : (prev?.change_start ?? prev?.change_end ?? linkBaseline);
         const linkChangeEnd = linkChanged ? op_ts : (prev?.change_end ?? op_ts);
         const linkConfirmedAt = linkChanged
           ? op_ts
-          : prev?.confirmed_at ?? op_ts;
+          : (prev?.confirmed_at ?? op_ts);
         let linkCopyPending = prev?.copy_pending ?? 0;
         if (linkCopyPending === 1) linkCopyPending = 2;
 
@@ -1420,7 +1396,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 }
 
 // ---------- CLI entry (preserved) ----------
-cliEntrypoint<ScanOptions>(
+cliEntrypoint<ScanOptions & { restrictedPath: string[] }>(
   import.meta.url,
   buildProgram,
   async (options) => {
@@ -1432,6 +1408,9 @@ cliEntrypoint<ScanOptions>(
       options.scanTick !== undefined && options.scanTick !== null
         ? Number(options.scanTick)
         : undefined;
+    if (options.restrictedPath) {
+      options.restrictedPaths = options.restrictedPath;
+    }
     await runScan({
       ...options,
       logicalClock: clock,
