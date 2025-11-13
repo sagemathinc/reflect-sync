@@ -45,4 +45,4 @@ reflect create --name=o $upperdir2 $upperdir
 #podman run -it --rm --rootfs "$root" bash /stress.sh
 
 #echo "manually run /run.sh to start the stress test"
-podman run -it --rm --rootfs "$root" bash
+podman run -it --rm --rootfs "$root" /run.sh

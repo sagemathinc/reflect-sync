@@ -68,7 +68,7 @@ import {
 import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
-import { dedupeRestrictedList } from "./restrict.js";
+import { dedupeRestrictedList, includeAncestors } from "./restrict.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
@@ -1369,9 +1369,9 @@ export async function runScheduler({
           ordered.push(p);
         }
       }
-      const limitedPaths = ordered.slice(0, MAX_HOT_SYNC);
-      if (!limitedPaths.length) return;
-      const limitedSet = new Set(limitedPaths);
+      const limitedRaw = ordered.slice(0, MAX_HOT_SYNC);
+      if (!limitedRaw.length) return;
+      const limitedSet = new Set(limitedRaw);
       for (const p of readyAlpha) {
         if (p && !limitedSet.has(p)) hotAlpha.add(p);
       }
@@ -1379,8 +1379,12 @@ export async function runScheduler({
         if (p && !limitedSet.has(p)) hotBeta.add(p);
       }
 
+      const expandedRestricted = dedupeRestrictedList(
+        includeAncestors([...limitedRaw, ""]),
+      );
+      if (!expandedRestricted.length) return;
       await runCycle({
-        restrictedPaths: limitedPaths,
+        restrictedPaths: expandedRestricted,
         label: "hot",
       });
     } catch (e: any) {
@@ -1614,7 +1618,9 @@ export async function runScheduler({
       }
     }
 
-    const restrictedPaths = dedupeRestrictedList(options.restrictedPaths);
+    const restrictedPaths = dedupeRestrictedList(
+      includeAncestors(options.restrictedPaths ?? []),
+    );
     const hasRestrictions = restrictedPaths.length > 0;
 
     running = true;
