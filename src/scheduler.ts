@@ -1579,6 +1579,7 @@ export async function runScheduler({
     const hotLogger = scoped("merge.hot");
     const expanded = expandWithAncestors(limitedPaths);
     if (!expanded.length) return;
+    await confirmRestrictedScans(expanded);
     const result = await executeThreeWayMerge({
       alphaDb,
       betaDb,
@@ -1604,6 +1605,87 @@ export async function runScheduler({
       diffCount: result.plan.diffs.length,
       operations: result.plan.operations.length,
     });
+  }
+
+  async function confirmRestrictedScans(paths: string[]) {
+    if (!paths.length) return;
+    await Promise.all([
+      runRestrictedScan("alpha", paths),
+      runRestrictedScan("beta", paths),
+    ]);
+    const confirmedAlpha = syncConfirmedCopiesToBase(alphaDb, baseDb);
+    const confirmedBeta = syncConfirmedCopiesToBase(betaDb, baseDb);
+    if (confirmedAlpha || confirmedBeta) {
+      log("info", "scan", "restricted copy confirmations synced", {
+        alpha: confirmedAlpha,
+        beta: confirmedBeta,
+      });
+    }
+  }
+
+  async function runRestrictedScan(side: "alpha" | "beta", paths: string[]) {
+    if (!paths.length) return;
+    const restrictedPaths = dedupeRestrictedList(paths);
+    if (!restrictedPaths.length) return;
+    const scanTick = logicalClock.next();
+    const scanLogger = scoped(`scan.${side}.restricted`);
+    if (side === "alpha") {
+      if (alphaIsRemote) {
+        await sshScanIntoMirror({
+          host: alphaHost!,
+          port: alphaPort,
+          root: alphaRoot,
+          localDb: alphaDb,
+          remoteDb: alphaRemoteDb!,
+          numericIds,
+          ignoreRules,
+          restrictedPaths,
+          scanTick,
+        });
+      } else {
+        await runScan({
+          root: alphaRoot,
+          db: alphaDb,
+          emitDelta: false,
+          hash,
+          vacuum: false,
+          numericIds,
+          logger: scanLogger,
+          ignoreRules,
+          restrictedPaths,
+          logicalClock,
+          scanTick,
+        });
+      }
+    } else {
+      if (betaIsRemote) {
+        await sshScanIntoMirror({
+          host: betaHost!,
+          port: betaPort,
+          root: betaRoot,
+          localDb: betaDb,
+          remoteDb: betaRemoteDb!,
+          numericIds,
+          ignoreRules,
+          restrictedPaths,
+          scanTick,
+        });
+      } else {
+        await runScan({
+          root: betaRoot,
+          db: betaDb,
+          emitDelta: false,
+          hash,
+          vacuum: false,
+          numericIds,
+          logger: scanLogger,
+          ignoreRules,
+          restrictedPaths,
+          logicalClock,
+          scanTick,
+        });
+      }
+    }
   }
 
   // ---------- root watchers (locals only) ----------
