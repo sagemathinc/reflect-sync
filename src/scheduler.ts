@@ -1829,6 +1829,7 @@ export async function runScheduler({
         logger: mergeLogger,
         traceLabel: options?.label ?? (hasRestrictions ? "restricted" : "full"),
         logicalClock,
+        restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
       });
       fullMergeResult = execResult;
       mergeOk = execResult.ok;
