@@ -1,5 +1,6 @@
 // src/stability.ts
 import { lstat } from "node:fs/promises";
+import { wait } from "./util.js";
 
 export type StabilityOptions = {
   windowMs?: number;
@@ -32,11 +33,6 @@ type Snapshot = {
   isFile: boolean;
   exists: boolean;
 };
-
-const sleep = (ms: number) =>
-  ms > 0
-    ? new Promise((resolve) => setTimeout(resolve, ms))
-    : Promise.resolve();
 
 async function sample(abs: string): Promise<Snapshot> {
   try {
@@ -99,7 +95,7 @@ export async function waitForStableFile(
   const deadline = Date.now() + Math.max(remaining, maxWaitMs);
 
   while (remaining > 0 && Date.now() < deadline) {
-    await sleep(Math.min(pollMs, remaining));
+    await wait(Math.min(pollMs, remaining));
     const next = await sample(abs);
     if (!next.exists) {
       return { stable: true, reason: "missing" };

@@ -69,6 +69,7 @@ import { DiskFullError } from "./rsync.js";
 import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList, includeAncestors } from "./restrict.js";
+import { wait } from "./util.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
@@ -1226,7 +1227,7 @@ export async function runScheduler({
   let hotTimer: NodeJS.Timeout | null = null;
   let hotFlushPromise: Promise<void> | null = null;
   let flushQueuedWhileRunning = false;
-  let fullCycleRunning = false;
+
   let lastHotFlushAt = 0;
 
   let alphaStream: StreamControl | null = null;
@@ -1271,7 +1272,7 @@ export async function runScheduler({
   }
 
   function scheduleHotFlush() {
-    if (fullCycleRunning) {
+    if (cycleRunning) {
       flushQueuedWhileRunning = true;
       return;
     }
@@ -1588,17 +1589,40 @@ export async function runScheduler({
   let addRemoteBetaHotDirs: null | ((dirs: string[]) => void) = null;
 
   // ---------- full cycle ----------
-  async function runCycle(options: CycleOptions = {}): Promise<void> {
-    if (fullCycleRunning) {
+  // cycleRunning = true whenever a sync cycle is running.
+  // right now at most one can run at a time.
+  let cycleRunning = false;
+  async function runCycle(options: CycleOptions = {}): Promise<{
+    // skipped = true if returned early because already running.
+    skipped: boolean;
+    // something went wrong (but not enough to throw exception)
+    failed?: boolean;
+  }> {
+    if (cycleRunning) {
       log(
         "info",
         "scheduler",
         "full cycle already running; skipping nested runCycle",
       );
-      return;
+      return { skipped: true };
     }
     try {
-      fullCycleRunning = true;
+      cycleRunning = true;
+      return await _unguardedRunCycle(options);
+    } finally {
+      cycleRunning = false;
+      if (flushQueuedWhileRunning || hotAlpha.size || hotBeta.size) {
+        flushQueuedWhileRunning = false;
+        scheduleHotFlush();
+      }
+    }
+  }
+
+  async function _unguardedRunCycle(options: CycleOptions = {}): Promise<{
+    skipped: boolean;
+    failed?: boolean;
+  }> {
+    try {
       await ensureRootsExist();
     } catch (err) {
       if (err instanceof RemoteRootUnavailableError) {
@@ -1610,12 +1634,6 @@ export async function runScheduler({
         );
       }
       throw err;
-    } finally {
-      fullCycleRunning = false;
-      if (flushQueuedWhileRunning || hotAlpha.size || hotBeta.size) {
-        flushQueuedWhileRunning = false;
-        scheduleHotFlush();
-      }
     }
 
     const restrictedPaths = dedupeRestrictedList(
@@ -1790,7 +1808,7 @@ export async function runScheduler({
       backoffMs = Math.min(backoffMs ? backoffMs * 2 : 10_000, MAX_BACKOFF_MS);
       lastCycleMs = MIN_INTERVAL_MS;
       running = false;
-      return;
+      return { skipped: false, failed: true };
     }
 
     const confirmedAlpha = syncConfirmedCopiesToBase(alphaDb, baseDb);
@@ -1902,6 +1920,7 @@ export async function runScheduler({
       mergeMs,
       backoffMs,
     });
+    return { skipped: false };
   }
 
   // --- Flush helpers ---
@@ -1917,7 +1936,7 @@ export async function runScheduler({
     while (Date.now() - t0 < timeoutMs) {
       const did = await processHotQueueOnce();
       if (!did) {
-        await new Promise((r) => setTimeout(r, 50));
+        await wait(50);
         if (hotAlpha.size === 0 && hotBeta.size === 0) break;
       }
     }
@@ -2008,15 +2027,18 @@ export async function runScheduler({
           }
         } else if (row.cmd === "sync") {
           executed = true;
-          let attempt: number | undefined;
+          let attempt: number | undefined = undefined;
+          let restrictedPaths: string[] | undefined = undefined;
           if (row.payload) {
             try {
               const parsed = JSON.parse(row.payload) as {
                 attempt?: number;
+                paths?: string[];
               };
               if (typeof parsed.attempt === "number") {
                 attempt = parsed.attempt;
               }
+              restrictedPaths = parsed.paths;
             } catch {
               // ignore malformed payloads
             }
@@ -2027,7 +2049,21 @@ export async function runScheduler({
               : "sync command received";
           log("info", "scheduler", msg);
           try {
-            await runCycle();
+            // keep trying to do a runCycle until not skipped
+            // due to one already running:
+            while (1) {
+              let status;
+              if (restrictedPaths?.length) {
+                status = await runCycle({ restrictedPaths, label: "hot" });
+              } else {
+                status = await runCycle();
+              }
+              if (!status.skipped) {
+                break;
+              } else {
+                await wait(1000);
+              }
+            }
             log("info", "scheduler", "sync cycle complete");
           } catch (e: any) {
             if (e instanceof FatalSchedulerError) throw e;
@@ -2073,7 +2109,7 @@ export async function runScheduler({
       const executed = await processSessionCommands();
       if (executed) return;
       const slice = Math.min(CMD_POLL_MS, remaining);
-      await new Promise((r) => setTimeout(r, slice));
+      await wait(slice);
       remaining -= slice;
     }
   }

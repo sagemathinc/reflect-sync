@@ -10,13 +10,13 @@ import {
 import type { Database } from "./db.js";
 import { planThreeWayMerge } from "./three-way-merge.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
+import { collectListOption } from "./restrict.js";
+import { wait } from "./util.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_CYCLES = 3;
 const PROGRESS_MESSAGE_FILTER = "progress";
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface ProgressState {
   enabled: boolean;
@@ -131,9 +131,10 @@ function enqueueSyncCommand(
   db: Database,
   sessionId: number,
   attempt: number,
+  paths: string[] = [],
 ): number {
   const ts = Date.now();
-  const payload = JSON.stringify({ requested_at: ts, attempt });
+  const payload = JSON.stringify({ requested_at: ts, attempt, paths });
   const info = db
     .prepare(
       `INSERT INTO session_commands(session_id, ts, cmd, payload, acked)
@@ -175,7 +176,7 @@ async function waitForCommandAck(
       throw new Error("timed out waiting for scheduler to run sync cycle");
     }
 
-    await sleep(POLL_INTERVAL_MS);
+    await wait(POLL_INTERVAL_MS);
   }
 }
 
@@ -185,7 +186,8 @@ async function runSyncForSession(
   ref: string,
   maxCycles: number,
   timeoutMs: number,
-  progress?: { enabled: boolean; json: boolean },
+  progress: { enabled: boolean; json: boolean } | undefined,
+  paths: string[],
 ): Promise<number> {
   const sessionRow = resolveSessionRow(sessionDbPath, ref);
   if (!sessionRow) {
@@ -214,7 +216,7 @@ async function runSyncForSession(
     console.log(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
-    const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt);
+    const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths);
     await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs, progressState);
     if (progressState) {
       drainProgressLogs(progressState);
@@ -278,6 +280,12 @@ export function registerSessionSync(sessionCmd: Command) {
       "maximum time to wait for each cycle",
       String(DEFAULT_TIMEOUT_MS),
     )
+    .option(
+      "--path <path>",
+      "restrict sync to a relative path (repeat or comma-separated)",
+      collectListOption,
+      [] as string[],
+    )
     .option("--progress", "stream progress logs while syncing", false)
     .option("--json", "emit progress logs as JSON", false)
     .action(
@@ -289,6 +297,7 @@ export function registerSessionSync(sessionCmd: Command) {
           timeout?: string;
           progress?: boolean;
           json?: boolean;
+          path?: string[];
         },
       ) => {
         const maxCycles = parsePositiveInt(opts.maxCycles, DEFAULT_MAX_CYCLES);
@@ -311,6 +320,7 @@ export function registerSessionSync(sessionCmd: Command) {
                 maxCycles,
                 timeoutMs,
                 progressConfig,
+                opts.path ?? [],
               );
             } catch (err) {
               const message =

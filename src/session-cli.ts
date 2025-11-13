@@ -43,6 +43,7 @@ import { MERGE_STRATEGY_NAMES } from "./merge-strategies.js";
 import { nodeKindToEntry } from "./nodes-util.js";
 import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
+import { wait } from "./util.js";
 
 type StopResult = "stopped" | "failed" | "not-running";
 
@@ -1197,7 +1198,7 @@ async function runMonitorCommand(
       const elapsed = Date.now() - loopStart;
       const waitMs = Math.max(hotInterval - elapsed, 100);
       if (waitMs > 0 && running) {
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await wait(waitMs);
       }
     }
   } finally {
