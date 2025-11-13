@@ -473,7 +473,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const abs = path.join(absRoot, normalized);
       let stats: import("fs").Stats;
       try {
-        stats = await statAsync(abs);
+        stats = await lstatAsync(abs);
       } catch {
         // Missing paths will be handled by deletion phase.
         continue;
