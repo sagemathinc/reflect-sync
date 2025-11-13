@@ -207,14 +207,14 @@ describe("reflect edit CLI", () => {
         "flag-test",
         "--stopped",
         "--disable-hot-sync",
-        "--disable-full-cycle",
+        "--disable-full-sync",
       ],
       { from: "node" },
     );
 
     let row = loadSessionByName(sessionDbPath, "flag-test")!;
     expect(row.disable_hot_sync).toBe(1);
-    expect(row.disable_full_cycle).toBe(1);
+    expect(row.disable_full_sync).toBe(1);
 
     await buildProgram().parseAsync(
       [
@@ -230,7 +230,7 @@ describe("reflect edit CLI", () => {
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
     expect(row.disable_hot_sync).toBe(0);
-    expect(row.disable_full_cycle).toBe(1);
+    expect(row.disable_full_sync).toBe(1);
 
     await buildProgram().parseAsync(
       [
@@ -241,13 +241,13 @@ describe("reflect edit CLI", () => {
         "edit",
         "flag-test",
         "--disable-hot-sync",
-        "--enable-full-cycle",
+        "--enable-full-sync",
       ],
       { from: "node" },
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
     expect(row.disable_hot_sync).toBe(1);
-    expect(row.disable_full_cycle).toBe(0);
+    expect(row.disable_full_sync).toBe(0);
 
     await buildProgram().parseAsync(
       [
@@ -257,13 +257,13 @@ describe("reflect edit CLI", () => {
         sessionDbPath,
         "edit",
         "flag-test",
-        "--disable-full-cycle",
+        "--disable-full-sync",
       ],
       { from: "node" },
     );
     row = loadSessionByName(sessionDbPath, "flag-test")!;
     expect(row.disable_hot_sync).toBe(1);
-    expect(row.disable_full_cycle).toBe(1);
+    expect(row.disable_full_sync).toBe(1);
     expect(process.exitCode).toBeUndefined();
   });
 });

@@ -193,7 +193,7 @@ function tableOutput(
     }
     add("hot-sync", sess.disable_hot_sync ? "disabled" : "enabled");
     add("reflink", sess.enable_reflink ? "enabled" : "disabled");
-    add("full cycle", sess.disable_full_cycle ? "disabled" : "enabled");
+    add("full-sync", sess.disable_full_sync ? "disabled" : "enabled");
     add("last clean sync", fmtCleanMarker(sess.last_clean_sync_at));
     if (sess.base_db) add("base db", fmtLocalPath(sess.base_db));
     if (sess.alpha_db) add("alpha db", fmtLocalPath(sess.alpha_db));

@@ -369,7 +369,7 @@ export async function newSession({
   logger,
   disableHotSync = false,
   enableReflink = false,
-  disableFullCycle = false,
+  disableFullSync = false,
   mergeStrategy = null,
 }): Promise<number> {
   ensureSessionDb(sessionDb);
@@ -425,7 +425,7 @@ export async function newSession({
         compress,
         disable_hot_sync: !!disableHotSync,
         enable_reflink: !!enableReflink,
-        disable_full_cycle: !!disableFullCycle,
+        disable_full_sync: !!disableFullSync,
         merge_strategy: normalizedMergeStrategy,
       },
       parseLabelPairs(label || []),
@@ -499,7 +499,7 @@ export interface SessionEditOptions {
   reset?: boolean;
   logger?: Logger;
   disableHotSync?: boolean;
-  disableFullCycle?: boolean;
+  disableFullSync?: boolean;
   mergeStrategy?: string | null;
 }
 
@@ -519,7 +519,7 @@ export async function editSession(options: SessionEditOptions) {
     reset,
     logger,
     disableHotSync,
-    disableFullCycle,
+    disableFullSync,
     mergeStrategy,
   } = options;
 
@@ -595,11 +595,11 @@ export async function editSession(options: SessionEditOptions) {
     }
   }
 
-  if (disableFullCycle !== undefined) {
-    const desired = !!disableFullCycle;
-    if (!!row.disable_full_cycle !== desired) {
-      updates.disable_full_cycle = desired;
-      changes.push(`full-cycle=${desired ? "disabled" : "enabled"}`);
+  if (disableFullSync !== undefined) {
+    const desired = !!disableFullSync;
+    if (!!row.disable_full_sync !== desired) {
+      updates.disable_full_sync = desired;
+      changes.push(`full-sync=${desired ? "disabled" : "enabled"}`);
       needRestart = true;
     }
   }

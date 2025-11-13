@@ -58,7 +58,7 @@ function baseSessionRow(
     ignore_rules: null,
     disable_hot_sync: 0,
     enable_reflink: 0,
-    disable_full_cycle: 0,
+    disable_full_sync: 0,
     merge_strategy: null,
     last_clean_sync_at: null,
     ...overrides,

@@ -139,7 +139,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      extraArgs: ["--disable-full-cycle"],
+      extraArgs: ["--disable-full-sync"],
     });
 
     try {
@@ -216,7 +216,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
       betaDb,
       baseDb,
       prefer: "alpha",
-      extraArgs: ["--disable-full-cycle"],
+      extraArgs: ["--disable-full-sync"],
     });
 
     try {

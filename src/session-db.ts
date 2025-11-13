@@ -113,7 +113,7 @@ export interface SessionCreateInput {
   ignore?: string[];
   disable_hot_sync?: boolean;
   enable_reflink?: boolean;
-  disable_full_cycle?: boolean;
+  disable_full_sync?: boolean;
   merge_strategy?: string | null;
 }
 
@@ -143,7 +143,7 @@ export interface SessionPatch {
   ignore_rules?: string | null;
   disable_hot_sync?: boolean | number | null;
   enable_reflink?: boolean | number | null;
-  disable_full_cycle?: boolean | number | null;
+  disable_full_sync?: boolean | number | null;
   merge_strategy?: string | null;
   last_clean_sync_at?: number | null;
 }
@@ -177,7 +177,7 @@ export interface SessionRow {
   ignore_rules?: string | null;
   disable_hot_sync: number;
   enable_reflink: number;
-  disable_full_cycle: number;
+  disable_full_sync: number;
   merge_strategy: string | null;
   last_clean_sync_at: number | null;
 }
@@ -272,7 +272,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         merge_strategy   TEXT,
         disable_hot_sync INTEGER NOT NULL DEFAULT 0,
         enable_reflink INTEGER NOT NULL DEFAULT 0,
-        disable_full_cycle INTEGER NOT NULL DEFAULT 0,
+        disable_full_sync INTEGER NOT NULL DEFAULT 0,
 
         desired_state    TEXT NOT NULL DEFAULT 'stopped',
         actual_state     TEXT NOT NULL DEFAULT 'stopped',
@@ -409,7 +409,7 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
   ensureColumn("sessions", "ignore_rules", "TEXT");
   ensureColumn("sessions", "disable_hot_sync", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "enable_reflink", "INTEGER NOT NULL DEFAULT 0");
-  ensureColumn("sessions", "disable_full_cycle", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("sessions", "disable_full_sync", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("sessions", "merge_strategy", "TEXT");
   ensureColumn("sessions", "last_clean_sync_at", "INTEGER");
   ensureColumn("ssh_sessions", "ssh_args", "TEXT");
@@ -447,7 +447,7 @@ export function createSession(
         alpha_remote_db, beta_remote_db,
         remote_scan_cmd, remote_watch_cmd,
         hash_alg, compress, ignore_rules, merge_strategy,
-        disable_hot_sync, disable_full_cycle, enable_reflink
+        disable_hot_sync, disable_full_sync, enable_reflink
       )
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
@@ -471,7 +471,7 @@ export function createSession(
       input.ignore ? serializeIgnoreRules(input.ignore) : null,
       input.merge_strategy ?? null,
       input.disable_hot_sync ? 1 : 0,
-      input.disable_full_cycle ? 1 : 0,
+      input.disable_full_sync ? 1 : 0,
       input.enable_reflink ? 1 : 0,
     );
     const id = Number(info.lastInsertRowid);
@@ -631,7 +631,7 @@ export function updateSession(
       let value = v;
       if (
         (k === "disable_hot_sync" ||
-          k === "disable_full_cycle" ||
+          k === "disable_full_sync" ||
           k === "enable_reflink") &&
         value !== undefined &&
         value !== null &&

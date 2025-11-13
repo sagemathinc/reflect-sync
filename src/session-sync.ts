@@ -229,6 +229,7 @@ async function runSyncForSession(
       baseDb: planTargets.baseDb,
       prefer: planTargets.prefer,
       strategyName: planTargets.strategy,
+      restrictedPaths: paths,
     });
 
     if (plan.diffs.length === 0 && plan.operations.length === 0) {

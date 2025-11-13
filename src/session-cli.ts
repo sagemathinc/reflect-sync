@@ -186,7 +186,7 @@ export function registerSessionCommands(program: Command) {
         "enable realtime hot-sync cycles for this session",
       )
       .option(
-        "--disable-full-cycle",
+        "--disable-full-sync",
         "disable automatic periodic full sync cycles",
       )
       .option(
@@ -320,7 +320,7 @@ export function registerSessionCommands(program: Command) {
           const payload = rows.map((r) => ({
             ...r,
             disable_hot_sync: !!r.disable_hot_sync,
-            disable_full_cycle: !!r.disable_full_cycle,
+            disable_full_sync: !!r.disable_full_sync,
           }));
           console.log(JSON.stringify(payload, null, 2));
           return;
@@ -373,7 +373,7 @@ export function registerSessionCommands(program: Command) {
           const flags: string[] = [];
           if (r.disable_hot_sync) flags.push("hot-sync off");
           if (r.enable_reflink) flags.push("reflink");
-          if (r.disable_full_cycle) flags.push("full-cycle off");
+          if (r.disable_full_sync) flags.push("full-sync off");
           const flagsSummary = flags.length ? flags.join(", ") : "-";
 
           table.addRow(
@@ -611,15 +611,15 @@ export function registerSessionCommands(program: Command) {
       )
       .addOption(
         new Option(
-          "--disable-full-cycle",
+          "--disable-full-sync",
           "disable automatic periodic full sync cycles",
-        ).conflicts("enableFullCycle"),
+        ).conflicts("enableFullSync"),
       )
       .addOption(
         new Option(
-          "--enable-full-cycle",
+          "--enable-full-sync",
           "enable automatic periodic full sync cycles",
-        ).conflicts("disableFullCycle"),
+        ).conflicts("disableFullSync"),
       )
       .addOption(
         new Option("--merge-strategy <name>", "set merge strategy")
@@ -645,10 +645,10 @@ export function registerSessionCommands(program: Command) {
             : opts.enableHotSync === true
               ? false
               : undefined;
-        const disableFullCycleUpdate =
-          opts.disableFullCycle === true
+        const disableFullSyncUpdate =
+          opts.disableFullSync === true
             ? true
-            : opts.enableFullCycle === true
+            : opts.enableFullSync === true
               ? false
               : undefined;
         const mergeStrategyUpdate =
@@ -673,7 +673,7 @@ export function registerSessionCommands(program: Command) {
             reset: !!opts.reset,
             logger: cliLogger,
             disableHotSync: disableHotSyncUpdate,
-            disableFullCycle: disableFullCycleUpdate,
+            disableFullSync: disableFullSyncUpdate,
             mergeStrategy: mergeStrategyUpdate,
           });
 

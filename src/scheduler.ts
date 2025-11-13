@@ -1,13 +1,5 @@
 #!/usr/bin/env node
 // src/scheduler.ts
-// - Commander-based CLI
-// - Exported runScheduler(opts) API for programmatic use
-// - Optional SSH watcher: remote watch -> demux remote stdout into ingest +
-//   realtime events
-//
-// Notes:
-// * Local watchers only; remote changes arrive via remote watch stream.
-// * Full-cycle still uses "reflect merge" (see merge.ts).
 
 import { spawn, ChildProcess } from "node:child_process";
 import chokidar, { FSWatcher } from "chokidar";
@@ -104,7 +96,7 @@ export type SchedulerOptions = {
 
   disableHotWatch: boolean;
   disableHotSync?: boolean;
-  disableFullCycle?: boolean;
+  disableFullSync?: boolean;
   enableReflink?: boolean;
   mergeStrategy?: string | null;
 
@@ -181,7 +173,7 @@ export function configureSchedulerCommand(
       )
       .option("--disable-hot-sync", "disable realtime hot-sync cycles")
       .option(
-        "--disable-full-cycle",
+        "--disable-full-sync",
         "disable automatic periodic full sync cycles",
       )
       .option(
@@ -254,7 +246,7 @@ export function cliOptsToSchedulerOptions(opts): SchedulerOptions {
     remoteCommand: opts.remoteCommand,
     disableHotWatch: !!opts.disableHotWatch || disableHotSync,
     disableHotSync,
-    disableFullCycle: !!opts.disableFullCycle,
+    disableFullSync: !!opts.disableFullSync,
     compress: opts.compress,
     ignoreRules: normalizeIgnorePatterns(opts.ignore ?? []),
     sessionId: opts.sessionId != null ? Number(opts.sessionId) : undefined,
@@ -315,7 +307,7 @@ export async function runScheduler({
   remoteCommand,
   disableHotWatch: disableHotWatchOption,
   disableHotSync = false,
-  disableFullCycle = false,
+  disableFullSync = false,
   enableReflink = false,
   compress,
   ignoreRules: schedulerIgnoreRules,
@@ -1211,7 +1203,7 @@ export async function runScheduler({
   }
 
   function requestSoon(reason: string) {
-    if (disableFullCycle) return;
+    if (disableFullSync) return;
     pending = true;
     nextDelayMs = clamp(
       Math.min(nextDelayMs, 3000),
@@ -2140,7 +2132,7 @@ export async function runScheduler({
       }
       if (!running) {
         pending = false;
-        const shouldRunCycle = !disableFullCycle || !initialCycleDone;
+        const shouldRunCycle = !disableFullSync || !initialCycleDone;
         if (shouldRunCycle) {
           try {
             await runCycle();
@@ -2173,13 +2165,13 @@ export async function runScheduler({
           );
           nextDelayMs =
             baseNext + (backoffMs || Math.floor(Math.random() * JITTER_MS));
-        } else if (disableFullCycle) {
+        } else if (disableFullSync) {
           await ensureRemoteStreams();
         }
       }
 
       if (pending) {
-        if (!disableFullCycle) {
+        if (!disableFullSync) {
           nextDelayMs = clamp(1500, MIN_INTERVAL_MS, MAX_INTERVAL_MS);
           pending = false;
           continue;
@@ -2187,7 +2179,7 @@ export async function runScheduler({
         pending = false;
       }
 
-      if (disableFullCycle) {
+      if (disableFullSync) {
         log(
           "info",
           "scheduler",
