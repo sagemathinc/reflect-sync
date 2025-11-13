@@ -1124,6 +1124,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               confirmed_at: number | null;
             }
           | undefined;
+        const copyPending = row?.copy_pending ?? 0;
 
         const resurrecting = row?.deleted === 1;
         let needsHash =
@@ -1144,6 +1145,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           ) {
             needsHash = true;
           }
+        }
+        const copyMetaMatches =
+          !!row &&
+          !row.deleted &&
+          !!row.hash &&
+          row.size === size &&
+          row.mtime === mtime;
+        if (copyPending > 0 && copyMetaMatches) {
+          needsHash = false;
         }
 
         const op_ts =
@@ -1166,6 +1176,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           changeEnd = row.change_end ?? (row.change_start ?? baseline);
         }
         const hashPendingFlag = needsHash ? 1 : (row?.hash_pending ?? 0);
+        let copyPendingState = copyPending;
+        if (!needsHash && copyPendingState === 1) {
+          copyPendingState = 2;
+        }
+        const confirmedValue =
+          !needsHash && copyPendingState > 0
+            ? scanTick
+            : rowConfirmed ?? null;
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -1181,8 +1199,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_start: changeStart,
           change_end: changeEnd,
           pending_start: pendingStart,
-          confirmed_at: rowConfirmed ?? null,
-          copy_pending: row?.copy_pending ?? 0,
+          confirmed_at: confirmedValue,
+          copy_pending: copyPendingState,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
