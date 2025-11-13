@@ -2212,6 +2212,11 @@ export async function runScheduler({
     HOT_TTL_MS,
     SHALLOW_DEPTH,
     HOT_DEPTH,
+    disableHotSync,
+    disableFullSync,
+    mergeStrategy,
+    compress,
+    hash,
   });
 
   const cleanup = async () => {

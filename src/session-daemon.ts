@@ -401,59 +401,33 @@ export function registerSessionDaemon(program: Command) {
         "start the daemon even if a pid file already exists or the pid appears alive",
         false,
       )
-      .action(
-        async (
-          opts: { sessionDb?: string; force?: boolean },
-          command: Command,
-        ) => {
-          const sessionDb = resolveSessionDb(opts, command);
-          const existing = readPidSync();
-          const running = isPidAlive(existing);
-          if (!opts.force && running) {
-            console.log(`daemon already running (pid ${existing})`);
-            return;
-          }
-          if (existing) {
-            removePidSync();
-            if (opts.force && running) {
-              console.log(
-                `ignoring existing pid ${existing}; forcing new daemon start`,
-              );
-            }
-          }
-          const pid = spawnDetachedDaemon(sessionDb);
-          console.log(`daemon starting (child pid ${pid})`);
-        },
-      ),
+      .action(start),
   );
 
   addSessionDbOption(
     daemon
       .command("stop")
       .description("stop the daemon if running")
-      .action(async (_opts: { sessionDb?: string }, _command: Command) => {
-        const logger = new ConsoleLogger("info");
-        const existing = readPidSync();
-        if (!existing || !isPidAlive(existing)) {
-          console.log("daemon not running");
-          removePidSync();
-          return;
-        }
-        await stopDaemonProcess(existing, logger);
-        removePidSync();
-        console.log("daemon stopped");
-      }),
+      .action(stop),
   );
 
   addSessionDbOption(
     daemon
-      .command("status")
-      .description("show daemon status")
-      .action((_opts: { sessionDb?: string }, _command: Command) => {
-        const pid = readPidSync();
-        const running = isPidAlive(pid);
-        console.log(formatStatus(pid, running));
+      .command("restart")
+      .option(
+        "--force",
+        "start the daemon even if a pid file already exists or the pid appears alive",
+        false,
+      )
+      .description("restart the daemon")
+      .action(async (opts, command) => {
+        await stop();
+        await start(opts, command);
       }),
+  );
+
+  addSessionDbOption(
+    daemon.command("status").description("show daemon status").action(status),
   );
 
   addSessionDbOption(
@@ -627,4 +601,46 @@ export function registerSessionDaemon(program: Command) {
         }
       }),
   );
+}
+
+async function start(
+  opts: { sessionDb?: string; force?: boolean },
+  command: Command,
+) {
+  const sessionDb = resolveSessionDb(opts, command);
+  const existing = readPidSync();
+  const running = isPidAlive(existing);
+  if (!opts.force && running) {
+    console.log(`daemon already running (pid ${existing})`);
+    return;
+  }
+  if (existing) {
+    removePidSync();
+    if (opts.force && running) {
+      console.log(
+        `ignoring existing pid ${existing}; forcing new daemon start`,
+      );
+    }
+  }
+  const pid = spawnDetachedDaemon(sessionDb);
+  console.log(`daemon starting (child pid ${pid})`);
+}
+
+async function stop() {
+  const logger = new ConsoleLogger("info");
+  const existing = readPidSync();
+  if (!existing || !isPidAlive(existing)) {
+    console.log("daemon not running");
+    removePidSync();
+    return;
+  }
+  await stopDaemonProcess(existing, logger);
+  removePidSync();
+  console.log("daemon stopped");
+}
+
+async function status() {
+  const pid = readPidSync();
+  const running = isPidAlive(pid);
+  console.log(formatStatus(pid, running));
 }

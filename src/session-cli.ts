@@ -182,10 +182,6 @@ export function registerSessionCommands(program: Command) {
         "disable realtime hot-sync cycles for this session",
       )
       .option(
-        "--enable-hot-sync",
-        "enable realtime hot-sync cycles for this session",
-      )
-      .option(
         "--disable-full-sync",
         "disable automatic periodic full sync cycles",
       )
