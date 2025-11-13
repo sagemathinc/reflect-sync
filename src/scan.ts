@@ -105,12 +105,6 @@ export function configureScanCommand(
       collectListOption,
       [] as string[],
     )
-    .option(
-      "--restricted-dir <path>",
-      "restrict scan to a directory tree (repeat or comma-separated)",
-      collectListOption,
-      [] as string[],
-    )
     .option("--numeric-ids", "include uid and gid in file hashes", false)
     .option(
       "-i, --ignore <pattern>",
@@ -149,9 +143,7 @@ type ScanOptions = {
   ignoreRules?: string[];
   ignore?: string[];
   restrictedPaths?: string[];
-  restrictedDirs?: string[];
   restrictedPath?: string[] | string;
-  restrictedDir?: string[] | string;
   logicalClock?: LogicalClock;
   clockBase?: string[];
   scanTick?: number;
@@ -173,9 +165,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     ignoreRules: ignoreRulesOpt = [],
     ignore: ignoreCliOpt = [],
     restrictedPaths: restrictedPathsOpt = [],
-    restrictedDirs: restrictedDirsOpt = [],
     restrictedPath: restrictedPathOpt = [],
-    restrictedDir: restrictedDirOpt = [],
     logicalClock,
     scanTick: scanTickOverride,
   } = opts;
@@ -217,28 +207,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         ? [restrictedPathOpt]
         : []),
   ];
-  const restrictedDirRaw = [
-    ...(Array.isArray(restrictedDirsOpt) ? restrictedDirsOpt : []),
-    ...(Array.isArray(restrictedDirOpt)
-      ? restrictedDirOpt
-      : restrictedDirOpt
-        ? [restrictedDirOpt]
-        : []),
-  ];
-
   let restrictedPathList = dedupeRestrictedList(restrictedPathRaw);
-  let restrictedDirList = dedupeRestrictedList(restrictedDirRaw);
-  if (restrictedPathList.includes("") || restrictedDirList.includes("")) {
+  if (restrictedPathList.includes("")) {
     restrictedPathList = [];
-    restrictedDirList = [];
   }
-  const hasRestrictions =
-    restrictedPathList.length > 0 || restrictedDirList.length > 0;
+  const hasRestrictions = restrictedPathList.length > 0;
   const restrictedPathSet = new Set(restrictedPathList);
-  const restrictedDirSet = new Set(restrictedDirList);
-  const restrictedDirPrefixes = restrictedDirList
-    .filter((dir) => dir.length > 0)
-    .map((dir) => `${dir}/`);
   const dirTraversalAllow = new Set<string>([""]);
   const addDirAndAncestors = (rel: string) => {
     let current = rel;
@@ -258,35 +232,20 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
     }
   };
-  for (const dir of restrictedDirList) {
-    addDirAndAncestors(dir);
-  }
   for (const relPath of restrictedPathList) {
     addDirAndAncestors(dirnameRel(relPath));
   }
-  const inRestrictedDir = (rel: string): boolean => {
-    if (!restrictedDirList.length) return false;
-    if (restrictedDirSet.has(rel)) return true;
-    for (const prefix of restrictedDirPrefixes) {
-      if (rel.startsWith(prefix)) return true;
-    }
-    return false;
-  };
   const dirAllowsTraversal = (rel: string): boolean => {
     if (!hasRestrictions) return true;
-    if (dirTraversalAllow.has(rel)) return true;
-    return inRestrictedDir(rel);
+    return dirTraversalAllow.has(rel);
   };
   const dirMatches = (rel: string): boolean => {
     if (!hasRestrictions) return true;
-    if (restrictedDirSet.has(rel)) return true;
-    if (restrictedPathSet.has(rel)) return true;
-    return inRestrictedDir(rel);
+    return restrictedPathSet.has(rel) || dirTraversalAllow.has(rel);
   };
   const pathMatches = (rel: string): boolean => {
     if (!hasRestrictions) return true;
-    if (restrictedPathSet.has(rel)) return true;
-    return inRestrictedDir(rel);
+    return restrictedPathSet.has(rel);
   };
 
   // Rows written to DB always use rpaths now.
@@ -465,11 +424,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     });
   };
 
-  const restrictedClause =
-    hasRestrictions && !restrictedDirSet.has("")
-      ? " AND path IN (SELECT rpath FROM restricted_paths)"
-      : "";
-  if (hasRestrictions && !restrictedDirSet.has("")) {
+  const restrictedClause = hasRestrictions
+    ? " AND path IN (SELECT rpath FROM restricted_paths)"
+    : "";
+  if (hasRestrictions) {
     db.exec(`
       DROP TABLE IF EXISTS restricted_paths;
       CREATE TEMP TABLE restricted_paths(
@@ -484,25 +442,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         insertRestricted.run(relPath);
       }
     });
-    insertRestrictedBatch([...restrictedPathList, ...restrictedDirList]);
-    if (restrictedDirList.length) {
-      const insertExisting = db.prepare(
-        `
-        INSERT OR IGNORE INTO restricted_paths(rpath)
-        SELECT path FROM nodes
-        WHERE path = @dir
-           OR (path >= @prefix AND path < @upper)
-      `,
-      );
-      const insertExistingTxn = db.transaction((dirs: string[]) => {
-        for (const dir of dirs) {
-          const prefix = dir ? `${dir}/` : "";
-          const upper = dir ? `${dir}/\uffff` : "\uffff";
-          insertExisting.run({ dir, prefix, upper });
-        }
-      });
-      insertExistingTxn(restrictedDirList);
-    }
+    insertRestrictedBatch(restrictedPathList);
   }
 
   if (pruneMs) {

@@ -117,7 +117,6 @@ export type SchedulerOptions = {
 
 type CycleOptions = {
   restrictedPaths?: string[];
-  restrictedDirs?: string[];
   label?: string;
 };
 
@@ -684,7 +683,6 @@ export async function runScheduler({
     numericIds?: boolean;
     ignoreRules: string[];
     restrictedPaths?: string[];
-    restrictedDirs?: string[];
     scanTick?: number;
   }): Promise<{
     code: number | null;
@@ -736,12 +734,6 @@ export async function runScheduler({
       for (const rel of params.restrictedPaths) {
         if (!rel) continue;
         sshArgs.push("--restricted-path", rel);
-      }
-    }
-    if (params.restrictedDirs?.length) {
-      for (const rel of params.restrictedDirs) {
-        if (!rel) continue;
-        sshArgs.push("--restricted-dir", rel);
       }
     }
     lastRemoteScan.start = Date.now();
@@ -1623,9 +1615,7 @@ export async function runScheduler({
     }
 
     const restrictedPaths = dedupeRestrictedList(options.restrictedPaths);
-    const restrictedDirs = dedupeRestrictedList(options.restrictedDirs);
-    const hasRestrictions =
-      restrictedPaths.length > 0 || restrictedDirs.length > 0;
+    const hasRestrictions = restrictedPaths.length > 0;
 
     running = true;
     const t0 = Date.now();
@@ -1652,7 +1642,6 @@ export async function runScheduler({
             numericIds,
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-            restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
             scanTick,
           })
         : await (async () => {
@@ -1667,7 +1656,6 @@ export async function runScheduler({
                 logger: scanLogger,
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-                restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
                 logicalClock,
                 scanTick: alphaTick,
               });
@@ -1720,7 +1708,6 @@ export async function runScheduler({
             numericIds,
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-            restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
             scanTick,
           })
         : await (async () => {
@@ -1735,7 +1722,6 @@ export async function runScheduler({
                 logger: scanLogger,
                 ignoreRules,
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-                restrictedDirs: hasRestrictions ? restrictedDirs : undefined,
                 logicalClock,
                 scanTick: betaTick,
               });

@@ -32,8 +32,8 @@ describe("restricted scan and merge", () => {
       r.aDb,
       "--restricted-path",
       "include.txt",
-      "--restricted-dir",
-      "dirA",
+      "--restricted-path",
+      "dirA/fileA.txt",
     ]);
 
     const db = new Database(r.aDb);

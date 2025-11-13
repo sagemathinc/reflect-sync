@@ -16,12 +16,11 @@ export interface DiffEntry {
 export interface SessionDiffOptions {
   limit?: number;
   restrictedPaths?: string[];
-  restrictedDirs?: string[];
 }
 
 export function diffSession(
   session: SessionRow,
-  { limit, restrictedPaths, restrictedDirs }: SessionDiffOptions = {},
+  { limit, restrictedPaths }: SessionDiffOptions = {},
 ): DiffEntry[] {
   const alphaDb = resolveDbPath(session, "alpha");
   const betaDb = resolveDbPath(session, "beta");
@@ -36,7 +35,7 @@ export function diffSession(
     baseDb,
     prefer,
   });
-  const allowed = buildRestrictionFilter(restrictedPaths, restrictedDirs);
+  const allowed = buildRestrictionFilter(restrictedPaths);
   const entries = plan.diffs
     .map((row) => {
       if (!row.path) return null;
@@ -69,29 +68,13 @@ function resolveKind(row: any): DiffEntryType {
   return "file";
 }
 
-function buildRestrictionFilter(
-  restrictedPaths?: string[],
-  restrictedDirs?: string[],
-) {
+function buildRestrictionFilter(restrictedPaths?: string[]) {
   const pathList = dedupeRestrictedList(restrictedPaths);
-  const dirList = dedupeRestrictedList(restrictedDirs);
-  const hasRestrictions = pathList.length > 0 || dirList.length > 0;
-  const pathSet = new Set(pathList);
-  const dirSet = new Set(dirList);
-  const dirPrefixes = dirList.filter(Boolean).map((dir) => `${dir}/`);
-
-  if (!hasRestrictions) {
+  if (!pathList.length) {
     return () => true;
   }
-
-  return (relPath: string) => {
-    if (pathSet.has(relPath)) return true;
-    if (dirSet.has(relPath)) return true;
-    for (const prefix of dirPrefixes) {
-      if (relPath.startsWith(prefix)) return true;
-    }
-    return false;
-  };
+  const pathSet = new Set(pathList);
+  return (relPath: string) => pathSet.has(relPath);
 }
 
 function resolveDbPath(

@@ -92,7 +92,7 @@ describe("session diff restrictions", () => {
     await fsp.rm(workDir, { recursive: true, force: true });
   });
 
-  it("filters diffs by restricted paths and directories", () => {
+  it("filters diffs by restricted paths", () => {
     const session = baseSessionRow(alphaDb, betaDb);
     const allDiffs = diffSession(session)
       .map((entry) => entry.path)
@@ -102,11 +102,6 @@ describe("session diff restrictions", () => {
       "dirB/other.txt",
       "include.txt",
     ]);
-
-    const dirRestricted = diffSession(session, {
-      restrictedDirs: ["dirA"],
-    }).map((entry) => entry.path);
-    expect(dirRestricted).toEqual(["dirA/file.txt"]);
 
     const pathRestricted = diffSession(session, {
       restrictedPaths: ["include.txt"],

@@ -832,12 +832,6 @@ export function registerSessionCommands(program: Command) {
         collectListOption,
         [] as string[],
       )
-      .option(
-        "--restricted-dir <dir>",
-        "restrict diff to a directory tree (repeat or comma-separated)",
-        collectListOption,
-        [] as string[],
-      )
       .action(async (ref: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(opts, command);
         let row: SessionRow;
@@ -852,7 +846,6 @@ export function registerSessionCommands(program: Command) {
           const differences = diffSession(row, {
             limit: opts.maxPaths ? Number(opts.maxPaths) : undefined,
             restrictedPaths: dedupeRestrictedList(opts.restrictedPath),
-            restrictedDirs: dedupeRestrictedList(opts.restrictedDir),
           });
           if (opts.json) {
             console.log(JSON.stringify(differences, null, 2));
