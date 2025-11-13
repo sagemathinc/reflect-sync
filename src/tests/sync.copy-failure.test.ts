@@ -86,8 +86,7 @@ describe("three-way merge copy tracking", () => {
     });
 
     const alphaRow = readNode(r.aDb, rel);
-    expect(alphaRow?.deleted ?? 1).toBe(1);
-    expect(alphaRow?.copy_pending ?? 0).toBe(0);
+    expect(alphaRow).toBeUndefined();
 
     const baseRow = readNode(r.baseDb, rel);
     expect(baseRow).toBeUndefined();
@@ -121,6 +120,6 @@ describe("three-way merge copy tracking", () => {
 
     expect(await dirExists(path.join(r.aRoot, rel))).toBe(false);
     const alphaRow = readNode(r.aDb, rel);
-    expect(alphaRow?.deleted ?? 1).toBe(1);
+    expect(alphaRow).toBeUndefined();
   });
 });
