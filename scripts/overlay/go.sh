@@ -19,10 +19,18 @@ cp -v run.sh stress.sh $root/
 
 reflect terminate o || true
 export REFLECT_TRACE_ALL=1
+#export SCHED_MIN_MS="100"
+#export SCHED_MAX_MS="200"
+#export SCHED_MAX_BACKOFF_MS="50"
 reflect daemon stop
 reflect daemon start
 
 # this fails very quickly with fb68a88f18ae81ec5cf5c546226399fcfd825349
+
+#reflect create --disable-hot-sync  --name=o $upperdir2 $upperdir
+
+
+#reflect create --name=o  --disable-full-cycle  $upperdir2 $upperdir
 
 reflect create --name=o $upperdir2 $upperdir
 
