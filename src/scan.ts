@@ -31,11 +31,7 @@ import {
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { getReflectSyncHome } from "./session-db.js";
 import { ensureTempDir } from "./rsync.js";
-import {
-  collectListOption,
-  dedupeRestrictedList,
-  dirnameRel,
-} from "./restrict.js";
+import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 import { createLogicalClock } from "./logical-clock.js";
 import type { LogicalClock } from "./logical-clock.js";
 
@@ -212,41 +208,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     restrictedPathList = [];
   }
   const hasRestrictions = restrictedPathList.length > 0;
-  const restrictedPathSet = new Set(restrictedPathList);
-  const dirTraversalAllow = new Set<string>([""]);
-  const addDirAndAncestors = (rel: string) => {
-    let current = rel;
-    while (true) {
-      if (!dirTraversalAllow.has(current)) {
-        dirTraversalAllow.add(current);
-      }
-      const parent = dirnameRel(current);
-      if (parent === current || current === "") {
-        dirTraversalAllow.add("");
-        break;
-      }
-      current = parent;
-      if (current === "") {
-        dirTraversalAllow.add("");
-        break;
-      }
-    }
-  };
-  for (const relPath of restrictedPathList) {
-    addDirAndAncestors(dirnameRel(relPath));
-  }
-  const dirAllowsTraversal = (rel: string): boolean => {
-    if (!hasRestrictions) return true;
-    return dirTraversalAllow.has(rel);
-  };
-  const dirMatches = (rel: string): boolean => {
-    if (!hasRestrictions) return true;
-    return restrictedPathSet.has(rel) || dirTraversalAllow.has(rel);
-  };
-  const pathMatches = (rel: string): boolean => {
-    if (!hasRestrictions) return true;
-    return restrictedPathSet.has(rel);
-  };
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -464,6 +425,65 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     if (!touchBatch.length) return;
     touchTx(touchBatch);
     touchBatch.length = 0;
+  }
+
+  type VirtualDirent = {
+    name: string;
+    isDirectory(): boolean;
+    isFile(): boolean;
+    isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+  };
+
+  function makeVirtualDirent(
+    name: string,
+    st: import("fs").Stats,
+  ): VirtualDirent {
+    return {
+      name,
+      isDirectory: () => st.isDirectory(),
+      isFile: () => st.isFile(),
+      isSymbolicLink: () => st.isSymbolicLink(),
+      isBlockDevice: () => st.isBlockDevice(),
+      isCharacterDevice: () => st.isCharacterDevice(),
+      isFIFO: () => st.isFIFO(),
+      isSocket: () => st.isSocket(),
+    };
+  }
+
+  async function* restrictedEntryStream(
+    absRoot: string,
+    relPaths: string[],
+  ): AsyncIterable<{
+    dirent: VirtualDirent;
+    path: string;
+    stats?: import("fs").Stats;
+  }> {
+    const seen = new Set<string>();
+    for (const rel of relPaths) {
+      const normalized = normalizeRelativePath(String(rel ?? "")).replace(
+        /^\/+/,
+        "",
+      );
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      const abs = path.join(absRoot, normalized);
+      let stats: import("fs").Stats;
+      try {
+        stats = await statAsync(abs);
+      } catch {
+        // Missing paths will be handled by deletion phase.
+        continue;
+      }
+      yield {
+        dirent: makeVirtualDirent(path.posix.basename(normalized), stats),
+        path: abs,
+        stats,
+      };
+    }
   }
 
   type DirRow = {
@@ -900,33 +920,43 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const ig = createIgnorer(ignoreRules);
 
     // stream entries with stats so we avoid a second stat in main thread
-    const stream = walk.walkStream(absRoot, {
-      stats: true,
-      followSymbolicLinks: false,
-      concurrency: 128,
-      // Do not descend into ignored or out-of-scope directories
-      deepFilter: (e) => {
-        if (!e.dirent.isDirectory()) return true;
-        const r = toRel(e.path, absRoot);
-        if (!dirAllowsTraversal(r)) return false;
-        return !ig.ignoresDir(r);
-      },
-      // Do not emit ignored or out-of-scope entries
-      entryFilter: (e) => {
-        const st = (e as { stats?: import("fs").Stats }).stats;
-        if (rootDevice !== undefined && st && st.dev !== rootDevice) {
-          return false;
-        }
-        const r = toRel(e.path, absRoot);
-        if (e.dirent.isDirectory()) {
-          if (!dirAllowsTraversal(r) || !dirMatches(r)) return false;
-          return !ig.ignoresDir(r);
-        }
-        if (!pathMatches(r)) return false;
-        return !ig.ignoresFile(r);
-      },
-      errorFilter: () => true,
-    });
+  const stream: AsyncIterable<{
+    dirent: import("fs").Dirent;
+    path: string;
+    stats?: import("fs").Stats;
+  }> = hasRestrictions
+      ? (restrictedEntryStream(
+          absRoot,
+          restrictedPathList,
+        ) as AsyncIterable<{
+          dirent: import("fs").Dirent;
+          path: string;
+          stats?: import("fs").Stats;
+        }>)
+      : walk.walkStream(absRoot, {
+          stats: true,
+          followSymbolicLinks: false,
+          concurrency: 128,
+          // Do not descend into ignored or out-of-scope directories
+          deepFilter: (e) => {
+            if (!e.dirent.isDirectory()) return true;
+            const r = toRel(e.path, absRoot);
+            return !ig.ignoresDir(r);
+          },
+          // Do not emit ignored or out-of-scope entries
+          entryFilter: (e) => {
+            const st = (e as { stats?: import("fs").Stats }).stats;
+            if (rootDevice !== undefined && st && st.dev !== rootDevice) {
+              return false;
+            }
+            const r = toRel(e.path, absRoot);
+            if (e.dirent.isDirectory()) {
+              return !ig.ignoresDir(r);
+            }
+            return !ig.ignoresFile(r);
+          },
+          errorFilter: () => true,
+        });
 
     // Periodic flush so we don't hold large arrays in RAM too long
     const periodicFlush = setInterval(() => {
@@ -1404,3 +1434,9 @@ cliEntrypoint<ScanOptions>(
     label: "scan",
   },
 );
+function normalizeRelativePath(rel: string): string {
+  const replaced = rel.replace(/\\/g, "/");
+  const normalized = path.posix.normalize(replaced);
+  if (normalized === "." || normalized === "./") return "";
+  return normalized.replace(/^(\.\/)+/, "");
+}
