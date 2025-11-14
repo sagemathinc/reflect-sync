@@ -535,23 +535,6 @@ export function rsyncArgsDirs(opts: RsyncRunOptions) {
   return a;
 }
 
-export function rsyncArgsDelete(opts: RsyncRunOptions) {
-  const a = [
-    "-a",
-    "--relative",
-    "--from0",
-    "--ignore-missing-args",
-    "--delete-missing-args",
-    "--force",
-    ...numericIdsFlag(),
-  ];
-  if (opts.dryRun) {
-    a.unshift("-n");
-  }
-  if (!isDebugEnabled(opts)) a.push("--quiet");
-  return a;
-}
-
 // Metadata-only fixers (no content copy)
 export function rsyncArgsFixMeta(opts: RsyncRunOptions) {
   // -a includes -pgo (perms, owner, group); --no-times prevents touching mtimes
@@ -941,7 +924,7 @@ function truncateMiddle(input: string, max = 200): string {
   return `${input.slice(0, half)}...${input.slice(-half)}`;
 }
 
-export async function rsyncCopy(
+async function rsyncCopy(
   fromRoot: string,
   toRoot: string,
   listFile: string,
@@ -1182,14 +1165,31 @@ export async function rsyncFixMetaDirs(
   return { ok: true, zero: res.zero };
 }
 
-export async function rsyncDelete(
+// -- DELETE --
+
+export function rsyncArgsDelete(opts: RsyncRunOptions) {
+  const a = [
+    "-lptgoD", // everything in -a except '-r'
+    "--relative",
+    "--from0",
+    "--ignore-missing-args",
+    "--delete-missing-args",
+    ...numericIdsFlag(),
+  ];
+  if (opts.dryRun) {
+    a.unshift("-n");
+  }
+  if (!isDebugEnabled(opts)) a.push("--quiet");
+  return a;
+}
+
+async function rsyncDelete(
   fromRoot: string,
   toRoot: string,
   listFile: string,
   label: string,
   listedPaths: readonly string[] = [],
   opts: {
-    forceEmptySource?: boolean;
     dryRun?: boolean | string;
     verbose?: boolean | string;
     logger?: Logger;
@@ -1214,10 +1214,8 @@ export async function rsyncDelete(
   let sourceRoot = ensureTrailingSlash(fromRoot);
   let tmpEmptyDir: string | null = null;
   try {
-    if (opts.forceEmptySource) {
-      tmpEmptyDir = await mkdtemp(path.join(tmpdir(), "rsync-empty-"));
-      sourceRoot = ensureTrailingSlash(tmpEmptyDir);
-    }
+    tmpEmptyDir = await mkdtemp(path.join(tmpdir(), "rsync-empty-"));
+    sourceRoot = ensureTrailingSlash(tmpEmptyDir);
 
     if (debug) {
       logger.debug(
@@ -1271,7 +1269,6 @@ export async function rsyncDeleteChunked(
   label: string,
   opts: {
     direction?;
-    forceEmptySource?: boolean;
     chunkSize?: number;
     dryRun?: boolean | string;
     verbose?: boolean | string;
@@ -1311,7 +1308,6 @@ export async function rsyncDeleteChunked(
       chunkPaths,
       {
         direction: opts.direction,
-        forceEmptySource: opts.forceEmptySource,
         dryRun: opts.dryRun,
         verbose: opts.verbose,
         logger,

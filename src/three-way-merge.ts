@@ -533,7 +533,6 @@ async function performDeletes(params: {
         ...params.rsyncOpts,
         direction: params.direction,
         tempDir: params.tempDir,
-        forceEmptySource: true,
         captureDeletes: true,
       },
     );

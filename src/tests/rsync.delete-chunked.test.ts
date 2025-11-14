@@ -16,7 +16,6 @@ test("chunked delete calls rsync per batch", async () => {
   const items = Array.from({ length: 120_000 }, (_, i) => `p/${i}`);
   await rs.rsyncDeleteChunked(work, "/src", "/dst", items, "label", {
     chunkSize: 50_000,
-    forceEmptySource: true,
     dryRun: false,
     verbose: false,
   });
