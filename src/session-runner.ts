@@ -86,9 +86,13 @@ export function spawnSchedulerForSession(
   args.push("--session-id", String(row.id));
   args.push("--session-db", sessionDb);
 
+  const debugLogs =
+    process.env.DEBUG_TESTS === "1" ||
+    process.env.REFLECT_TEST_DEBUG === "1" ||
+    process.env.REFLECT_TEST_DEBUG === "";
   logger?.info(`start session: '${process.execPath} ${argsJoin(args)}'`);
   const child = spawn(launcher.command, args, {
-    stdio: "ignore",
+    stdio: debugLogs ? ["inherit", "inherit", "inherit"] : "ignore",
     detached: true,
     env: process.env,
   });

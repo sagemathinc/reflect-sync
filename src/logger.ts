@@ -60,6 +60,7 @@ function isEchoSuppressed(): boolean {
 const defaultEchoWriter: EchoWriter = (entry) => {
   if (isEchoSuppressed()) return;
   const { level, scope, message, meta } = entry;
+  const ts = new Date(entry.ts ?? Date.now()).toISOString();
   const prefix =
     level === "error"
       ? "⛔"
@@ -70,9 +71,12 @@ const defaultEchoWriter: EchoWriter = (entry) => {
           : "·";
   const scopeText = scope ? `[${scope}] ` : "";
   if (meta && Object.keys(meta).length) {
-    console.error(`${prefix} ${scopeText}${message}`, serializeMeta(meta));
+    console.error(
+      `${ts} ${prefix} ${scopeText}${message}`,
+      serializeMeta(meta),
+    );
   } else {
-    console.error(`${prefix} ${scopeText}${message}`);
+    console.error(`${ts} ${prefix} ${scopeText}${message}`);
   }
 };
 

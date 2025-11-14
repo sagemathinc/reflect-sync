@@ -2,6 +2,9 @@ import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 
 jest.setTimeout(20_000);
+if (!process.env.REFLECT_LOG_LEVEL) {
+  process.env.REFLECT_LOG_LEVEL = "info";
+}
 
 const describeIfSsh = SSH_AVAILABLE ? describe : describe.skip;
 

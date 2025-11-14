@@ -1,3 +1,10 @@
+/**
+ * Integration test harness helpers.
+ *
+ * Tips:
+ *   - Set REFLECT_TEST_KEEP_WORKSPACE=1 to keep the temp roots when a test fails.
+ *   - Set REFLECT_TEST_DEBUG=1 (or DEBUG_TESTS=1) to stream scheduler/run logs (log level debug).
+ */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import type { MakeDirectoryOptions, RmOptions } from "node:fs";
@@ -20,6 +27,9 @@ const DIST = path.resolve(__dirname, "../../../dist");
 const CLI = path.join(DIST, "cli.js");
 const KEEP_WORKSPACE =
   process.env.REFLECT_TEST_KEEP_WORKSPACE === "1" ||
+  process.env.DEBUG_TESTS === "1";
+const DEBUG_LOGS =
+  process.env.REFLECT_TEST_DEBUG === "1" ||
   process.env.DEBUG_TESTS === "1";
 
 type RemoteSide = {
@@ -202,7 +212,7 @@ export class TestSession {
     if (!KEEP_WORKSPACE) {
       await fsp.rm(this.workspace, { recursive: true, force: true });
     } else {
-      console.error(
+      console.log(
         `kept test workspace for debugging: ${this.workspace} (session ${this.id})`,
       );
     }
@@ -212,6 +222,9 @@ export class TestSession {
 export async function createTestSession(
   options: CreateTestSessionOptions = {},
 ): Promise<TestSession> {
+  // NOTE: TMP and TEMP environment variables will be checked to override
+  // the result of os.tmpdir(), which can be used to run tests on
+  // a custom filesystem (not /tmp), e.g, a btrfs directory.
   const workspace = await fsp.mkdtemp(
     path.join(os.tmpdir(), "reflect-int-session-"),
   );
@@ -231,8 +244,12 @@ export async function createTestSession(
   const sessionDb = path.join(reflectHome, "sessions.db");
   const envExtra: Record<string, string> = {
     REFLECT_HOME: reflectHome,
-    REFLECT_DISABLE_LOG_ECHO: "1",
   };
+  if (!DEBUG_LOGS) {
+    envExtra.REFLECT_DISABLE_LOG_ECHO = "1";
+  } else {
+    envExtra.REFLECT_LOG_LEVEL = "debug";
+  }
 
   const name = options.name ?? `test-${crypto.randomBytes(4).toString("hex")}`;
   const prefer = options.prefer ?? "alpha";
@@ -267,7 +284,17 @@ export async function createTestSession(
       const row = loadSessionById(sessionDb, sessionId);
       if (!row) throw new Error(`session ${sessionId} missing after creation`);
       const prevEntry = process.env.REFLECT_ENTRY;
+      const prevLog = process.env.REFLECT_LOG_LEVEL;
+      const prevEcho = process.env.REFLECT_DISABLE_LOG_ECHO;
       process.env.REFLECT_ENTRY = CLI;
+      if (DEBUG_LOGS) {
+        process.env.REFLECT_LOG_LEVEL = "debug";
+        delete process.env.REFLECT_DISABLE_LOG_ECHO;
+      } else {
+        if (!process.env.REFLECT_DISABLE_LOG_ECHO) {
+          process.env.REFLECT_DISABLE_LOG_ECHO = "1";
+        }
+      }
       try {
         schedulerPid = spawnSchedulerForSession(
           sessionDb,
@@ -279,6 +306,16 @@ export async function createTestSession(
           delete process.env.REFLECT_ENTRY;
         } else {
           process.env.REFLECT_ENTRY = prevEntry;
+        }
+        if (prevLog === undefined) {
+          delete process.env.REFLECT_LOG_LEVEL;
+        } else {
+          process.env.REFLECT_LOG_LEVEL = prevLog;
+        }
+        if (prevEcho === undefined) {
+          delete process.env.REFLECT_DISABLE_LOG_ECHO;
+        } else {
+          process.env.REFLECT_DISABLE_LOG_ECHO = prevEcho;
         }
       }
     });
@@ -333,28 +370,32 @@ function runReflect(
   args: string[],
   envExtra: Record<string, string>,
 ): Promise<void> {
+  const env = { ...process.env, ...envExtra };
+  const withDebug = DEBUG_LOGS ? ["--log-level", "debug", ...args] : args;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CLI, ...args], {
-      env: { ...process.env, ...envExtra },
-      stdio: ["ignore", "pipe", "pipe"],
+    const child = spawn(process.execPath, [CLI, ...withDebug], {
+      env,
+      stdio: DEBUG_LOGS ? "inherit" : ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
+    if (!DEBUG_LOGS) {
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+      });
+    }
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) {
         resolve();
       } else {
         const err = new Error(
-          `reflect ${args.join(" ")} exited with code ${code}\n${stderr || stdout}`,
+          `reflect ${withDebug.join(" ")} exited with code ${code}\n${stderr || stdout}`,
         );
         reject(err);
       }
