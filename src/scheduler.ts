@@ -272,6 +272,7 @@ const SHALLOW_DEPTH = envNum("SHALLOW_DEPTH", 1);
 const HOT_DEPTH = envNum("HOT_DEPTH", 2);
 
 const HOT_THROTTLE_MS = envNum("HOT_THROTTLE_MS", 200);
+const REMOTE_ROOT_CACHE_MS = envNum("REMOTE_ROOT_CACHE_MS", 60_000);
 
 const MIN_INTERVAL_MS = envNum("SCHED_MIN_MS", 7_500);
 const MAX_INTERVAL_MS = envNum("SCHED_MAX_MS", 60_000);
@@ -590,49 +591,68 @@ export async function runScheduler({
     throw missingRootError;
   }
 
+  const remoteRootVerified: Record<"alpha" | "beta", boolean> = {
+    alpha: false,
+    beta: false,
+  };
+  const remoteRootLastCheck: Record<"alpha" | "beta", number> = {
+    alpha: 0,
+    beta: 0,
+  };
+
+  function invalidateRemoteRoot(side: "alpha" | "beta") {
+    remoteRootVerified[side] = false;
+    remoteRootLastCheck[side] = 0;
+  }
+
   async function ensureRootsExist({
     localOnly = false,
   }: { localOnly?: boolean } = {}): Promise<void> {
     if (missingRootError) throw missingRootError;
 
-    if (!alphaIsRemote) {
-      if (!(await dirExistsLocal(alphaRoot))) failMissingRoot("alpha");
-    } else if (!localOnly) {
+    const checkRemote = async (side: "alpha" | "beta") => {
+      const isRemote = side === "alpha" ? alphaIsRemote : betaIsRemote;
+      if (!isRemote) return true;
+      if (localOnly) return true;
+      const lastCheck = remoteRootLastCheck[side];
+      if (remoteRootVerified[side] && Date.now() - lastCheck < REMOTE_ROOT_CACHE_MS) {
+        return true;
+      }
+      const host = side === "alpha" ? alphaHost! : betaHost!;
+      const root = side === "alpha" ? alphaRoot : betaRoot;
+      const port = side === "alpha" ? alphaPort : betaPort;
       try {
         const ok = await remoteDirExists({
-          host: alphaHost!,
-          path: alphaRoot,
-          port: alphaPort,
+          host,
+          path: root,
+          port,
           logger,
         });
-        if (!ok) failMissingRoot("alpha");
+        remoteRootVerified[side] = ok;
+        remoteRootLastCheck[side] = Date.now();
+        return ok;
       } catch (err) {
         if (err instanceof RemoteConnectionError) {
-          const message = `remote alpha root unreachable (${formatRootLocation("alpha")}): ${err.message}`;
-          throw new RemoteRootUnavailableError("alpha", message, err);
+          const message = `remote ${side} root unreachable (${formatRootLocation(side)}): ${err.message}`;
+          throw new RemoteRootUnavailableError(side, message, err);
         }
+        invalidateRemoteRoot(side);
         throw err;
       }
+    };
+
+    if (!alphaIsRemote) {
+      if (!(await dirExistsLocal(alphaRoot))) failMissingRoot("alpha");
+    } else if (!(await checkRemote("alpha"))) {
+      invalidateRemoteRoot("alpha");
+      failMissingRoot("alpha");
     }
 
     if (!betaIsRemote) {
       if (!(await dirExistsLocal(betaRoot))) failMissingRoot("beta");
-    } else if (!localOnly) {
-      try {
-        const ok = await remoteDirExists({
-          host: betaHost!,
-          path: betaRoot,
-          port: betaPort,
-          logger,
-        });
-        if (!ok) failMissingRoot("beta");
-      } catch (err) {
-        if (err instanceof RemoteConnectionError) {
-          const message = `remote beta root unreachable (${formatRootLocation("beta")}): ${err.message}`;
-          throw new RemoteRootUnavailableError("beta", message, err);
-        }
-        throw err;
-      }
+    } else if (!(await checkRemote("beta"))) {
+      invalidateRemoteRoot("beta");
+      failMissingRoot("beta");
     }
   }
 
@@ -1685,8 +1705,9 @@ export async function runScheduler({
         "scan",
         `alpha: ${alphaRoot}${alphaHost ? ` @ ${alphaHost}` : ""}`,
       );
-      a = alphaIsRemote
-        ? await sshScanIntoMirror({
+      if (alphaIsRemote) {
+        try {
+          a = await sshScanIntoMirror({
             host: alphaHost!,
             port: alphaPort,
             root: alphaRoot,
@@ -1696,8 +1717,13 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths,
             scanTick,
-          })
-        : await (async () => {
+          });
+        } catch (err) {
+          invalidateRemoteRoot("alpha");
+          throw err;
+        }
+      } else {
+        a = await (async () => {
             try {
               await runScan({
                 root: alphaRoot,
@@ -1732,6 +1758,7 @@ export async function runScheduler({
               };
             }
           })();
+      }
       if (!hasRestrictions) {
         seedHotFromDb(
           alphaDb,
@@ -1751,8 +1778,9 @@ export async function runScheduler({
         "scan",
         `beta: ${betaRoot}${betaHost ? ` @ ${betaHost}` : ""}`,
       );
-      b = betaIsRemote
-        ? await sshScanIntoMirror({
+      if (betaIsRemote) {
+        try {
+          b = await sshScanIntoMirror({
             host: betaHost!,
             port: betaPort,
             root: betaRoot,
@@ -1762,8 +1790,13 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             scanTick,
-          })
-        : await (async () => {
+          });
+        } catch (err) {
+          invalidateRemoteRoot("beta");
+          throw err;
+        }
+      } else {
+        b = await (async () => {
             try {
               await runScan({
                 root: betaRoot,
@@ -1798,6 +1831,7 @@ export async function runScheduler({
               };
             }
           })();
+      }
       if (!hasRestrictions) {
         seedHotFromDb(
           betaDb,
