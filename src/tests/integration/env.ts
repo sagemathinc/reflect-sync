@@ -1,15 +1,26 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import type { MakeDirectoryOptions, RmOptions } from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultHashAlg } from "../../hash.js";
 import { NullLogger } from "../../logger.js";
 import { newSession, terminateSession } from "../../session-manage.js";
+import {
+  loadSessionById,
+  setActualState,
+  setDesiredState,
+} from "../../session-db.js";
+import { spawnSchedulerForSession } from "../../session-runner.js";
+import { Database } from "../../db.js";
 import { SSH_ENABLED } from "../ssh.remote-test-util.js";
 
 const DIST = path.resolve(__dirname, "../../../dist");
 const CLI = path.join(DIST, "cli.js");
+const KEEP_WORKSPACE =
+  process.env.REFLECT_TEST_KEEP_WORKSPACE === "1" ||
+  process.env.DEBUG_TESTS === "1";
 
 type RemoteSide = {
   host?: string;
@@ -17,18 +28,15 @@ type RemoteSide = {
 };
 
 export type EndpointOptions = {
-  /**
-   * Absolute root path. If omitted a temp directory is created.
-   */
   root?: string;
-  /**
-   * When true the session endpoint uses ssh (assumes host reachable via localhost).
-   */
   remote?: boolean;
-  /**
-   * Optional override for SSH connection (defaults to localhost).
-   */
   remoteConfig?: RemoteSide;
+};
+
+type EndpointSpec = {
+  spec: string;
+  host?: string;
+  port?: number;
 };
 
 export type CreateTestSessionOptions = {
@@ -60,7 +68,7 @@ export class TestSessionSide {
     return segments.length ? path.join(this.root, ...segments) : this.root;
   }
 
-  async mkdir(rel: string, opts?: fsp.MakeDirectoryOptions): Promise<void> {
+  async mkdir(rel: string, opts?: MakeDirectoryOptions): Promise<void> {
     await fsp.mkdir(this.path(rel), {
       recursive: opts?.recursive ?? true,
       mode: opts?.mode,
@@ -94,12 +102,15 @@ export class TestSessionSide {
     return fsp.readFile(this.path(rel), options);
   }
 
-  async rm(rel: string, opts?: fsp.RmOptions): Promise<void> {
-    await fsp.rm(this.path(rel), {
+  async rm(rel: string, opts?: RmOptions): Promise<void> {
+    const rmOpts: RmOptions = {
       recursive: opts?.recursive ?? true,
       force: opts?.force ?? true,
-      maxRetries: opts?.maxRetries,
-    });
+    };
+    if (typeof opts?.maxRetries === "number") {
+      rmOpts.maxRetries = opts.maxRetries;
+    }
+    await fsp.rm(this.path(rel), rmOpts);
   }
 
   async exists(rel: string): Promise<boolean> {
@@ -109,6 +120,14 @@ export class TestSessionSide {
     } catch {
       return false;
     }
+  }
+
+  async lstat(rel: string) {
+    return await fsp.lstat(this.path(rel));
+  }
+
+  async stat(rel: string) {
+    return await fsp.stat(this.path(rel));
   }
 }
 
@@ -125,24 +144,20 @@ export class TestSession {
     private readonly workspace: string,
     alphaRoot: string,
     betaRoot: string,
-    readonly env: NodeJS.ProcessEnv,
+    private readonly envExtra: Record<string, string>,
     sessionDb: string,
+    private readonly schedulerPid: number,
   ) {
     this.alpha = new TestSessionSide(alphaRoot);
     this.beta = new TestSessionSide(betaRoot);
     this.sessionDb = sessionDb;
   }
 
+  // just like the normal sync subcommand, except maxCycles defaults to 1.
   async sync(options: TestSessionSyncOptions = {}): Promise<void> {
-    const args = [
-      "session",
-      "sync",
-      String(this.id),
-      "--session-db",
-      this.sessionDb,
-    ];
+    const args = ["sync", String(this.id), "--session-db", this.sessionDb];
     if (options.maxCycles !== undefined) {
-      args.push("--max-cycles", String(options.maxCycles));
+      args.push("--max-cycles", String(options.maxCycles ?? 1));
     }
     if (options.timeoutMs !== undefined) {
       args.push("--timeout", String(options.timeoutMs));
@@ -159,21 +174,38 @@ export class TestSession {
     if (options.extraArgs?.length) {
       args.push(...options.extraArgs);
     }
-    await runCli(args, this.env);
+    await runReflect(args, this.envExtra);
   }
 
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    await withReflectHome(this.reflectHome, async () => {
-      await terminateSession({
-        sessionDb: this.sessionDb,
-        id: this.id,
-        logger: new NullLogger(),
-        force: true,
+    if (this.schedulerPid) {
+      try {
+        process.kill(this.schedulerPid, "SIGINT");
+      } catch {}
+      await delay(250);
+      try {
+        process.kill(this.schedulerPid, "SIGKILL");
+      } catch {}
+    }
+    if (!KEEP_WORKSPACE) {
+      await withReflectHome(this.reflectHome, async () => {
+        await terminateSession({
+          sessionDb: this.sessionDb,
+          id: this.id,
+          logger: new NullLogger(),
+          force: true,
+        });
       });
-    });
-    await fsp.rm(this.workspace, { recursive: true, force: true });
+    }
+    if (!KEEP_WORKSPACE) {
+      await fsp.rm(this.workspace, { recursive: true, force: true });
+    } else {
+      console.error(
+        `kept test workspace for debugging: ${this.workspace} (session ${this.id})`,
+      );
+    }
   }
 }
 
@@ -193,40 +225,72 @@ export async function createTestSession(
     path.resolve(options.beta?.root ?? path.join(workspace, "beta")),
   );
 
-  const alphaSpec = formatEndpointSpec(alphaRoot, options.alpha);
-  const betaSpec = formatEndpointSpec(betaRoot, options.beta);
+  const alphaEndpoint = formatEndpointSpec(alphaRoot, options.alpha);
+  const betaEndpoint = formatEndpointSpec(betaRoot, options.beta);
 
   const sessionDb = path.join(reflectHome, "sessions.db");
-  const env = {
-    ...process.env,
+  const envExtra: Record<string, string> = {
     REFLECT_HOME: reflectHome,
     REFLECT_DISABLE_LOG_ECHO: "1",
   };
 
   const name = options.name ?? `test-${crypto.randomBytes(4).toString("hex")}`;
+  const prefer = options.prefer ?? "alpha";
+  const hashAlg = options.hash ?? defaultHashAlg();
 
-  let sessionId: number;
+  let sessionId = 0;
+  let schedulerPid = 0;
   try {
-    sessionId = await withReflectHome(reflectHome, async () =>
-      newSession({
-        alphaSpec,
-        betaSpec,
+    await withReflectHome(reflectHome, async () => {
+      const sessionInput: any = {
+        alphaSpec: alphaEndpoint.spec,
+        betaSpec: betaEndpoint.spec,
         sessionDb,
         compress: options.compress ?? "auto",
         compressLevel: options.compressLevel,
-        prefer: options.prefer ?? "alpha",
-        hash: options.hash ?? defaultHashAlg(),
+        prefer,
+        hash: hashAlg,
         label: [],
         name,
         ignore: [],
         logger: new NullLogger(),
         disableHotSync: options.hot !== true,
         disableFullSync: options.full !== true,
-        mergeStrategy: options.mergeStrategy ?? null,
-      }),
-    );
+      };
+      if (options.mergeStrategy !== undefined) {
+        sessionInput.mergeStrategy = options.mergeStrategy;
+      }
+
+      sessionId = await newSession(sessionInput);
+      setDesiredState(sessionDb, sessionId, "running");
+      setActualState(sessionDb, sessionId, "running");
+      const row = loadSessionById(sessionDb, sessionId);
+      if (!row) throw new Error(`session ${sessionId} missing after creation`);
+      const prevEntry = process.env.REFLECT_ENTRY;
+      process.env.REFLECT_ENTRY = CLI;
+      try {
+        schedulerPid = spawnSchedulerForSession(
+          sessionDb,
+          row,
+          new NullLogger(),
+        );
+      } finally {
+        if (prevEntry === undefined) {
+          delete process.env.REFLECT_ENTRY;
+        } else {
+          process.env.REFLECT_ENTRY = prevEntry;
+        }
+      }
+    });
+    await waitForSchedulerReady(sessionDb, sessionId);
   } catch (err) {
-    await fsp.rm(workspace, { recursive: true, force: true });
+    if (!KEEP_WORKSPACE) {
+      await fsp.rm(workspace, { recursive: true, force: true });
+    } else {
+      console.error(
+        `kept failed session workspace for debugging: ${workspace}`,
+      );
+    }
     throw err;
   }
 
@@ -236,25 +300,28 @@ export async function createTestSession(
     workspace,
     alphaRoot,
     betaRoot,
-    env,
+    envExtra,
     sessionDb,
+    schedulerPid,
   );
 }
 
 function formatEndpointSpec(
   root: string,
   opts?: EndpointOptions,
-): string {
-  if (!opts?.remote) return root;
+): EndpointSpec {
+  if (!opts?.remote) return { spec: root };
   if (!SSH_ENABLED) {
-    throw new Error("SSH is unavailable on this host; remote endpoints disabled.");
+    throw new Error(
+      "SSH is unavailable on this host; remote endpoints disabled.",
+    );
   }
   const host = opts.remoteConfig?.host ?? "localhost";
   const port = opts.remoteConfig?.port;
   if (port === undefined) {
-    return `${host}:${root}`;
+    return { spec: `${host}:${root}`, host };
   }
-  return `${host}:${port}:${root}`;
+  return { spec: `${host}:${port}:${root}`, host, port };
 }
 
 async function ensureRootDir(root: string): Promise<string> {
@@ -262,10 +329,13 @@ async function ensureRootDir(root: string): Promise<string> {
   return root;
 }
 
-function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+function runReflect(
+  args: string[],
+  envExtra: Record<string, string>,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, ...args], {
-      env,
+      env: { ...process.env, ...envExtra },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -310,3 +380,30 @@ async function withReflectHome<T>(
 }
 
 export const SSH_AVAILABLE = SSH_ENABLED;
+
+async function waitForSchedulerReady(
+  sessionDb: string,
+  sessionId: number,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const db = new Database(sessionDb);
+    try {
+      const row = db
+        .prepare(
+          `SELECT running FROM session_state WHERE session_id = ? LIMIT 1`,
+        )
+        .get(sessionId) as { running?: number } | undefined;
+      if (row?.running === 1) return;
+    } catch {
+      // ignore and retry
+    } finally {
+      db.close();
+    }
+    await delay(150);
+  }
+  throw new Error("scheduler failed to reach running state");
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
