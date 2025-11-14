@@ -533,6 +533,17 @@ export async function runScheduler({
     });
   };
 
+  const logControlMasterReady = () => {
+    if (!sshControl || !remoteControlHost) return;
+    queueMicrotask(() => {
+      log("info", "ssh", "control master ready", {
+        host: remoteControlHost,
+        socket: sshControl!.socketPath,
+        pid: sshControl!.pid ?? null,
+      });
+    });
+  };
+
   const restartControlMaster = async (): Promise<boolean> => {
     if (controlMasterDisabled || !remoteControlHost) return false;
     try {
@@ -547,6 +558,7 @@ export async function runScheduler({
       host: remoteControlHost,
       socket: sshControlPath,
     });
+    logControlMasterReady();
     return true;
   };
 
@@ -555,6 +567,7 @@ export async function runScheduler({
     if (sshControl) {
       sshControlPath = sshControl.socketPath;
       process.env.REFLECT_SSH_CONTROL_PATH = sshControlPath;
+      logControlMasterReady();
       registerSshControlRestart(restartControlMaster);
     } else {
       registerSshControlRestart(null);
@@ -688,24 +701,34 @@ export async function runScheduler({
       const host = side === "alpha" ? alphaHost! : betaHost!;
       const root = side === "alpha" ? alphaRoot : betaRoot;
       const port = side === "alpha" ? alphaPort : betaPort;
-      try {
-        const ok = await remoteDirExists({
-          host,
-          path: root,
-          port,
-          logger,
-        });
-        remoteRootVerified[side] = ok;
-        remoteRootLastCheck[side] = Date.now();
-        return ok;
-      } catch (err) {
-        if (err instanceof RemoteConnectionError) {
-          const message = `remote ${side} root unreachable (${formatRootLocation(side)}): ${err.message}`;
-          throw new RemoteRootUnavailableError(side, message, err);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const ok = await remoteDirExists({
+            host,
+            path: root,
+            port,
+            logger,
+          });
+          remoteRootVerified[side] = ok;
+          remoteRootLastCheck[side] = Date.now();
+          return ok;
+        } catch (err) {
+          if (
+            err instanceof RemoteConnectionError &&
+            attempt === 0 &&
+            (await restartControlMaster())
+          ) {
+            continue;
+          }
+          if (err instanceof RemoteConnectionError) {
+            const message = `remote ${side} root unreachable (${formatRootLocation(side)}): ${err.message}`;
+            throw new RemoteRootUnavailableError(side, message, err);
+          }
+          invalidateRemoteRoot(side);
+          throw err;
         }
-        invalidateRemoteRoot(side);
-        throw err;
       }
+      return false;
     };
 
     if (!alphaIsRemote) {
@@ -839,6 +862,7 @@ export async function runScheduler({
           host: params.host,
           data: summarizeStderr(text),
         });
+        maybeRestartSshControl(text).catch(() => {});
       });
       const stdout = sshP.stdout;
       if (!stdout) {
@@ -916,6 +940,9 @@ export async function runScheduler({
     };
 
     const { result, stderr } = await runAttempt();
+    if (result.ok && stderr) {
+      await maybeRestartSshControl(stderr);
+    }
     if (!result.ok && !retried && (await maybeRestartSshControl(stderr))) {
       logger.info("retrying remote scan after restarting ssh control master", {
         host: params.host,
@@ -987,7 +1014,9 @@ export async function runScheduler({
     });
 
     sshP.stderr?.on("data", (chunk) => {
-      remoteLog.debug("ssh stderr", { data: summarizeStderr(chunk) });
+      const raw = chunk.toString();
+      remoteLog.debug("ssh stderr", { data: summarizeStderr(raw) });
+      maybeRestartSshControl(raw).catch(() => {});
     });
 
     const stdout = sshP.stdout;

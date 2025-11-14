@@ -14,6 +14,7 @@ export type SshControlOptions = {
 export type SshControlHandle = {
   socketPath: string;
   close: () => Promise<void>;
+  pid: number | null;
 };
 
 async function runSsh(args: string[]): Promise<void> {
@@ -25,6 +26,35 @@ async function runSsh(args: string[]): Promise<void> {
       else reject(new Error(`ssh ${args.join(" ")} exited ${code}`));
     });
   });
+}
+
+async function runSshWithOutput(
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  await new Promise<void>((resolve, reject) => {
+    const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+    p.stdout?.setEncoding("utf8");
+    p.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    p.stderr?.setEncoding("utf8");
+    p.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    p.once("error", reject);
+    p.once("exit", (code) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `ssh ${args.join(" ")} exited ${code}: ${stderr || stdout || "unknown error"}`,
+          ),
+        );
+    });
+  });
+  return { stdout, stderr };
 }
 
 function buildBaseArgs(socketPath: string, port?: number | null): string[] {
@@ -82,6 +112,8 @@ export async function createSshControlMaster(
     return null;
   }
 
+  const pid = await getControlMasterPid(socketPath, host, opts.port);
+
   const close = async () => {
     try {
       await runSsh([...baseArgs, "-O", "exit", host]);
@@ -96,7 +128,24 @@ export async function createSshControlMaster(
     } catch {}
   };
 
-  return { socketPath, close };
+  return { socketPath, close, pid };
+}
+
+async function getControlMasterPid(
+  socketPath: string,
+  host: string,
+  port?: number | null,
+): Promise<number | null> {
+  try {
+    const args = buildBaseArgs(socketPath, port);
+    args.push("-O", "check", host);
+    const { stdout, stderr } = await runSshWithOutput(args);
+    const text = `${stdout}\n${stderr}`;
+    const match = text.match(/pid=(\d+)/i);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
 }
 
 type RestartFn = () => Promise<boolean>;

@@ -145,6 +145,7 @@ export class TestSession {
   readonly alpha: TestSessionSide;
   readonly beta: TestSessionSide;
   readonly sessionDb: string;
+  readonly baseDbPath: string;
 
   #disposed = false;
 
@@ -161,6 +162,12 @@ export class TestSession {
     this.alpha = new TestSessionSide(alphaRoot);
     this.beta = new TestSessionSide(betaRoot);
     this.sessionDb = sessionDb;
+    this.baseDbPath = path.join(
+      reflectHome,
+      "sessions",
+      String(id),
+      "base.db",
+    );
   }
 
   // just like the normal sync subcommand, except maxCycles defaults to 1.
