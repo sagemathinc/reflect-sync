@@ -849,7 +849,6 @@ export async function runScheduler({
   async function startRemoteDeltaStream(
     side: "alpha" | "beta",
   ): Promise<null | StreamControl> {
-    if (disableHotWatch) return null;
     const host = side === "alpha" ? alphaHost : betaHost;
     if (!host) return null;
     const root = side === "alpha" ? alphaRoot : betaRoot;
@@ -951,6 +950,7 @@ export async function runScheduler({
     };
 
     const processEvent = (evt: any) => {
+      if (disableHotWatch) return;
       if (!evt?.path) return;
       let r = String(evt.path);
       if (r.startsWith(root)) r = r.slice(root.length);
