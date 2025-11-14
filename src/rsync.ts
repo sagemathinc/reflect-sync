@@ -165,6 +165,20 @@ function parentDirsOf(rpaths: string[]): string[] {
   return Array.from(s).sort((a, b) => a.length - b.length || (a < b ? -1 : 1));
 }
 
+export function sortChildFirst(rpaths: string[]): string[] {
+  const depth = (rel: string): number =>
+    rel === "" ? 0 : rel.split("/").length;
+  rpaths.sort((a, b) => {
+    const da = depth(a);
+    const db = depth(b);
+    if (da !== db) {
+      return db - da;
+    }
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return rpaths;
+}
+
 export async function rsyncCopyDirsChunked(
   workDir: string,
   fromRoot: string,
@@ -1265,7 +1279,7 @@ export async function rsyncDeleteChunked(
   workDir: string,
   fromRoot: string,
   toRoot: string,
-  rpaths: string[],
+  rpaths: string[], // WARNING: order is mutated!
   label: string,
   opts: {
     direction?;
@@ -1280,15 +1294,19 @@ export async function rsyncDeleteChunked(
   } = {},
 ): Promise<{ deleted: string[] }> {
   if (!rpaths.length) return { deleted: [] };
+  sortChildFirst(rpaths); // mutates rpaths
   const { logger, debug } = resolveLogContext(opts);
   const { chunkSize = 50_000 } = opts;
   const batches = chunk(rpaths, chunkSize);
   if (debug) {
     logger.debug(
       `>>> rsync delete ${label}: ${rpaths.length} in ${batches.length} batches of size at most ${chunkSize}`,
+      REFLECT_RSYNC_VERY_VERBOSE ? { rpaths } : undefined,
     );
   }
 
+  // NOTE: Do not try to delete multiple chunks in parallel, since the order
+  // of deleting is very important.
   let deletedSet: Set<string> | null = null;
   for (let i = 0; i < batches.length; i++) {
     if (debug) {

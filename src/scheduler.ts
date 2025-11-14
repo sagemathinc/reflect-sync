@@ -1836,6 +1836,7 @@ export async function runScheduler({
         dryRun,
         compress,
         logger: mergeLogger,
+        logLevel: DEFAULT_CONSOLE_LEVEL,
         traceLabel: options?.label ?? (hasRestrictions ? "restricted" : "full"),
         logicalClock,
         restrictedPaths: hasRestrictions ? restrictedPaths : undefined,

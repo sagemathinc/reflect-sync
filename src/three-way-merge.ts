@@ -157,6 +157,8 @@ export async function executeThreeWayMerge(
     logger?.debug("node-merge: no operations to perform");
     tracer?.close();
     return { plan, ok: true };
+  } else if (VERY_VERBOSE) {
+    logger?.debug("node-merge: executeThreeWayMerge", plan.operations as any);
   }
 
   const tmpWork = await mkdtemp(path.join(tmpdir(), "node-merge-"));
