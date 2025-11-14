@@ -1,9 +1,7 @@
 import { join } from "node:path";
 import os from "node:os";
 import fsp from "node:fs/promises";
-
 import { countSchedulerCycles, waitFor } from "./util";
-import { getDb } from "../db";
 import {
   describeIfSsh,
   startSchedulerRemote,
@@ -106,18 +104,6 @@ describeIfSsh("SSH remote sync – sustained pack stream", () => {
         hashFile(betaFile),
       ]);
       expect(betaHash).toBe(alphaHash);
-
-      const db = getDb(alphaDb);
-      try {
-        const row = db
-          .prepare(
-            `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
-          )
-          .get(relPath);
-        expect(row).toBeUndefined();
-      } finally {
-        db.close();
-      }
     } finally {
       await stopScheduler(child);
     }

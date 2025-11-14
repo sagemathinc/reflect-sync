@@ -63,21 +63,6 @@ export function getDb(dbPath: string): Database {
 `);
 
   db.exec(`
-  CREATE TABLE IF NOT EXISTS recent_send (
-    path TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    op_ts INTEGER,
-    signature TEXT,
-    sent_at INTEGER NOT NULL,
-    PRIMARY KEY(path, direction)
-  );
-  CREATE INDEX IF NOT EXISTS recent_send_dir_idx ON recent_send(direction);
-  `);
-  try {
-    db.exec(`ALTER TABLE recent_send ADD COLUMN signature TEXT`);
-  } catch {}
-
-  db.exec(`
   CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY NOT NULL,
     value TEXT
@@ -108,25 +93,6 @@ export function getDb(dbPath: string): Database {
   CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
   `);
-  try {
-    db.exec(
-      `ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE nodes ADD COLUMN copy_pending INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
 
   return db;
 }
@@ -173,25 +139,6 @@ export function getBaseDb(dbPath: string): Database {
      CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
     `);
-  try {
-    db.exec(
-      `ALTER TABLE nodes ADD COLUMN hash_pending INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN change_start REAL`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN change_end REAL`);
-  } catch {}
-  try {
-    db.exec(`ALTER TABLE nodes ADD COLUMN confirmed_at REAL`);
-  } catch {}
-  try {
-    db.exec(
-      `ALTER TABLE nodes ADD COLUMN copy_pending INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {}
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY NOT NULL,

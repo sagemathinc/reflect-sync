@@ -2,9 +2,7 @@ import { join } from "node:path";
 import os from "node:os";
 import fsp from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-
 import { countSchedulerCycles, waitFor } from "./util";
-import { getDb } from "../db";
 import {
   describeIfSsh,
   startSchedulerRemote,
@@ -110,18 +108,6 @@ describeIfSsh("SSH remote sync – bulk image dataset", () => {
         hashDirectory(betaDataset),
       ]);
       expect(hashBeta).toBe(hashAlpha);
-
-      const meta = getDb(alphaDb);
-      try {
-        const row = meta
-          .prepare(
-            `SELECT COUNT(*) AS n FROM recent_send WHERE direction='beta->alpha' AND path LIKE ?`,
-          )
-          .get(`${datasetDir}%`) as { n: number };
-        expect(row.n).toBe(0);
-      } finally {
-        meta.close();
-      }
     } finally {
       await stopScheduler(child);
     }

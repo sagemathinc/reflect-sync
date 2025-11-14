@@ -1,7 +1,6 @@
 import { join, dirname } from "node:path";
 import os from "node:os";
 import fsp from "node:fs/promises";
-
 import { countSchedulerCycles, waitFor } from "./util";
 import { getDb } from "../db";
 import {
@@ -130,18 +129,6 @@ describeIfSsh("SSH remote sync – sqlite workload", () => {
         expect(rowCount.n).toBeGreaterThanOrEqual(40 * 50);
       } finally {
         betaDbHandle.close();
-      }
-
-      const meta = getDb(alphaDb);
-      try {
-        const row = meta
-          .prepare(
-            `SELECT signature FROM recent_send WHERE direction='beta->alpha' AND path = ?`,
-          )
-          .get(relPath);
-        expect(row).toBeUndefined();
-      } finally {
-        meta.close();
       }
     } finally {
       await stopScheduler(child);

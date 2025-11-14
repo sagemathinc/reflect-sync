@@ -25,6 +25,7 @@ export REFLECT_TRACE_ALL=1
 export SCHED_MIN_MS="1000"
 export SCHED_MAX_MS="2000"
 export SCHED_MAX_BACKOFF_MS="2000"
+export REFLECT_RSYNC_BWLIMIT=5M
 reflect daemon stop
 reflect daemon start
 

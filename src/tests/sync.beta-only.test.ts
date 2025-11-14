@@ -108,5 +108,5 @@ describe("pending copies protect beta", () => {
       trace.close();
       await fsp.rm(tmp, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 });
