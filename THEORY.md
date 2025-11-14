@@ -1,14 +1,14 @@
 Prove a theorem that under certain conditions file corruption is not possible.
 
-**PROPOSITION:** _Using our symmetrical last-write-wins merge strategy, if a file is
-only modified by the user on beta, then reflect-sync will not change that file
+**PROPOSITION:** _Using our last-write-wins merge strategy LWW, if a file is
+only edited by the user on beta, then reflect-sync will not change that file
 on beta, only mirroring it to alpha. If the user switches to editing that file
 on alpha after waiting for at least one additional scan on beta to complete,
 then edits only on beta, then reflect-sync will not change the file on alpha,
 only mirroring it to beta.  If the user edits the file on alpha before waiting
 for one additional scan on beta, that edit will be overwritten._
 
-(NOTE: we are only considering editing of a file here, for simplicty -- not deleting, not directories, etc.)
+(NOTE: we are only considering editing of a file in this proposition -- not deleting, not directories, etc.)
 
 **Proof.** Call the file A. Suppose at time 0 we schedule to copy A from beta to
 alpha, which will be done via either rsync or "cp --reflink", both of which are
@@ -49,6 +49,15 @@ very acceptable, given our goals.
 
 ☐
 
+TODO
 
+CLARIFICATION: [...]
+
+Prop: Same as above, but the user may also delete the file on beta.  Then
+the conclusion is the same.
+
+Proof. (??? not sure how deletes work yet)
+
+☐
 
 

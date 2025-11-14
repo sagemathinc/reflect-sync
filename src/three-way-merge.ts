@@ -27,6 +27,12 @@ import type { LogicalClock } from "./logical-clock.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
 import { deleteRelativePaths } from "./util.js";
 
+// set to 'alpha' or 'beta' to make it so that the entire
+// scheduler terminates with an error if that side is
+// changed.  Used for testing and dev.
+// not useful yet since daemon just starts it again...
+const TERMINATE_ON_CHANGE = false; // "beta";
+
 const VERY_VERBOSE = false;
 
 export type ThreeWayMergeOptions = {
@@ -117,6 +123,20 @@ export function planThreeWayMerge(
         "three merge details" +
           JSON.stringify({ rows, operations }, undefined, 2),
       );
+    }
+    if (TERMINATE_ON_CHANGE) {
+      for (const x of operations) {
+        if (
+          (x.op == "copy" && x.to == TERMINATE_ON_CHANGE) ||
+          (x.op == "delete" && x.side == TERMINATE_ON_CHANGE)
+        ) {
+          logger?.info(
+            "TERMINATE_ON_CHANGE -- found operation that changes beta! Terminating.",
+            { x, rows, operations },
+          );
+          process.exit(1);
+        }
+      }
     }
     return { diffs: rows, operations };
   } finally {

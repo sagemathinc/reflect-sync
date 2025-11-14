@@ -77,6 +77,11 @@ export const MERGE_STRATEGY_NAMES = [
   "prefer",
 ] as const;
 
+// set to true to make it so when there is a merge conflict
+// and both files exist but one is deleted, then the deleted
+// one is the winner. Just an experiment...
+const LWW_DELETE_WINS = false;
+
 export function resolveMergeStrategy(name?: string | null): MergeStrategy {
   switch (name?.trim().toLowerCase()) {
     case "last-write-wins":
@@ -196,6 +201,16 @@ function planLww(
         beta.start != null &&
         beta.end != null;
       if (overlapTieBreak) {
+        if (LWW_DELETE_WINS) {
+          if (alphaCand && alpha.deleted && !beta.deleted) {
+            operations.push(candidateToOperation(alphaCand, row.path));
+            continue;
+          }
+          if (betaCand && !alpha.deleted && beta.deleted) {
+            operations.push(candidateToOperation(betaCand, row.path));
+            continue;
+          }
+        }
         const mtimeWinner = pickByTimestamp(row, "mtime");
         if (mtimeWinner) {
           pushCopyOperation(operations, mtimeWinner, row.path);
