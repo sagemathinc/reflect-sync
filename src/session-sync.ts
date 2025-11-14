@@ -1,8 +1,6 @@
 // src/session-sync.ts
 
 import { Command } from "commander";
-import path from "node:path";
-import fsp from "node:fs/promises";
 import {
   ensureSessionDb,
   getSessionDbPath,
@@ -13,13 +11,13 @@ import type { Database } from "./db.js";
 import { planThreeWayMerge } from "./three-way-merge.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 import { collectListOption } from "./restrict.js";
+import { touchCommandSignal } from "./session-command-signal.js";
 import { wait } from "./util.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_CYCLES = 3;
 const PROGRESS_MESSAGE_FILTER = "progress";
-const COMMAND_SIGNAL_FILE = "command.signal";
 
 interface ProgressState {
   enabled: boolean;
@@ -119,34 +117,6 @@ function drainProgressLogs(state: ProgressState): void {
   }
 }
 
-function getCommandSignalPath(sessionRow: any): string {
-  const derived = materializeSessionPaths(sessionRow.id);
-  const baseDb = sessionRow.base_db ?? derived.base_db;
-  const dir = path.dirname(baseDb);
-  return path.join(dir, COMMAND_SIGNAL_FILE);
-}
-
-async function signalSchedulerCommand(sessionRow: any): Promise<void> {
-  try {
-    const signalPath = getCommandSignalPath(sessionRow);
-    await fsp.mkdir(path.dirname(signalPath), { recursive: true });
-    await fsp.writeFile(signalPath, `${Date.now()}`, { flag: "w" });
-  } catch {
-    // best effort only
-  }
-}
-
-function getPlanTargets(sessionRow: any) {
-  const derived = materializeSessionPaths(sessionRow.id);
-  return {
-    alphaDb: sessionRow.alpha_db ?? derived.alpha_db,
-    betaDb: sessionRow.beta_db ?? derived.beta_db,
-    baseDb: sessionRow.base_db ?? derived.base_db,
-    prefer: (sessionRow.prefer ?? "alpha") as "alpha" | "beta",
-    strategy: sessionRow.merge_strategy ?? "last-write-wins",
-  };
-}
-
 function enqueueSyncCommand(
   db: Database,
   sessionId: number,
@@ -222,6 +192,18 @@ async function runSyncForSession(
     );
   }
 
+  const derivedPaths = materializeSessionPaths(sessionRow.id);
+  const alphaDbPath = sessionRow.alpha_db ?? derivedPaths.alpha_db;
+  const betaDbPath = sessionRow.beta_db ?? derivedPaths.beta_db;
+  const baseDbPath = sessionRow.base_db ?? derivedPaths.base_db;
+  const planTargets = {
+    alphaDb: alphaDbPath,
+    betaDb: betaDbPath,
+    baseDb: baseDbPath,
+    prefer: (sessionRow.prefer ?? "alpha") as "alpha" | "beta",
+    strategy: sessionRow.merge_strategy ?? "last-write-wins",
+  };
+
   const progressState: ProgressState | undefined = progress?.enabled
     ? {
         enabled: true,
@@ -237,13 +219,12 @@ async function runSyncForSession(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
     const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths);
-    await signalSchedulerCommand(sessionRow);
+    await touchCommandSignal(baseDbPath);
     await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs, progressState);
     if (progressState) {
       drainProgressLogs(progressState);
     }
 
-    const planTargets = getPlanTargets(sessionRow);
     const plan = planThreeWayMerge({
       alphaDb: planTargets.alphaDb,
       betaDb: planTargets.betaDb,

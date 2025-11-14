@@ -4,7 +4,6 @@
 import { spawn, ChildProcess } from "node:child_process";
 import chokidar, { FSWatcher } from "chokidar";
 import path from "node:path";
-import fs from "node:fs";
 import { stat } from "node:fs/promises";
 import { Command, Option } from "commander";
 import readline from "node:readline";
@@ -63,13 +62,13 @@ import { DeviceBoundary } from "./device-boundary.js";
 import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList, includeAncestors } from "./restrict.js";
 import { wait } from "./util.js";
+import { createCommandSignalWatcher } from "./session-command-signal.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
 // never sync more than this many files at once using hot sync
 // (discards more)
 const MAX_HOT_SYNC = 200;
-const COMMAND_SIGNAL_FILE = "command.signal";
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -2177,68 +2176,12 @@ export async function runScheduler({
   }
 
   const CMD_POLL_MS = envNum("SESSION_CMD_POLL_MS", 500);
-  const commandSignalPath =
-    sessionId != null
-      ? path.join(path.dirname(baseDb), COMMAND_SIGNAL_FILE)
-      : null;
-  let commandSignalWatcher: fs.FSWatcher | null = null;
-  let commandSignalPending = false;
-  let commandSignalResolver: (() => void) | null = null;
-
-  if (commandSignalPath) {
-    try {
-      fs.mkdirSync(path.dirname(commandSignalPath), { recursive: true });
-      fs.writeFileSync(commandSignalPath, "", { flag: "a" });
-      commandSignalWatcher = fs.watch(
-        path.dirname(commandSignalPath),
-        (_event, filename) => {
-          if (!filename) return;
-          if (filename.toString() === path.basename(commandSignalPath)) {
-            commandSignalPending = true;
-            if (commandSignalResolver) {
-              const resolve = commandSignalResolver;
-              commandSignalResolver = null;
-              resolve();
-            }
-          }
-        },
-      );
-    } catch (err) {
-      log("warn", "scheduler", "failed to watch command signal file", {
-        error: err instanceof Error ? err.message : String(err),
-        path: commandSignalPath,
-      });
-    }
-  }
-
-  async function waitForCommandSignalOrTimeout(ms: number): Promise<boolean> {
-    if (!commandSignalPath) {
-      await wait(ms);
-      return false;
-    }
-    if (commandSignalPending) {
-      commandSignalPending = false;
-      return true;
-    }
-    if (ms <= 0) return false;
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        if (commandSignalResolver === onSignal) {
-          commandSignalResolver = null;
-        }
-        resolve(false);
-      }, ms);
-      const onSignal = () => {
-        clearTimeout(timer);
-        if (commandSignalResolver === onSignal) {
-          commandSignalResolver = null;
-        }
-        commandSignalPending = false;
-        resolve(true);
-      };
-      commandSignalResolver = onSignal;
-    });
-  }
+  const commandSignal = sessionId
+    ? createCommandSignalWatcher({
+        baseDb,
+        logger: scoped("command-signal"),
+      })
+    : null;
 
   async function idleWaitWithCommandPolling(totalMs: number) {
     let remaining = totalMs;
@@ -2248,8 +2191,12 @@ export async function runScheduler({
       const executed = await processSessionCommands();
       if (executed) return;
       const slice = Math.min(CMD_POLL_MS, remaining);
-      const awakened = await waitForCommandSignalOrTimeout(slice);
-      if (awakened) continue;
+      if (commandSignal) {
+        const awakened = await commandSignal.wait(slice);
+        if (awakened) continue;
+      } else {
+        await wait(slice);
+      }
       remaining -= slice;
     }
   }
@@ -2391,12 +2338,7 @@ export async function runScheduler({
     try {
       sessionWriter?.stop();
     } catch {}
-    if (commandSignalWatcher) {
-      try {
-        commandSignalWatcher.close();
-      } catch {}
-      commandSignalWatcher = null;
-    }
+    commandSignal?.close();
   };
   const onSig = async () => {
     await cleanup();
