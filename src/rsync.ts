@@ -12,6 +12,7 @@ import {
 } from "./rsync-compression.js";
 import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
+import { maybeRestartSshControl } from "./ssh-control.js";
 
 // if true, logs every file sent over rsync
 const REFLECT_RSYNC_VERY_VERBOSE = false;
@@ -501,6 +502,10 @@ function applySshTransport(
   if (opts.sshPort != null) {
     pieces.push("-p", String(opts.sshPort));
   }
+  const controlPath = process.env.REFLECT_SSH_CONTROL_PATH;
+  if (controlPath) {
+    pieces.push("-S", controlPath);
+  }
   const disableCompression =
     compress && compress !== "none" && isCompressing(compress);
   if (disableCompression) {
@@ -716,40 +721,45 @@ export async function run(
     finalArgs.push(`--bwlimit=${process.env.REFLECT_RSYNC_BWLIMIT}`);
   }
   const captureSpec = opts.captureTransfers ? opts.captureTransfers : undefined;
-  let captureDir: string | undefined;
-  let captureLogPath: string | undefined;
-  let captureDelims: { field: string; record: string } | undefined;
-  if (captureSpec) {
-    captureDelims = chooseDelimiters(captureSpec.paths);
-    captureDir = await mkdtemp(path.join(tmpdir(), "reflect-rsync-log-"));
-    captureLogPath = path.join(captureDir, "transfers.log");
-    finalArgs.push(`--log-file=${captureLogPath}`);
-    finalArgs.push(
-      `--log-file-format=%i${captureDelims.field}%n${captureDelims.record}`,
-    );
-  }
-  if (debug)
-    logger.debug(
-      `rsync.run ${opts.direction ?? ""}: '${cmd} ${argsJoin(finalArgs)}'`,
-      { files },
-    );
+  const runOnce = async () => {
+    const argsForRun = [...finalArgs];
+    let captureDir: string | undefined;
+    let captureLogPath: string | undefined;
+    let captureDelims: { field: string; record: string } | undefined;
+    if (captureSpec) {
+      captureDelims = chooseDelimiters(captureSpec.paths);
+      captureDir = await mkdtemp(path.join(tmpdir(), "reflect-rsync-log-"));
+      captureLogPath = path.join(captureDir, "transfers.log");
+      argsForRun.push(`--log-file=${captureLogPath}`);
+      argsForRun.push(
+        `--log-file-format=%i${captureDelims.field}%n${captureDelims.record}`,
+      );
+    } else {
+      captureDir = undefined;
+      captureLogPath = undefined;
+      captureDelims = undefined;
+    }
+    if (debug)
+      logger.debug(
+        `rsync.run ${opts.direction ?? ""}: '${cmd} ${argsJoin(argsForRun)}'`,
+        { files },
+      );
+    const throttleMs =
+      wantProgress && MAX_PROGRESS_UPDATES_PER_SEC > 0
+        ? Math.max(10, Math.floor(1000 / MAX_PROGRESS_UPDATES_PER_SEC))
+        : 0;
 
-  const throttleMs =
-    wantProgress && MAX_PROGRESS_UPDATES_PER_SEC > 0
-      ? Math.max(10, Math.floor(1000 / MAX_PROGRESS_UPDATES_PER_SEC))
-      : 0;
-
-  const res = await new Promise<{
-    code: number | null;
-    ok: boolean;
-    zero: boolean;
-    stderr?: string;
-  }>((resolve) => {
+    const res = await new Promise<{
+      code: number | null;
+      ok: boolean;
+      zero: boolean;
+      stderr?: string;
+    }>((resolve) => {
     const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
       ? ["ignore", "pipe", "pipe"]
       : ["ignore", "ignore", "ignore"];
 
-    const child = spawn(cmd, finalArgs, {
+    const child = spawn(cmd, argsForRun, {
       stdio,
     });
 
@@ -836,34 +846,50 @@ export async function run(
     });
   });
 
-  let transfers: RsyncTransferRecord[] = [];
-  if (captureSpec && captureLogPath && captureDelims) {
-    try {
-      const raw = await readFile(captureLogPath, "utf8");
-      transfers = parseTransferLog(
-        raw,
-        captureDelims.field,
-        captureDelims.record,
-      );
-    } catch (err) {
-      if (debug) {
-        logger.warn("failed to read rsync transfer log", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+    let transfers: RsyncTransferRecord[] = [];
+    if (captureSpec && captureLogPath && captureDelims) {
+      try {
+        const raw = await readFile(captureLogPath, "utf8");
+        transfers = parseTransferLog(
+          raw,
+          captureDelims.field,
+          captureDelims.record,
+        );
+      } catch (err) {
+        if (debug) {
+          logger.warn("failed to read rsync transfer log", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
-  }
-  if (captureDir) {
-    try {
-      await rm(captureDir, { recursive: true, force: true });
-    } catch {}
-  }
-  if (REFLECT_RSYNC_VERY_VERBOSE && transfers) {
-    logger.debug(`rsync.run ${opts.direction ?? ""}`, {
-      transfers: transfers.map(({ path }) => path),
+    if (captureDir) {
+      try {
+        await rm(captureDir, { recursive: true, force: true });
+      } catch {}
+    }
+    if (REFLECT_RSYNC_VERY_VERBOSE && transfers) {
+      logger.debug(`rsync.run ${opts.direction ?? ""}`, {
+        transfers: transfers.map(({ path }) => path),
+      });
+    }
+    return { ...res, transfers };
+  };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = await runOnce();
+    if (
+      result.ok ||
+      !(await maybeRestartSshControl(result.stderr ?? "")) ||
+      attempt === 1
+    ) {
+      return result;
+    }
+    logger.info("rsync retry after restarting ssh control master", {
+      direction: opts.direction,
     });
   }
-  return { ...res, transfers };
+  return await runOnce();
 }
 
 // write a NUL-separated list memory efficiently

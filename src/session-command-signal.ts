@@ -20,15 +20,20 @@ export async function touchCommandSignal(
     await fsp.mkdir(path.dirname(signalPath), { recursive: true });
     await fsp.writeFile(signalPath, `${Date.now()}`, { flag: "w" });
   } catch (err) {
-    if (touchWarningEmitted || !logger?.warn) return;
+    if (touchWarningEmitted) return;
     touchWarningEmitted = true;
-    logger.warn(
-      "touchCommandSignal could not notify scheduler (falling back to polling)",
-      {
-        error: err instanceof Error ? err.message : String(err),
-        baseDb,
-      },
-    );
+    const message =
+      err instanceof Error ? err.message : String(err ?? "unknown error");
+    if (logger?.warn) {
+      logger.warn(
+        "touchCommandSignal could not notify scheduler (falling back to polling)",
+        { error: message, baseDb },
+      );
+    } else {
+      console.warn(
+        `touchCommandSignal warning: failed to touch ${baseDb}: ${message}`,
+      );
+    }
   }
 }
 

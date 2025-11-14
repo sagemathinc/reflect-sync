@@ -63,6 +63,12 @@ import { waitForStableFile, DEFAULT_STABILITY_OPTIONS } from "./stability.js";
 import { dedupeRestrictedList, includeAncestors } from "./restrict.js";
 import { wait } from "./util.js";
 import { createCommandSignalWatcher } from "./session-command-signal.js";
+import {
+  createSshControlMaster,
+  registerSshControlRestart,
+  maybeRestartSshControl,
+  type SshControlHandle,
+} from "./ssh-control.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
@@ -501,6 +507,66 @@ export async function runScheduler({
     (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
     (await isRoot(betaHost, remoteLogConfig, betaPort));
 
+  const controlMasterDisabled =
+    (process.env.REFLECT_SSH_CONTROL ?? "").trim() === "0";
+  const remoteControlHost = alphaIsRemote ? alphaHost : betaHost;
+  const remoteControlPort = alphaIsRemote ? alphaPort : betaPort;
+  const sshControlPersist = Number(
+    process.env.REFLECT_SSH_CONTROL_PERSIST ?? 60,
+  );
+  let sshControl: SshControlHandle | null = null;
+  let sshControlPath: string | undefined;
+
+  const socketPath = path.join(
+    path.dirname(baseDb),
+    alphaIsRemote ? "ssh-alpha.sock" : "ssh-beta.sock",
+  );
+
+  const createControlMaster = async (): Promise<SshControlHandle | null> => {
+    if (!remoteControlHost) return null;
+    return await createSshControlMaster({
+      host: remoteControlHost,
+      port: remoteControlPort,
+      socketPath,
+      persistSeconds: sshControlPersist,
+      logger,
+    });
+  };
+
+  const restartControlMaster = async (): Promise<boolean> => {
+    if (controlMasterDisabled || !remoteControlHost) return false;
+    try {
+      await sshControl?.close();
+    } catch {}
+    const handle = await createControlMaster();
+    if (!handle) return false;
+    sshControl = handle;
+    sshControlPath = handle.socketPath;
+    process.env.REFLECT_SSH_CONTROL_PATH = sshControlPath;
+    logger?.info("ssh control master restarted", {
+      host: remoteControlHost,
+      socket: sshControlPath,
+    });
+    return true;
+  };
+
+  if (!controlMasterDisabled && remoteControlHost) {
+    sshControl = await createControlMaster();
+    if (sshControl) {
+      sshControlPath = sshControl.socketPath;
+      process.env.REFLECT_SSH_CONTROL_PATH = sshControlPath;
+      registerSshControlRestart(restartControlMaster);
+    } else {
+      registerSshControlRestart(null);
+    }
+  } else {
+    delete process.env.REFLECT_SSH_CONTROL_PATH;
+    registerSshControlRestart(null);
+  }
+  const addSshControlArgs = (args: string[]) => {
+    if (sshControlPath) args.push("-S", sshControlPath);
+  };
+
   // heartbeat interval (ms)
   const HEARTBEAT_MS = Number(process.env.REFLECT_HEARTBEAT_MS ?? 2000);
   let sessionWriter: SessionWriter | null = null;
@@ -687,164 +753,176 @@ export async function runScheduler({
   // ssh to a remote, run a scan, and writing the resulting
   // data into our local database.
   const lastRemoteScan = { start: 0, ok: false, whenOk: 0 };
-  async function sshScanIntoMirror(params: {
-    host: string;
-    port?: number;
-    root: string; // remote root
-    remoteDb: string; // remote DB path (on remote host)
-    localDb: string; // local mirror DB for ingest
-    numericIds?: boolean;
-    ignoreRules: string[];
-    restrictedPaths?: string[];
-    scanTick?: number;
-  }): Promise<{
+  async function sshScanIntoMirror(
+    params: {
+      host: string;
+      port?: number;
+      root: string;
+      remoteDb: string;
+      localDb: string;
+      numericIds?: boolean;
+      ignoreRules: string[];
+      restrictedPaths?: string[];
+      scanTick?: number;
+    },
+    retried = false,
+  ): Promise<{
     code: number | null;
     ms: number;
     ok: boolean;
     lastZero: boolean;
   }> {
-    const t0 = Date.now();
-    // if remote command not known, determine it from the PATH
-    remoteCommand ??= await remoteWhich(params.host, CLI_NAME, {
-      logger,
-      port: params.port,
-    });
-    const sshArgs = ["-C"];
-    if (params.port != null) {
-      sshArgs.push("-p", String(params.port));
-    }
-    sshArgs.push(
-      params.host,
-      `${remoteCommand} scan`,
-      "--root",
-      params.root,
-      "--emit-delta",
-      "--db",
-      params.remoteDb,
-      "--hash",
-      hash,
-      "--vacuum",
-    );
-    for (const pattern of params.ignoreRules) {
-      sshArgs.push("--ignore", pattern);
-    }
-    if (numericIds) {
-      sshArgs.push("--numeric-ids");
-    }
-    if (lastRemoteScan.ok && lastRemoteScan.start) {
-      sshArgs.push("--prune-ms");
+    const runAttempt = async () => {
+      const t0 = Date.now();
+      remoteCommand ??= await remoteWhich(params.host, CLI_NAME, {
+        logger,
+        port: params.port,
+      });
+      const sshArgs = ["-C"];
+      if (params.port != null) sshArgs.push("-p", String(params.port));
+      addSshControlArgs(sshArgs);
       sshArgs.push(
-        `${Date.now() - lastRemoteScan.start - PRUNE_REMOTE_DATABASE_MS}`,
+        params.host,
+        `${remoteCommand} scan`,
+        "--root",
+        params.root,
+        "--emit-delta",
+        "--db",
+        params.remoteDb,
+        "--hash",
+        hash,
+        "--vacuum",
       );
-    }
-    if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
-      // last time wasn't ok, so emit *everything* since last time it worked,
-      // so we do not miss data.
-      sshArgs.push("--emit-since-age");
-      sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
-    }
-    if (params.restrictedPaths?.length) {
-      for (const rel of params.restrictedPaths) {
-        if (!rel) continue;
-        sshArgs.push("--restricted-path", rel);
-      }
-    }
-    lastRemoteScan.start = Date.now();
-    lastRemoteScan.ok = false;
-
-    const remoteLog = scoped("remote");
-    const summarizeStderr = (chunk: Buffer | string) => {
-      const raw = chunk.toString();
-      let trimmed = raw.trim();
-      const MAX_LEN = 4096;
-      if (trimmed.length > MAX_LEN) {
-        trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
-      }
-      return trimmed;
-    };
-    remoteLog.debug(
-      `ssh scan: "ssh ${argsJoin(sshArgs.slice(0, 100))}" ${sshArgs.length >= 100 ? "truncated" : ""}`,
-    );
-
-    const sshP = spawn("ssh", sshArgs, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    sshP.stderr?.on("data", (chunk) => {
-      remoteLog.debug("ssh stderr", {
-        host: params.host,
-        data: summarizeStderr(chunk),
-      });
-    });
-    const stdout = sshP.stdout;
-    if (!stdout) {
-      sshP.kill("SIGTERM");
-      lastRemoteScan.ok = false;
-      return {
-        code: 1,
-        ms: Date.now() - t0,
-        ok: false,
-        lastZero: false,
-      };
-    }
-
-    const abortController = new AbortController();
-    const ingestPromise = runIngestDelta({
-      db: params.localDb,
-      logger: remoteLog.child("ingest"),
-      input: stdout,
-      abortSignal: abortController.signal,
-      logicalClock,
-      batchTick: params.scanTick,
-    });
-
-    const wait = (p: ChildProcess) =>
-      new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
-
-    let sshCode: number | null = null;
-    let ingestError: unknown = null;
-    try {
-      await Promise.all([
-        wait(sshP).then((code) => {
-          sshCode = code;
-          return code;
-        }),
-        ingestPromise,
-      ]);
-    } catch (err) {
-      ingestError = err;
-      abortController.abort();
-      sshCode = await wait(sshP);
-    }
-
-    const ok = sshCode === 0 && !ingestError;
-    lastRemoteScan.ok = ok;
-    if (lastRemoteScan.ok) {
-      lastRemoteScan.whenOk = lastRemoteScan.start;
-    }
-
-    if (ingestError) {
-      remoteLog.error("ingest error", {
-        error:
-          ingestError instanceof Error
-            ? ingestError.message
-            : String(ingestError),
-      });
-      if (isDiskFullCause(ingestError)) {
-        const fatalMessage = stopForDiskFull(
-          `disk full during remote scan (${params.host})`,
-          ingestError,
+      for (const pattern of params.ignoreRules) sshArgs.push("--ignore", pattern);
+      if (numericIds) sshArgs.push("--numeric-ids");
+      if (lastRemoteScan.ok && lastRemoteScan.start) {
+        sshArgs.push("--prune-ms");
+        sshArgs.push(
+          `${Date.now() - lastRemoteScan.start - PRUNE_REMOTE_DATABASE_MS}`,
         );
-        throw new FatalSchedulerError(fatalMessage);
       }
-    }
+      if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
+        sshArgs.push("--emit-since-age");
+        sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
+      }
+      if (params.restrictedPaths?.length) {
+        for (const rel of params.restrictedPaths) {
+          if (!rel) continue;
+          sshArgs.push("--restricted-path", rel);
+        }
+      }
+      lastRemoteScan.start = Date.now();
+      lastRemoteScan.ok = false;
 
-    return {
-      code: ok ? 0 : (sshCode ?? 1),
-      ms: Date.now() - t0,
-      ok,
-      lastZero: ok,
+      const remoteLog = scoped("remote");
+      const summarizeStderr = (chunk: Buffer | string) => {
+        const raw = chunk.toString();
+        let trimmed = raw.trim();
+        const MAX_LEN = 4096;
+        if (trimmed.length > MAX_LEN) {
+          trimmed = `${trimmed.slice(0, MAX_LEN)}… [${trimmed.length} chars truncated]`;
+        }
+        return trimmed;
+      };
+      remoteLog.debug(
+        `ssh scan: "ssh ${argsJoin(sshArgs.slice(0, 100))}" ${sshArgs.length >= 100 ? "truncated" : ""}`,
+      );
+
+      const sshP = spawn("ssh", sshArgs, {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const stderrChunks: string[] = [];
+      sshP.stderr?.on("data", (chunk) => {
+        const text = chunk.toString();
+        stderrChunks.push(text);
+        remoteLog.debug("ssh stderr", {
+          host: params.host,
+          data: summarizeStderr(text),
+        });
+      });
+      const stdout = sshP.stdout;
+      if (!stdout) {
+        sshP.kill("SIGTERM");
+        lastRemoteScan.ok = false;
+        return {
+          result: {
+            code: 1,
+            ms: Date.now() - t0,
+            ok: false,
+            lastZero: false,
+          },
+          stderr: stderrChunks.join(""),
+        };
+      }
+
+      const abortController = new AbortController();
+      const ingestPromise = runIngestDelta({
+        db: params.localDb,
+        logger: remoteLog.child("ingest"),
+        input: stdout,
+        abortSignal: abortController.signal,
+        logicalClock,
+        batchTick: params.scanTick,
+      });
+
+      const wait = (p: ChildProcess) =>
+        new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
+
+      let sshCode: number | null = null;
+      let ingestError: unknown = null;
+      try {
+        await Promise.all([
+          wait(sshP).then((code) => {
+            sshCode = code;
+            return code;
+          }),
+          ingestPromise,
+        ]);
+      } catch (err) {
+        ingestError = err;
+        abortController.abort();
+        sshCode = await wait(sshP);
+      }
+
+      const ok = sshCode === 0 && !ingestError;
+      lastRemoteScan.ok = ok;
+      if (lastRemoteScan.ok) lastRemoteScan.whenOk = lastRemoteScan.start;
+
+      if (ingestError) {
+        remoteLog.error("ingest error", {
+          error:
+            ingestError instanceof Error
+              ? ingestError.message
+              : String(ingestError),
+        });
+        if (isDiskFullCause(ingestError)) {
+          const fatalMessage = stopForDiskFull(
+            `disk full during remote scan (${params.host})`,
+            ingestError,
+          );
+          throw new FatalSchedulerError(fatalMessage);
+        }
+      }
+
+      return {
+        result: {
+          code: ok ? 0 : (sshCode ?? 1),
+          ms: Date.now() - t0,
+          ok,
+          lastZero: ok,
+        },
+        stderr: stderrChunks.join(""),
+      };
     };
+
+    const { result, stderr } = await runAttempt();
+    if (!result.ok && !retried && (await maybeRestartSshControl(stderr))) {
+      logger.info("retrying remote scan after restarting ssh control master", {
+        host: params.host,
+      });
+      return await sshScanIntoMirror(params, true);
+    }
+    return result;
   }
 
   // Remote delta stream (watch)
@@ -960,6 +1038,7 @@ export async function runScheduler({
     const pendingControls = new Map<number, PendingControl>();
     let statsInFlight = 0;
     let bufferedEvents: any[] = [];
+    let watchReady = false;
 
     const flushBuffered = () => {
       if (statsInFlight > 0 || bufferedEvents.length === 0) return;
@@ -971,12 +1050,17 @@ export async function runScheduler({
     };
 
     const processEvent = (evt: any) => {
+      if (!watchReady) {
+        bufferedEvents.push(evt);
+        return;
+      }
       if (disableHotWatch) return;
       if (!evt?.path) return;
       let r = String(evt.path);
       if (r.startsWith(root)) r = r.slice(root.length);
       if (r.startsWith("/")) r = r.slice(1);
       if (!r) return;
+      remoteLog.debug("watch event", { side, path: r });
       (side === "alpha" ? hotAlpha : hotBeta).add(r);
       if (side === "alpha") {
         recordHotEvent(alphaDb, "alpha", r, "remote-watch");
@@ -1031,6 +1115,15 @@ export async function runScheduler({
         evt = JSON.parse(trimmed);
       } catch {
         forwardToIngest(raw);
+        return;
+      }
+      if (evt?.op === "ready") {
+        if (!watchReady) {
+          watchReady = true;
+          remoteLog.info("watch ready");
+          log("info", "watch", `${side} remote watch ready`);
+        }
+        flushBuffered();
         return;
       }
       if (evt?.op === "stat") {
@@ -2339,6 +2432,19 @@ export async function runScheduler({
       sessionWriter?.stop();
     } catch {}
     commandSignal?.close();
+    if (sshControl) {
+      try {
+        await sshControl.close();
+      } catch {}
+      sshControl = null;
+    }
+    if (
+      sshControlPath &&
+      process.env.REFLECT_SSH_CONTROL_PATH === sshControlPath
+    ) {
+      delete process.env.REFLECT_SSH_CONTROL_PATH;
+    }
+    registerSshControlRestart(null);
   };
   const onSig = async () => {
     await cleanup();

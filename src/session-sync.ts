@@ -13,6 +13,7 @@ import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 import { collectListOption } from "./restrict.js";
 import { touchCommandSignal } from "./session-command-signal.js";
 import { wait } from "./util.js";
+import { ConsoleLogger } from "./logger.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -203,6 +204,7 @@ async function runSyncForSession(
     prefer: (sessionRow.prefer ?? "alpha") as "alpha" | "beta",
     strategy: sessionRow.merge_strategy ?? "last-write-wins",
   };
+  const signalLogger = new ConsoleLogger("warn");
 
   const progressState: ProgressState | undefined = progress?.enabled
     ? {
@@ -219,7 +221,7 @@ async function runSyncForSession(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
     const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths);
-    await touchCommandSignal(baseDbPath);
+    await touchCommandSignal(baseDbPath, signalLogger);
     await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs, progressState);
     if (progressState) {
       drainProgressLogs(progressState);

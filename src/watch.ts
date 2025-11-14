@@ -678,6 +678,9 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
   }
 
   wireShallow();
+  shallow.once("ready", () => {
+    process.stdout.write(JSON.stringify({ op: "ready" }) + "\n");
+  });
 
   // Control channel
   serveJsonControl({

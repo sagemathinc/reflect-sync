@@ -10,7 +10,12 @@ import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { countSchedulerCycles, fileExists, waitFor } from "./util";
+import {
+  countSchedulerCycles,
+  fileExists,
+  hasEventLog,
+  waitFor,
+} from "./util";
 import { canSshLocalhost } from "./ssh-util";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees
@@ -56,7 +61,7 @@ function startSchedulerRemote(opts: {
   };
 
   return spawn(process.execPath, args, {
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "inherit", "inherit"],
     env,
   });
 }
@@ -102,7 +107,7 @@ describe("SSH remote watch → hot-sync", () => {
   });
 
   afterAll(async () => {
-    if (tmp) {
+    if (tmp && !process.env.KEEP_SSH_WATCH_TMP) {
       await fsp.rm(tmp, { recursive: true, force: true });
     }
   });
@@ -122,6 +127,12 @@ describe("SSH remote watch → hot-sync", () => {
       await waitFor(
         () => countSchedulerCycles(baseDb),
         (n) => n >= 1,
+        10_000,
+        100,
+      );
+      await waitFor(
+        () => hasEventLog(baseDb, "watch", "beta remote watch ready"),
+        (ready) => ready === true,
         10_000,
         100,
       );

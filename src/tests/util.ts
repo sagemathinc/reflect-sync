@@ -165,6 +165,33 @@ export function countSchedulerCycles(baseDb: string): number {
   }
 }
 
+export function hasEventLog(
+  baseDb: string,
+  source: string,
+  msg: string,
+): boolean {
+  const db = new Database(baseDb);
+  try {
+    db.pragma("busy_timeout = 1000");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS events(
+        id INTEGER PRIMARY KEY,
+        ts INTEGER,
+        level TEXT,
+        source TEXT,
+        msg TEXT,
+        details TEXT
+      );
+    `);
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM events WHERE source=? AND msg=?`)
+      .get(source, msg) as { n?: number };
+    return (row?.n ?? 0) > 0;
+  } finally {
+    db.close();
+  }
+}
+
 export async function dirExists(p: string) {
   return !!(await fsp
     .stat(p)

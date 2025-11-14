@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, posix } from "node:path";
 import { spawn } from "node:child_process";
 import type { Logger } from "./logger.js";
+import { maybeRestartSshControl } from "./ssh-control.js";
 
 type RemoteLogOptions = {
   logger?: Logger;
@@ -28,22 +29,29 @@ const remoteCacheKey = (host: string, port?: number) =>
 // timeout in seconds for any ssh command attempt
 const TIMEOUT = 5;
 
-async function ssh(
+function withControlPath(args: string[]): string[] {
+  const controlPath = process.env.REFLECT_SSH_CONTROL_PATH;
+  if (!controlPath) return args;
+  return ["-S", controlPath, ...args];
+}
+
+async function runSshCommand(
   host: string,
   args: string[],
   log: RemoteLogOptions | undefined,
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
+  const finalArgs = withControlPath(args);
   log?.logger?.debug("ssh exec", {
     host,
-    command: argsJoin(args),
+    command: argsJoin(finalArgs),
     label: what,
   });
-  if (log?.verbose) console.log("$ ssh", argsJoin(args));
+  if (log?.verbose) console.log("$ ssh", argsJoin(finalArgs));
   let stdout = "",
     stderr = "";
   await new Promise<void>((resolve, reject) => {
-    const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("ssh", finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
     p.stdout!.on("data", (c) => (stdout += c));
     p.stderr!.on("data", (c) => (stderr += c));
     p.once("exit", (c) =>
@@ -51,13 +59,34 @@ async function ssh(
         ? resolve()
         : reject(
             new Error(
-              `${what ?? argsJoin(args)} failed on ${host} (exit ${c}) -- ${stderr}`,
+              `${what ?? argsJoin(finalArgs)} failed on ${host} (exit ${c}) -- ${stderr}`,
             ),
           ),
     );
     p.once("error", reject);
   });
   return { stdout, stderr };
+}
+
+async function ssh(
+  host: string,
+  args: string[],
+  log: RemoteLogOptions | undefined,
+  what: string | undefined,
+): Promise<{ stdout: string; stderr: string }> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await runSshCommand(host, args, log, what);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err ?? "");
+      if (attempt === 0 && (await maybeRestartSshControl(message))) {
+        attempt += 1;
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 export async function remoteWhich(
