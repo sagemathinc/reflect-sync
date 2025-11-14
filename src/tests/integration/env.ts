@@ -2,8 +2,8 @@
  * Integration test harness helpers.
  *
  * Tips:
- *   - Set REFLECT_TEST_KEEP_WORKSPACE=1 to keep the temp roots when a test fails.
- *   - Set REFLECT_TEST_DEBUG=1 (or DEBUG_TESTS=1) to stream scheduler/run logs (log level debug).
+ *   - REFLECT_TEST_KEEP_WORKSPACE=1 keeps temp roots if a test fails.
+ *   - REFLECT_TEST_DEBUG=1 (or DEBUG_TESTS=1) streams scheduler logs (log level debug).
  */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
