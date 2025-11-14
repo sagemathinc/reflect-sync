@@ -1856,6 +1856,8 @@ export async function runScheduler({
         traceLabel: options?.label ?? (hasRestrictions ? "restricted" : "full"),
         logicalClock,
         restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+        alphaRm: alphaStream?.rm,
+        betaRm: betaStream?.rm,
       });
       fullMergeResult = execResult;
       mergeOk = execResult.ok;

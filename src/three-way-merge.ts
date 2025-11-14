@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   rsyncCopyChunked,
   rsyncCopyDirsChunked,
-  rsyncDeleteChunked,
   rsyncFixMetaDirsChunked,
   ensureTempDir,
 } from "./rsync.js";
@@ -26,6 +25,7 @@ import {
 } from "./trace.js";
 import type { LogicalClock } from "./logical-clock.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
+import { deleteRelativePaths } from "./util.js";
 
 const VERY_VERBOSE = false;
 
@@ -58,6 +58,8 @@ export type ExecuteThreeWayMergeOptions = ThreeWayMergeOptions & {
   verbose?: boolean | string;
   logLevel?: LogLevel;
   compress?: RsyncCompressSpec;
+  alphaRm?: DeleteFn;
+  betaRm?: DeleteFn;
 };
 
 export type ExecuteThreeWayMergeResult = {
@@ -128,6 +130,8 @@ export function planThreeWayMerge(
   }
 }
 
+type DeleteFn = (paths: string[]) => Promise<string[]>;
+
 export async function executeThreeWayMerge(
   opts: ExecuteThreeWayMergeOptions,
 ): Promise<ExecuteThreeWayMergeResult> {
@@ -153,6 +157,39 @@ export async function executeThreeWayMerge(
     tracer.recordPlan(entries, plan.diffs.length);
   }
   const { logger } = opts;
+  const logDeleteError = (side: MergeSide, rel: string, err: Error) => {
+    logger?.warn?.(`${side} delete failed`, {
+      path: rel,
+      error: err.message,
+    });
+  };
+  const alphaDeleteFn: DeleteFn | undefined =
+    opts.alphaRm ??
+    (!opts.alphaHost
+      ? (paths) =>
+          deleteRelativePaths(opts.alphaRoot, paths, {
+            logError: (rel, err) => logDeleteError("alpha", rel, err),
+          })
+      : undefined);
+  const betaDeleteFn: DeleteFn | undefined =
+    opts.betaRm ??
+    (!opts.betaHost
+      ? (paths) =>
+          deleteRelativePaths(opts.betaRoot, paths, {
+            logError: (rel, err) => logDeleteError("beta", rel, err),
+          })
+      : undefined);
+  if (opts.alphaHost && !alphaDeleteFn) {
+    throw new Error(
+      "alphaRm is required for remote alpha deletes (remote watch stream missing?)",
+    );
+  }
+  if (opts.betaHost && !betaDeleteFn) {
+    throw new Error(
+      "betaRm is required for remote beta deletes (remote watch stream missing?)",
+    );
+  }
+
   if (!plan.operations.length) {
     logger?.debug("node-merge: no operations to perform");
     tracer?.close();
@@ -200,13 +237,10 @@ export async function executeThreeWayMerge(
 
     await performDeletes({
       paths: buckets.deleteAlpha,
-      fromRoot: betaSpec,
-      toRoot: alphaSpec,
-      workDir: tmpWork,
-      tempDir: alphaTempArg,
-      direction: "beta->alpha",
-      label: "alpha deletes",
-      rsyncOpts: rsyncBase,
+      root: opts.alphaRoot,
+      side: "alpha",
+      deleteFn: alphaDeleteFn,
+      logger,
       targetDb: alphaConn,
       baseDb: baseConn,
       logicalClock: clock,
@@ -215,13 +249,10 @@ export async function executeThreeWayMerge(
     });
     await performDeletes({
       paths: buckets.deleteBeta,
-      fromRoot: alphaSpec,
-      toRoot: betaSpec,
-      workDir: tmpWork,
-      tempDir: betaTempArg,
-      direction: "alpha->beta",
-      label: "beta deletes",
-      rsyncOpts: rsyncBase,
+      root: opts.betaRoot,
+      side: "beta",
+      deleteFn: betaDeleteFn,
+      logger,
       targetDb: betaConn,
       baseDb: baseConn,
       logicalClock: clock,
@@ -508,13 +539,10 @@ type RsyncBaseOptions = {
 
 async function performDeletes(params: {
   paths: string[];
-  fromRoot: string;
-  toRoot: string;
-  workDir: string;
-  tempDir?: string;
-  direction: "alpha->beta" | "beta->alpha";
-  label: string;
-  rsyncOpts: RsyncBaseOptions;
+  root: string;
+  side: MergeSide;
+  deleteFn?: DeleteFn;
+  logger?: Logger;
   targetDb: ReturnType<typeof getDb>;
   baseDb: ReturnType<typeof getDb>;
   logicalClock?: LogicalClock | null;
@@ -523,21 +551,19 @@ async function performDeletes(params: {
 }) {
   const unique = uniquePaths(params.paths);
   if (!unique.length) return;
-  let res;
-  try {
-    res = await rsyncDeleteChunked(
-      params.workDir,
-      params.fromRoot,
-      params.toRoot,
-      unique,
-      params.label,
-      {
-        ...params.rsyncOpts,
-        direction: params.direction,
-        tempDir: params.tempDir,
-        captureDeletes: true,
+  const fallbackDelete: DeleteFn = (paths) =>
+    deleteRelativePaths(params.root, paths, {
+      logError: (rel, err) => {
+        params.logger?.warn?.(`${params.side} delete failed`, {
+          path: rel,
+          error: err.message,
+        });
       },
-    );
+    });
+  const deleteFn = params.deleteFn ?? fallbackDelete;
+  let deleted: string[];
+  try {
+    deleted = await deleteFn(unique);
   } catch (err) {
     if (params.tracer && params.opName) {
       for (const path of unique) {
@@ -549,7 +575,12 @@ async function performDeletes(params: {
     }
     throw err;
   }
-  const deleted = res.deleted?.length ? res.deleted : unique;
+  if (!deleted.length) {
+    params.logger?.warn?.(`${params.side} delete returned no successes`, {
+      requested: unique.length,
+    });
+    return;
+  }
   markNodesDeletedBatch(
     params.targetDb,
     deleted,
@@ -564,6 +595,15 @@ async function performDeletes(params: {
     for (const path of deleted) {
       params.tracer.recordResult(path, params.opName, "success");
     }
+  }
+  const deletedSet = new Set(deleted);
+  const missing = unique.filter((p) => !deletedSet.has(p));
+  if (missing.length) {
+    params.logger?.warn?.(`${params.side} delete incomplete`, {
+      attempted: unique.length,
+      deleted: deleted.length,
+      remaining: missing.length,
+    });
   }
 }
 
