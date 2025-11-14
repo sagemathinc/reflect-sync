@@ -35,7 +35,8 @@ reflect daemon start
 
 #reflect create --name=o  --disable-full-cycle  $upperdir2 $upperdir
 
-reflect create --name=o $upperdir2 $upperdir
+#reflect create --name=o $upperdir2 $upperdir
+reflect create --name=o localhost:$upperdir2 $upperdir
 
 # passed 17 in a row with fb68a88f18ae81ec5cf5c546226399fcfd825349
 #reflect create --disable-hot-sync  --name=o $upperdir2 $upperdir

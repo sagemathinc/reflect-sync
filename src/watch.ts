@@ -37,7 +37,7 @@ const IGNORE_TTL_MS = Number(
 );
 const LOCK_TTL_MS = Number(process.env.REFLECT_WATCH_LOCK_TTL_MS ?? 120_000);
 const REMOTE_STABILITY_MS = Number(
-  process.env.REFLECT_REMOTE_STABILITY_MS ?? 250,
+  process.env.REFLECT_REMOTE_STABILITY_MS ?? 150,
 );
 const REMOTE_STABILITY_POLL_MS = Number(
   process.env.REFLECT_REMOTE_STABILITY_POLL_MS ?? 50,

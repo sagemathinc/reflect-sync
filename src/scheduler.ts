@@ -1217,23 +1217,46 @@ export async function runScheduler({
     };
   }
 
-  function requestSoon(reason: string) {
-    if (disableFullSync) return;
-    pending = true;
-    nextDelayMs = clamp(
-      Math.min(nextDelayMs, 3000),
-      MIN_INTERVAL_MS,
-      MAX_INTERVAL_MS,
-    );
-    log("info", "scheduler", `event-triggered rescan scheduled: ${reason}`);
-  }
-
   // ---------- hot (realtime) sets ----------
   const hotAlpha = new Set<string>();
   const hotBeta = new Set<string>();
   let hotTimer: NodeJS.Timeout | null = null;
   let hotFlushPromise: Promise<void> | null = null;
   let flushQueuedWhileRunning = false;
+
+  function queueCopyPendingForSide(
+    side: "alpha" | "beta",
+    limit = MAX_HOT_SYNC,
+  ): number {
+    if (limit <= 0) return 0;
+    const dbPath = side === "alpha" ? alphaDb : betaDb;
+    const hotSet = side === "alpha" ? hotAlpha : hotBeta;
+    let rows: Array<{ path: string }> = [];
+    const conn = getDb(dbPath);
+    try {
+      rows = conn
+        .prepare(
+          `SELECT path FROM nodes WHERE copy_pending = 1 ORDER BY updated DESC LIMIT ?`,
+        )
+        .all(limit) as Array<{ path: string }>;
+    } catch (err) {
+      log("warn", "realtime", "failed to read copy_pending rows", {
+        side,
+        err: String((err as Error)?.message || err),
+      });
+    } finally {
+      conn.close();
+    }
+    let added = 0;
+    for (const row of rows) {
+      const rel = row?.path;
+      if (!rel) continue;
+      if (hotSet.has(rel)) continue;
+      hotSet.add(rel);
+      added++;
+    }
+    return added;
+  }
 
   let lastHotFlushAt = 0;
 
@@ -1326,7 +1349,6 @@ export async function runScheduler({
   function finalizeHotFlush() {
     hotFlushPromise = null;
     if (fatalTriggered) return;
-    requestSoon("restricted sync complete");
     const needsAnother =
       flushQueuedWhileRunning || hotAlpha.size > 0 || hotBeta.size > 0;
     flushQueuedWhileRunning = false;
@@ -1869,6 +1891,14 @@ export async function runScheduler({
       });
     }
     const mergeMs = Date.now() - mergeStart;
+
+    if (hasRestrictions) {
+      const queuedAlphaPending = queueCopyPendingForSide("alpha");
+      const queuedBetaPending = queueCopyPendingForSide("beta");
+      if (queuedAlphaPending || queuedBetaPending) {
+        scheduleHotFlush();
+      }
+    }
 
     const canUpdateCleanState =
       !hasRestrictions && sessionDb && Number.isFinite(sessionId) && !dryRun;
