@@ -1,4 +1,4 @@
-import { rm as fsRm } from "node:fs/promises";
+import { rm as fsRm, rmdir as fsRmdir } from "node:fs/promises";
 import path from "node:path";
 import { sortChildFirst } from "./rsync.js";
 
@@ -25,9 +25,29 @@ export async function deleteRelativePaths(
       await fsRm(abs, { recursive: false, force: false });
       deleted.push(rel);
     } catch (err: any) {
-      if (err?.code === "ENOENT") {
+      const code = err?.code;
+      if (code === "ENOENT") {
         deleted.push(rel);
         continue;
+      }
+      if (code === "ERR_FS_EISDIR") {
+        try {
+          await fsRmdir(abs);
+          deleted.push(rel);
+          continue;
+        } catch (dirErr: any) {
+          if (dirErr?.code === "ENOENT") {
+            deleted.push(rel);
+            continue;
+          }
+          if (opts.logError) {
+            opts.logError(
+              rel,
+              dirErr instanceof Error ? dirErr : new Error(String(dirErr)),
+            );
+          }
+          continue;
+        }
       }
       if (opts.logError) {
         opts.logError(rel, err instanceof Error ? err : new Error(String(err)));
