@@ -842,6 +842,7 @@ export async function runScheduler({
     lock?: (paths: string[]) => Promise<void>;
     release?: (entries: ReleaseAckEntry[]) => Promise<void>;
     unlock?: (paths: string[]) => Promise<void>;
+    rm?: (paths: string[]) => Promise<string[]>;
     kill: () => void;
   };
 
@@ -1048,7 +1049,8 @@ export async function runScheduler({
       if (
         evt?.op === "lockAck" ||
         evt?.op === "releaseAck" ||
-        evt?.op === "unlockAck"
+        evt?.op === "unlockAck" ||
+        evt?.op === "rmAck"
       ) {
         handleControlAck(evt);
         return;
@@ -1101,7 +1103,7 @@ export async function runScheduler({
     };
 
     const sendControl = (
-      op: "lock" | "release" | "unlock",
+      op: "lock" | "release" | "unlock" | "rm",
       payload: Record<string, unknown>,
     ): Promise<any> => {
       const requestId = nextRequestId++;
@@ -1135,6 +1137,19 @@ export async function runScheduler({
     const requestUnlock = (paths: string[]) => {
       if (!paths.length) return Promise.resolve();
       return sendControl("unlock", { paths });
+    };
+
+    const requestRm = (paths: string[]): Promise<string[]> => {
+      if (!paths.length) return Promise.resolve([]);
+      return sendControl("rm", { paths }).then((evt) => {
+        if (!evt) return [];
+        const deleted = Array.isArray(evt.deleted)
+          ? evt.deleted
+              .map((p: unknown) => (typeof p === "string" ? p : String(p)))
+              .filter(Boolean)
+          : [];
+        return deleted;
+      });
     };
 
     let killed = false;
@@ -1197,6 +1212,7 @@ export async function runScheduler({
       lock: requestLock,
       release: requestRelease,
       unlock: requestUnlock,
+      rm: requestRm,
       kill,
     };
   }

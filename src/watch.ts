@@ -30,6 +30,7 @@ import { type SendSignature, signatureEquals } from "./recent-send.js";
 import { defaultHashAlg, listSupportedHashes } from "./hash.js";
 import { DeviceBoundary, type DeviceCheckOptions } from "./device-boundary.js";
 import { computePathSignature } from "./path-signature.js";
+import { deleteRelativePaths } from "./util.js";
 
 const IGNORE_TTL_MS = Number(
   process.env.REFLECT_REMOTE_IGNORE_TTL_MS ?? 60_000,
@@ -108,6 +109,7 @@ type ControlHandlers = {
     entries: ReleaseControlEntry[],
   ) => Promise<void>;
   handleUnlock?: (requestId: number, paths: string[]) => Promise<void>;
+  handleRm?: (requestId: number, paths: string[]) => Promise<string[]>;
   onClose: () => Promise<void>;
 };
 
@@ -122,11 +124,11 @@ function serveJsonControl(handlers: ControlHandlers) {
   const respond = async (
     ackOp: string,
     requestId: number,
-    fn: () => Promise<void>,
+    fn: () => Promise<Record<string, unknown> | void>,
   ) => {
     try {
-      await fn();
-      sendAck(ackOp, requestId);
+      const payload = await fn();
+      sendAck(ackOp, requestId, payload || undefined);
     } catch (err: any) {
       sendAck(ackOp, requestId, {
         error: err instanceof Error ? err.message : String(err),
@@ -204,6 +206,15 @@ function serveJsonControl(handlers: ControlHandlers) {
         await respond("unlockAck", requestId, () =>
           handlers.handleUnlock!(requestId, paths),
         );
+      } else if (op === "rm" && handlers.handleRm) {
+        const requestId = Number(msg.requestId ?? 0);
+        const paths: string[] = Array.isArray(msg.paths)
+          ? msg.paths.map((p) => norm(normalizeRel(p))).filter((p) => !!p)
+          : [];
+        await respond("rmAck", requestId, async () => {
+          const deleted = await handlers.handleRm!(requestId, paths);
+          return { deleted };
+        });
       } else if (op === "close") {
         await handlers.onClose();
       } else {
@@ -628,6 +639,18 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     }
   }
 
+  async function handleRmControl(
+    _requestId: number,
+    paths: string[],
+  ): Promise<string[]> {
+    if (!paths.length) return [];
+    return deleteRelativePaths(rootAbs, paths, {
+      logError: (rel, err) => {
+        console.error(`watch: rm failed for '${rel}': ${err.message}`);
+      },
+    });
+  }
+
   const shallow: FSWatcher = chokidar.watch(rootAbs, {
     persistent: true,
     ignoreInitial: true,
@@ -663,6 +686,7 @@ export async function runWatch(opts: WatchOpts): Promise<void> {
     handleLock: handleLockControl,
     handleRelease: handleReleaseControl,
     handleUnlock: handleUnlockControl,
+    handleRm: handleRmControl,
     onClose: async () => {
       try {
         await shallow.close();
