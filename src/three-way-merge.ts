@@ -674,7 +674,9 @@ async function performDirCopies(params: {
       mirrorNodesFromSourceBatch(
         params.sourceDb,
         params.destDb,
+        params.baseDb,
         copiedDirs,
+        false,
       );
       if (params.tracer && params.opName) {
         for (const path of copiedDirs) {
@@ -810,7 +812,9 @@ async function performFileCopies(params: {
     mirrorNodesFromSourceBatch(
       params.sourceDb,
       params.destDb,
+      params.baseDb,
       succeeded,
+      true,
     );
     if (params.tracer && params.opName) {
       for (const path of succeeded) {
@@ -937,14 +941,24 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
 function mirrorNodesFromSourceBatch(
   sourceDb: ReturnType<typeof getDb>,
   destDb: ReturnType<typeof getDb>,
+  baseDb: ReturnType<typeof getDb>,
   paths: string[],
+  pending: boolean,
 ): void {
   const destRows: NodeRecord[] = [];
+  const baseRows: NodeRecord[] = [];
+
   for (const path of paths) {
     const row = fetchNode(sourceDb, path);
     if (!row) continue;
-    const destRow = { ...row, last_error: null, copy_pending: 1 };
-    destRows.push(destRow);
+    if (pending) {
+      const destRow = { ...row, last_error: null, copy_pending: 1 };
+      destRows.push(destRow);
+    } else {
+      const destRow = { ...row, last_error: null, copy_pending: 0 };
+      destRows.push(destRow);
+      baseRows.push(destRow);
+    }
   }
   if (destRows.length) {
     const applyDest = destDb.transaction(
@@ -956,6 +970,12 @@ function mirrorNodesFromSourceBatch(
       },
     );
     applyDest(destRows);
+  }
+  if (baseRows.length) {
+    const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
+      for (const entry of entries) upsertNode(baseDb, entry);
+    });
+    applyBase(baseRows);
   }
 }
 
