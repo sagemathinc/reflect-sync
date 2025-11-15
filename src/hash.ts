@@ -81,7 +81,7 @@ export async function fileDigest(
     try {
       const st = await fs.stat(path);
       n = st.size;
-    } catch (e) {
+    } catch {
       // fall back to streaming if stat fails for some reason
       n = HASH_STREAM_CUTOFF + 1;
     }
