@@ -7,7 +7,7 @@ import {
   resolveSessionRow,
   materializeSessionPaths,
 } from "./session-db.js";
-import type { Database } from "./db.js";
+import { getDb, type Database } from "./db.js";
 import { planThreeWayMerge } from "./three-way-merge.js";
 import { fetchSessionLogs, type SessionLogRow } from "./session-logs.js";
 import { collectListOption } from "./restrict.js";
@@ -237,6 +237,19 @@ async function runSyncForSession(
     });
 
     if (plan.diffs.length === 0 && plan.operations.length === 0) {
+      const pendingAlpha = countCopyPending(alphaDbPath);
+      const pendingBeta = countCopyPending(betaDbPath);
+      if (pendingAlpha || pendingBeta) {
+        console.log(
+          `session ${label}: waiting for ${pendingAlpha + pendingBeta} copy_pending entries to settle`,
+        );
+        if (attempt === maxCycles) {
+          throw new Error(
+            `session ${label}: still has ${pendingAlpha + pendingBeta} copy_pending entries after ${maxCycles} cycles`,
+          );
+        }
+        continue;
+      }
       console.log(
         `session ${label} synchronized after ${attempt} ${
           attempt === 1 ? "cycle" : "cycles"
@@ -261,6 +274,18 @@ async function runSyncForSession(
 
   // Should never reach here.
   return 1;
+}
+
+function countCopyPending(dbPath: string): number {
+  const db = getDb(dbPath);
+  try {
+    const row = db
+      .prepare(`SELECT COUNT(*) AS n FROM nodes WHERE copy_pending <> 0`)
+      .get() as { n?: number } | undefined;
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
 }
 
 export function registerSessionSync(sessionCmd: Command) {
