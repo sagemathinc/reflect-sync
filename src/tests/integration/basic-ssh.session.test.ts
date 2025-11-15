@@ -29,5 +29,4 @@ describeIfSsh("integration harness over ssh", () => {
       session.alpha.readFile("remote-only.txt", "utf8"),
     ).resolves.toBe("beta");
   });
-
 });

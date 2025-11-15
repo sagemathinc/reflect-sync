@@ -87,15 +87,17 @@ export function getDb(dbPath: string): Database {
     hash_pending INTEGER NOT NULL DEFAULT 0,
     copy_pending INTEGER NOT NULL DEFAULT 0,
     case_conflict INTEGER NOT NULL DEFAULT 0,
+    canonical_key TEXT,
     last_seen   REAL,
     link_target TEXT,
     last_error  TEXT
   );
   CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
+  CREATE INDEX IF NOT EXISTS nodes_canonical_idx ON nodes(canonical_key);
   `);
 
-  ensureCaseConflictColumn(db);
+  ensureCaseConflictColumns(db);
 
   return db;
 }
@@ -136,14 +138,16 @@ export function getBaseDb(dbPath: string): Database {
        hash_pending INTEGER NOT NULL DEFAULT 0,
        copy_pending INTEGER NOT NULL DEFAULT 0,
        case_conflict INTEGER NOT NULL DEFAULT 0,
+       canonical_key TEXT,
        last_seen  REAL,
        link_target TEXT,
        last_error TEXT
      );
      CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
+     CREATE INDEX IF NOT EXISTS nodes_canonical_idx ON nodes(canonical_key);
     `);
-  ensureCaseConflictColumn(db);
+  ensureCaseConflictColumns(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY NOT NULL,
@@ -153,12 +157,24 @@ export function getBaseDb(dbPath: string): Database {
   return db;
 }
 
-function ensureCaseConflictColumn(db: Database) {
+function ensureCaseConflictColumns(db: Database) {
   try {
     db.exec(
       `ALTER TABLE nodes ADD COLUMN case_conflict INTEGER NOT NULL DEFAULT 0;`,
     );
   } catch {
     // column already exists
+  }
+  try {
+    db.exec(`ALTER TABLE nodes ADD COLUMN canonical_key TEXT;`);
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS nodes_canonical_idx ON nodes(canonical_key);`,
+    );
+  } catch {
+    // index may already exist or table missing
   }
 }

@@ -37,14 +37,21 @@ describe("scan marks case conflicts using override caps", () => {
     try {
       const rows = db
         .prepare(
-          `SELECT path, case_conflict FROM nodes WHERE path IN ('foo.txt', 'FOO.txt') ORDER BY path`,
+          `SELECT path, case_conflict, canonical_key FROM nodes WHERE path IN ('foo.txt', 'FOO.txt') ORDER BY path`,
         )
-        .all() as { path: string; case_conflict: number }[];
+        .all() as {
+        path: string;
+        case_conflict: number;
+        canonical_key: string | null;
+      }[];
       expect(rows).toHaveLength(2);
       const flags = rows.map((r) => r.case_conflict);
       expect(flags.every((v) => v === 0 || v === 1)).toBe(true);
       expect(flags.some((v) => v === 1)).toBe(true);
       expect(flags.reduce((sum, v) => sum + v, 0)).toBe(1);
+      for (const row of rows) {
+        expect(row.canonical_key).toBe("foo.txt");
+      }
     } finally {
       db.close();
     }

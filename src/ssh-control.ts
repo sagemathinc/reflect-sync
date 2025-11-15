@@ -164,7 +164,9 @@ const CONTROL_SOCKET_PATTERNS = [
   "no such file",
 ];
 
-export async function maybeRestartSshControl(message?: string): Promise<boolean> {
+export async function maybeRestartSshControl(
+  message?: string,
+): Promise<boolean> {
   if (!restartHandler || !message) return false;
   const lower = message.toLowerCase();
   if (!CONTROL_SOCKET_PATTERNS.some((p) => lower.includes(p))) return false;

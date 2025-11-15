@@ -776,96 +776,96 @@ export async function run(
       zero: boolean;
       stderr?: string;
     }>((resolve) => {
-    const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
-      ? ["ignore", "pipe", "pipe"]
-      : ["ignore", "ignore", "ignore"];
+      const stdio: ("ignore" | "pipe" | "inherit")[] | "inherit" = wantProgress
+        ? ["ignore", "pipe", "pipe"]
+        : ["ignore", "ignore", "ignore"];
 
-    const child = spawn(cmd, argsForRun, {
-      stdio,
-    });
+      const child = spawn(cmd, argsForRun, {
+        stdio,
+      });
 
-    let lastEmit = 0;
-    let lastPercent = -1;
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
+      let lastEmit = 0;
+      let lastPercent = -1;
+      let stdoutBuffer = "";
+      let stderrBuffer = "";
 
-    if (wantProgress && child.stdout) {
-      child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        stdoutBuffer += chunk;
-        const pieces = stdoutBuffer.split(/[\r\n]+/);
-        stdoutBuffer = pieces.pop() ?? "";
-        for (const piece of pieces) {
-          const event = parseProgressLine(piece);
-          if (!event) continue;
-          const now = Date.now();
-          if (event.percent < lastPercent) {
-            continue;
-          }
-          if (event.percent === lastPercent && now - lastEmit < throttleMs) {
-            continue;
-          }
-          lastPercent = event.percent;
-          lastEmit = now;
-          try {
-            opts.onProgress?.(event);
-          } catch (err) {
-            if (debug) {
-              logger.warn("rsync onProgress handler failed", {
-                error: err instanceof Error ? err.message : String(err),
-              });
+      if (wantProgress && child.stdout) {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          stdoutBuffer += chunk;
+          const pieces = stdoutBuffer.split(/[\r\n]+/);
+          stdoutBuffer = pieces.pop() ?? "";
+          for (const piece of pieces) {
+            const event = parseProgressLine(piece);
+            if (!event) continue;
+            const now = Date.now();
+            if (event.percent < lastPercent) {
+              continue;
+            }
+            if (event.percent === lastPercent && now - lastEmit < throttleMs) {
+              continue;
+            }
+            lastPercent = event.percent;
+            lastEmit = now;
+            try {
+              opts.onProgress?.(event);
+            } catch (err) {
+              if (debug) {
+                logger.warn("rsync onProgress handler failed", {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
             }
           }
+        });
+      }
+
+      if (wantProgress && child.stderr) {
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk: string) => {
+          stderrBuffer += chunk;
+        });
+      }
+
+      child.on("exit", (code) => {
+        const zero = code === 0;
+        const ok = code !== null && okCodes.includes(code!);
+        if (wantProgress && lastPercent < 100 && ok) {
+          try {
+            opts.onProgress?.({
+              transferredBytes: NaN,
+              percent: 100,
+            });
+          } catch {}
+        }
+        resolve({ code, ok, zero, stderr: stderrBuffer });
+        if (debug) {
+          logger.debug("rsync exit", {
+            cmd,
+            code,
+            ok,
+            elapsedMs: Date.now() - t,
+          });
+        }
+        if (!ok && stderrBuffer && !debug) {
+          logger.warn("rsync stderr", {
+            stderr: truncateMiddle(stderrBuffer, 400),
+          });
         }
       });
-    }
 
-    if (wantProgress && child.stderr) {
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => {
-        stderrBuffer += chunk;
-      });
-    }
-
-    child.on("exit", (code) => {
-      const zero = code === 0;
-      const ok = code !== null && okCodes.includes(code!);
-      if (wantProgress && lastPercent < 100 && ok) {
-        try {
-          opts.onProgress?.({
-            transferredBytes: NaN,
-            percent: 100,
+      child.on("error", (err) => {
+        if (wantProgress && stderrBuffer) {
+          logger.warn("rsync stderr", {
+            stderr: truncateMiddle(stderrBuffer, 400),
           });
-        } catch {}
-      }
-      resolve({ code, ok, zero, stderr: stderrBuffer });
-      if (debug) {
-        logger.debug("rsync exit", {
-          cmd,
-          code,
-          ok,
-          elapsedMs: Date.now() - t,
+        }
+        logger.error("rsync spawn error", {
+          error: err instanceof Error ? err.message : String(err),
         });
-      }
-      if (!ok && stderrBuffer && !debug) {
-        logger.warn("rsync stderr", {
-          stderr: truncateMiddle(stderrBuffer, 400),
-        });
-      }
-    });
-
-    child.on("error", (err) => {
-      if (wantProgress && stderrBuffer) {
-        logger.warn("rsync stderr", {
-          stderr: truncateMiddle(stderrBuffer, 400),
-        });
-      }
-      logger.error("rsync spawn error", {
-        error: err instanceof Error ? err.message : String(err),
+        resolve({ code: 1, ok: okCodes.includes(1), zero: false });
       });
-      resolve({ code: 1, ok: okCodes.includes(1), zero: false });
     });
-  });
 
     let transfers: RsyncTransferRecord[] = [];
     if (captureSpec && captureLogPath && captureDelims) {
@@ -1216,7 +1216,9 @@ export async function rsyncFixMetaDirs(
     to,
   ];
   applySshTransport(args, from, to, opts);
-  const captureSpec = opts.captureDirs ? { paths: opts.captureDirs } : undefined;
+  const captureSpec = opts.captureDirs
+    ? { paths: opts.captureDirs }
+    : undefined;
   const res = await run("rsync", args, [0, 23, 24], {
     ...opts,
     captureTransfers: captureSpec,
@@ -1232,8 +1234,6 @@ export async function rsyncFixMetaDirs(
 }
 
 // -- DELETE --
-
-
 
 function logFiles(listFile: string) {
   if (!REFLECT_RSYNC_VERY_VERBOSE || !listFile) {

@@ -39,14 +39,21 @@ describe("scan marks unicode normalization conflicts", () => {
     try {
       const rows = db
         .prepare(
-          `SELECT path, case_conflict FROM nodes WHERE path IN (?, ?) ORDER BY path`,
+          `SELECT path, case_conflict, canonical_key FROM nodes WHERE path IN (?, ?) ORDER BY path`,
         )
-        .all(composed, decomposed) as { path: string; case_conflict: number }[];
+        .all(composed, decomposed) as {
+        path: string;
+        case_conflict: number;
+        canonical_key: string | null;
+      }[];
       expect(rows).toHaveLength(2);
       const flags = rows.map((r) => r.case_conflict);
       expect(flags.every((v) => v === 0 || v === 1)).toBe(true);
       expect(flags.some((v) => v === 1)).toBe(true);
       expect(flags.reduce((sum, v) => sum + v, 0)).toBe(1);
+      for (const row of rows) {
+        expect(row.canonical_key).toBe(composed);
+      }
     } finally {
       db.close();
     }

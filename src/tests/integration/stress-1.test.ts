@@ -56,7 +56,10 @@ async function populateFiles(dir: string, total: number): Promise<void> {
   }
 }
 
-async function verifyFileContents(dir: string, expected: number): Promise<boolean> {
+async function verifyFileContents(
+  dir: string,
+  expected: number,
+): Promise<boolean> {
   const chunks = Math.ceil(expected / BATCH_SIZE);
   let seen = 0;
   for (let chunk = 0; chunk < chunks; chunk += 1) {

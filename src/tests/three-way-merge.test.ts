@@ -144,9 +144,7 @@ describe("three-way merge planner", () => {
       ),
     ).toBeUndefined();
     expect(
-      plan.operations.find(
-        (op) => op.op === "noop" && op.path === target,
-      ),
+      plan.operations.find((op) => op.op === "noop" && op.path === target),
     ).toBeDefined();
   });
 });

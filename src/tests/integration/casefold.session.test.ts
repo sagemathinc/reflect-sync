@@ -57,18 +57,16 @@ describeIfCasefold("casefold integration", () => {
     await session.beta.writeFile("B.txt", "uppercase");
     await session.sync();
 
-    await expect(
-      session.beta.readFile("b.txt", "utf8"),
-    ).resolves.toBeDefined();
+    await expect(session.beta.readFile("b.txt", "utf8")).resolves.toBeDefined();
 
     await session.alpha.writeFile("b.txt", "alpha-update");
     await session.sync();
 
-    await expect(
-      session.beta.readFile("b.txt", "utf8"),
-    ).resolves.toBe("alpha-update");
-    await expect(
-      session.beta.readFile("B.txt", "utf8"),
-    ).resolves.toBe("uppercase");
+    await expect(session.beta.readFile("b.txt", "utf8")).resolves.toBe(
+      "alpha-update",
+    );
+    await expect(session.beta.readFile("B.txt", "utf8")).resolves.toBe(
+      "uppercase",
+    );
   });
 });

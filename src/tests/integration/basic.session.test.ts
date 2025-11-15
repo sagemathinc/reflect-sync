@@ -23,17 +23,17 @@ describe("integration test harness", () => {
     await session.alpha.mkdir("dir/subdir");
     await session.sync();
 
-    await expect(
-      session.beta.readFile("foo/bar.txt", "utf8"),
-    ).resolves.toBe("alpha v1");
+    await expect(session.beta.readFile("foo/bar.txt", "utf8")).resolves.toBe(
+      "alpha v1",
+    );
     await expect(session.beta.exists("dir/subdir")).resolves.toBe(true);
 
     await session.beta.appendFile("foo/bar.txt", "\nbeta delta");
     await session.sync();
 
-    await expect(
-      session.alpha.readFile("foo/bar.txt", "utf8"),
-    ).resolves.toBe("alpha v1\nbeta delta");
+    await expect(session.alpha.readFile("foo/bar.txt", "utf8")).resolves.toBe(
+      "alpha v1\nbeta delta",
+    );
 
     await session.alpha.rm("foo");
     await session.sync();

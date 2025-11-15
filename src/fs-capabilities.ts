@@ -49,7 +49,6 @@ wstein@lite:/mnt/casefold$ ls
 a.txt  école
 */
 
-
 import { randomBytes } from "node:crypto";
 import { promises as fsp } from "node:fs";
 import path from "node:path";

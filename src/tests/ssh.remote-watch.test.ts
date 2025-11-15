@@ -10,12 +10,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import {
-  countSchedulerCycles,
-  fileExists,
-  hasEventLog,
-  waitFor,
-} from "./util";
+import { countSchedulerCycles, fileExists, hasEventLog, waitFor } from "./util";
 import { canSshLocalhost } from "./ssh-util";
 
 // Resolve scheduler entrypoint directly to avoid CLI multi-proc trees

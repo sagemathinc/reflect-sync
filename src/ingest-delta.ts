@@ -123,14 +123,15 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     updated?: number;
     hash_pending?: number;
     change_start?: number | null;
-  change_end?: number | null;
-  confirmed_at?: number | null;
-  copy_pending?: number;
-  case_conflict?: number | null;
-};
-const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, case_conflict, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @case_conflict, @last_seen, @link_target, @last_error)
+    change_end?: number | null;
+    confirmed_at?: number | null;
+    copy_pending?: number;
+    case_conflict?: number | null;
+    canonical_key?: string | null;
+  };
+  const nodeUpsertStmt = db.prepare(`
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, case_conflict, canonical_key, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @case_conflict, @canonical_key, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -146,6 +147,7 @@ const nodeUpsertStmt = db.prepare(`
           change_end=excluded.change_end,
           confirmed_at=excluded.confirmed_at,
           case_conflict=excluded.case_conflict,
+          canonical_key=excluded.canonical_key,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -177,6 +179,8 @@ const nodeUpsertStmt = db.prepare(`
         params.confirmed_at === undefined ? null : params.confirmed_at,
       case_conflict:
         params.case_conflict === undefined ? null : params.case_conflict,
+      canonical_key:
+        params.canonical_key === undefined ? null : params.canonical_key,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -191,9 +195,10 @@ const nodeUpsertStmt = db.prepare(`
     change_end?: number | null;
     confirmed_at?: number | null;
     copy_pending?: number | null;
+    canonical_key?: string | null;
   };
   const selectMetaStmt = db.prepare(
-    `SELECT kind, last_seen, updated, mtime, change_start, change_end, confirmed_at, copy_pending FROM nodes WHERE path = ?`,
+    `SELECT kind, last_seen, updated, mtime, change_start, change_end, confirmed_at, copy_pending, canonical_key FROM nodes WHERE path = ?`,
   );
   const buildDeleteParams = (
     path: string,
@@ -230,6 +235,7 @@ const nodeUpsertStmt = db.prepare(`
       confirmed_at: logicalUpdated,
       copy_pending: 0,
       case_conflict: 0,
+      canonical_key: existing?.canonical_key ?? null,
     };
   };
   let processedRows = 0;
@@ -276,6 +282,8 @@ const nodeUpsertStmt = db.prepare(`
         copyPendingState = 2;
       }
       const caseConflict = r.case_conflict === 1 ? 1 : 0;
+      const canonicalKey =
+        typeof r.canonical_key === "string" ? r.canonical_key : null;
 
       if (r.kind === "dir") {
         if (isDelete) {
@@ -300,6 +308,7 @@ const nodeUpsertStmt = db.prepare(`
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
             case_conflict: caseConflict,
+            canonical_key: canonicalKey,
           });
         }
       } else if (r.kind === "link") {
@@ -326,6 +335,7 @@ const nodeUpsertStmt = db.prepare(`
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
             case_conflict: caseConflict,
+            canonical_key: canonicalKey,
           });
         }
       } else {
@@ -333,6 +343,7 @@ const nodeUpsertStmt = db.prepare(`
           writeNode({
             ...buildDeleteParams(r.path, "f", now),
             case_conflict: 0,
+            canonical_key: canonicalKey,
           });
           insTouch.run(r.path, now);
         } else if (r.hash == null) {
@@ -358,6 +369,7 @@ const nodeUpsertStmt = db.prepare(`
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
             case_conflict: caseConflict,
+            canonical_key: canonicalKey,
           });
           insTouch.run(r.path, now);
         }

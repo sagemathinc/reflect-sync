@@ -196,9 +196,7 @@ function shouldSkipForConflict(
   row: MergeDiffRow,
 ): boolean {
   if (op.op === "copy") {
-    return (
-      hasCaseConflict(row, op.to) || hasCaseConflict(row, op.from)
-    );
+    return hasCaseConflict(row, op.to) || hasCaseConflict(row, op.from);
   }
   if (op.op === "delete") {
     return hasCaseConflict(row, op.side);
@@ -228,7 +226,7 @@ function conflictTarget(op: PlannedOperation): string {
 
 function hasCaseConflict(row: MergeDiffRow, side: MergeSide): boolean {
   const flag =
-    side === "alpha" ? row.a_case_conflict ?? 0 : row.b_case_conflict ?? 0;
+    side === "alpha" ? (row.a_case_conflict ?? 0) : (row.b_case_conflict ?? 0);
   return Number(flag) === 1;
 }
 
