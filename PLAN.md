@@ -6,22 +6,22 @@ Let mixed case-sensitive (Linux/btrfs) ↔ case-insensitive or Unicode-normalizi
 
 ## Implementation Plan
 
-1. **Detect filesystem behavior**
-   - During session bootstrap \(same place we detect remote vs local roots\), probe each endpoint with a throwaway file to determine whether the filesystem is case\-insensitive and/or auto-normalizes Unicode \(e.g., macOS NFD\). Cache this in the session state so scans/merges know which side needs folding/canonicalization.
+1. **\(done\) Detect filesystem behavior**
+   - During session bootstrap \(same place we detect remote vs local roots\), probe each endpoint with a throwaway file to determine whether the filesystem is case\-insensitive and/or auto\-normalizes Unicode \(e.g., macOS NFD\). Cache this in the session state so scans/merges know which side needs folding/canonicalization.
 
-2. **Schema update**
+2. **\(done\) Schema update**
    - Add a `case_conflict INTEGER NOT NULL DEFAULT 0` column to `nodes` in alpha, beta, and base DBs. Include it in the indexes we already rely on \(`nodes_deleted_path_idx`, etc.\).
    - No need to worry about migrations \-\- project isn't released yet.
 
-3. **Scan/ingest changes for insensitive or Unicode-normalizing roots**
-   - While scanning \(or ingesting remote watch deltas\) on a lossy root, maintain a map of `canonical(path) -> canonicalRow`, where `canonical()` lowercase-folds and converts to NFC before comparison. For each directory:
+3. **Scan/ingest changes for insensitive or Unicode\-normalizing roots**
+   - While scanning \(or ingesting remote watch deltas\) on a lossy root, maintain a map of `canonical(path) -> canonicalRow`, where `canonical()` lowercase\-folds and converts to NFC before comparison. For each directory:
      - If we encounter `p` and `canonical(p)` is unused, insert it into the map and proceed as today \(write row with `case_conflict = 0`\).
      - If `canonical(p)` already has a different canonical path, pick a winner \(e.g., the newest `mtime`, or deterministically the lexicographically smallest; for a directory, consider the mtimes of everything under that directory\). Mark every loser in that conflict set with `case_conflict = 1`. Their metadata stays accurate so the Linux side still knows about them, but future merges targeting the insensitive side will skip them; for directories we also mark the entire subtree so children behave like an ignored path.
    - When a conflict disappears \(e.g., user deletes/renames a file so the canonical key is unique again\), the next scan clears the flag by writing `case_conflict = 0`.
-   - Emit a logger warning once per conflict set so users get notified immediately. Include the canonical path, the skipped variants, and which root is lossy \(case-folding, Unicode normalization, or both\).
+   - Emit a logger warning once per conflict set so users get notified immediately. Include the canonical path, the skipped variants, and which root is lossy \(case\-folding, Unicode normalization, or both\).
 
 4. **Merge planner/executor awareness**
-   - When we build the diff query for a destination that is case\-insensitive/normalizing, add `AND case_conflict = 0` to the relevant side. This prevents the executor from scheduling rsync copies or deletes for rows that would be lossy on that filesystem, and because directories propagate the flag the whole subtree is skipped (exactly like an ignore rule).
+   - When we build the diff query for a destination that is case\-insensitive/normalizing, add `AND case_conflict = 0` to the relevant side. This prevents the executor from scheduling rsync copies or deletes for rows that would be lossy on that filesystem, and because directories propagate the flag the whole subtree is skipped \(exactly like an ignore rule\).
    - When copying from the insensitive side back to the sensitive side, we still consider every row \(including ones flagged as conflicts\), because the Linux tree should remain complete.
    - If a conflict row would otherwise plan an operation \(e.g., delete on Linux towards macOS\), record a trace entry noting that it was skipped due to `case_conflict`.
 
@@ -291,3 +291,4 @@ Long-term we may want a lightweight remote watcher/scan agent that replaces the 
 - **Portability targets**: Linux + macOS on x86/ARM. Go handles this out of the box; Rust can as well but expects more manual setup for glibc vs musl builds.
 - **Protocol fidelity**: whichever language we choose must exactly mirror today’s scan/watch behavior—ignore rules, hashing, NDJSON framing, lock/unlock semantics—so this effort should only start once those behaviors are fully specified and proven stable.
 - **Performance**: both languages can saturate disks for full scans and deliver low-latency watcher events via native backends (inotify/kqueue/FSEvents). The challenge is less about raw speed and more about faithfully reproducing our existing throttling and batching logic.
+

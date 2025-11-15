@@ -28,6 +28,10 @@ sudo rm -rf /mnt/casefold/lost+found/
 sudo chattr +F /mnt/casefold
 sudo chown wstein:wstein /mnt/casefold
 
+
+wstein@lite:~/build/reflect-sync$ mkdir casefold
+wstein@lite:~/build/reflect-sync$ sudo mount -o loop /mnt/casefold.img `pwd`/casefold
+
 Then:
 
 wstein@lite:/mnt/casefold$ node
