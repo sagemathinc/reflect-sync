@@ -9,6 +9,7 @@ import {
   rsyncFixMetaDirsChunked,
   ensureTempDir,
 } from "./rsync.js";
+import type { RsyncTransferRecord } from "./rsync.js";
 import type { RsyncCompressSpec } from "./rsync-compression.js";
 import {
   resolveMergeStrategy,
@@ -26,6 +27,8 @@ import {
 import type { LogicalClock } from "./logical-clock.js";
 import { deletionMtimeFromMeta } from "./nodes-util.js";
 import { deleteRelativePaths } from "./util.js";
+import { modeHash } from "./hash.js";
+import { appendIds } from "./path-signature.js";
 
 // set to 'alpha' or 'beta' to make it so that the entire
 // scheduler terminates with an error if that side is
@@ -660,7 +663,7 @@ async function performDirCopies(params: {
     );
     const copiedSet = new Set(copiedDirs);
     if (copiedDirs.length) {
-      await rsyncFixMetaDirsChunked(
+      const metaTransfers = await rsyncFixMetaDirsChunked(
         params.workDir,
         params.fromRoot,
         params.toRoot,
@@ -669,14 +672,22 @@ async function performDirCopies(params: {
         {
           ...params.rsyncOpts,
           direction: params.direction,
+          captureTransfers: true,
         },
       );
+      const transferMap =
+        metaTransfers.length > 0
+          ? new Map<string, RsyncTransferRecord>(
+              metaTransfers.map((entry) => [entry.path, entry]),
+            )
+          : undefined;
       mirrorNodesFromSourceBatch(
         params.sourceDb,
         params.destDb,
         params.baseDb,
         copiedDirs,
         false,
+        transferMap,
       );
       if (params.tracer && params.opName) {
         for (const path of copiedDirs) {
@@ -944,6 +955,7 @@ function mirrorNodesFromSourceBatch(
   baseDb: ReturnType<typeof getDb>,
   paths: string[],
   pending: boolean,
+  dirTransfers?: Map<string, RsyncTransferRecord>,
 ): void {
   const destRows: NodeRecord[] = [];
   const baseRows: NodeRecord[] = [];
@@ -955,7 +967,14 @@ function mirrorNodesFromSourceBatch(
       const destRow = { ...row, last_error: null, copy_pending: 1 };
       destRows.push(destRow);
     } else {
+      const transferMeta = dirTransfers?.get(path);
       const destRow = { ...row, last_error: null, copy_pending: 0 };
+      if (transferMeta && row.kind === "d") {
+        const nextHash = dirHashFromTransfer(transferMeta, destRow.hash);
+        if (nextHash) {
+          destRow.hash = nextHash;
+        }
+      }
       destRows.push(destRow);
       baseRows.push(destRow);
     }
@@ -976,6 +995,96 @@ function mirrorNodesFromSourceBatch(
       for (const entry of entries) upsertNode(baseDb, entry);
     });
     applyBase(baseRows);
+  }
+}
+
+function dirHashFromTransfer(
+  transfer: RsyncTransferRecord,
+  fallbackHash: string,
+): string | null {
+  const perms = parseSymbolicPermissions(transfer.mode);
+  if (perms == null) return null;
+  const includeIds = fallbackHash.includes("|");
+  const base = modeHash(perms);
+  if (!includeIds) return base;
+  const uid = parseNumericId(transfer.user);
+  const gid = parseNumericId(transfer.group);
+  if (uid == null || gid == null) return null;
+  return appendIds(base, { uid, gid });
+}
+
+function parseNumericId(id?: string): number | null {
+  if (!id) return null;
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  const value = Number.parseInt(trimmed, 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseSymbolicPermissions(perms?: string): number | null {
+  if (!perms) return null;
+  const token = perms.trim();
+  if (token.length !== 9) return null;
+  let mode = 0;
+  const rwMap: Array<{ index: number; expected: string; bit: number }> = [
+    { index: 0, expected: "r", bit: 0o400 },
+    { index: 1, expected: "w", bit: 0o200 },
+    { index: 3, expected: "r", bit: 0o040 },
+    { index: 4, expected: "w", bit: 0o020 },
+    { index: 6, expected: "r", bit: 0o004 },
+    { index: 7, expected: "w", bit: 0o002 },
+  ];
+  for (const entry of rwMap) {
+    const ch = token[entry.index];
+    if (ch === entry.expected) {
+      mode |= entry.bit;
+    } else if (ch !== "-") {
+      return null;
+    }
+  }
+  const ownerExec = parseExecChar(token[2], 0o100, 0o4000);
+  if (ownerExec == null) return null;
+  mode |= ownerExec;
+  const groupExec = parseExecChar(token[5], 0o010, 0o2000);
+  if (groupExec == null) return null;
+  mode |= groupExec;
+  const otherExec = parseOtherExecChar(token[8]);
+  if (otherExec == null) return null;
+  mode |= otherExec;
+  return mode;
+}
+
+function parseExecChar(
+  ch: string,
+  execBit: number,
+  specialBit: number,
+): number | null {
+  switch (ch) {
+    case "x":
+      return execBit;
+    case "s":
+      return execBit | specialBit;
+    case "S":
+      return specialBit;
+    case "-":
+      return 0;
+    default:
+      return null;
+  }
+}
+
+function parseOtherExecChar(ch: string): number | null {
+  switch (ch) {
+    case "x":
+      return 0o001;
+    case "t":
+      return 0o001 | 0o1000;
+    case "T":
+      return 0o1000;
+    case "-":
+      return 0;
+    default:
+      return null;
   }
 }
 

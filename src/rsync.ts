@@ -96,6 +96,9 @@ type RsyncRunOptions = RsyncLogOptions & {
 export type RsyncTransferRecord = {
   path: string;
   itemized: string;
+  mode?: string;
+  user?: string;
+  group?: string;
 };
 
 type TransferCaptureSpec = {
@@ -286,9 +289,10 @@ export async function rsyncFixMetaDirsChunked(
     logLevel?: LogLevel;
     sshPort?: number;
     direction?;
+    captureTransfers?: boolean;
   } = {},
-): Promise<void> {
-  if (!dirRpaths.length) return;
+): Promise<RsyncTransferRecord[]> {
+  if (!dirRpaths.length) return [];
   const { logger, debug } = resolveLogContext(opts);
   const chunkSize = opts.chunkSize ?? REFLECT_DIR_CHUNK;
   const concurrency = opts.concurrency ?? Math.min(4, REFLECT_COPY_CONCURRENCY);
@@ -303,13 +307,14 @@ export async function rsyncFixMetaDirsChunked(
     await writeNulList(lf, batches[i]);
     listFiles.push(lf);
   }
+  const captured: RsyncTransferRecord[] = [];
   await parallelMapLimit(listFiles, concurrency, async (lf, idx) => {
     if (debug) {
       logger.debug(
         `>>> rsync fixmeta ${label} [${idx + 1}/${listFiles.length}]`,
       );
     }
-    await rsyncFixMetaDirs(
+    const res = await rsyncFixMetaDirs(
       fromRoot,
       toRoot,
       lf,
@@ -317,9 +322,19 @@ export async function rsyncFixMetaDirsChunked(
       {
         ...opts,
         direction: opts.direction,
+        captureDirs: opts.captureTransfers ? batches[idx] : undefined,
       },
     );
+    if (opts.captureTransfers && res.transfers?.length) {
+      for (const entry of res.transfers) {
+        captured.push({
+          ...entry,
+          path: normalizeTransferPath(entry.path),
+        });
+      }
+    }
   });
+  return opts.captureTransfers ? captured : [];
 }
 
 export async function rsyncCopyChunked(
@@ -665,12 +680,18 @@ function parseTransferLog(
     if (!raw) continue;
     const normalized = stripRecordPreamble(raw);
     if (!normalized) continue;
-    const idx = normalized.indexOf(field);
-    if (idx === -1) continue;
-    const itemized = normalized.slice(0, idx);
-    const path = normalized.slice(idx + field.length);
+    const parts = normalized.split(field);
+    if (parts.length < 2) continue;
+    const [itemized, mode, user, group, rawPath] = parts;
+    const path = rawPath?.trim();
     if (!path) continue;
-    records.push({ path, itemized });
+    records.push({
+      path,
+      itemized,
+      mode: mode?.trim() || undefined,
+      user: user?.trim() || undefined,
+      group: group?.trim() || undefined,
+    });
   }
   return records;
 }
@@ -732,7 +753,7 @@ export async function run(
       captureLogPath = path.join(captureDir, "transfers.log");
       argsForRun.push(`--log-file=${captureLogPath}`);
       argsForRun.push(
-        `--log-file-format=%i${captureDelims.field}%n${captureDelims.record}`,
+        `--log-file-format=%i${captureDelims.field}%B${captureDelims.field}%U${captureDelims.field}%G${captureDelims.field}%n${captureDelims.record}`,
       );
     } else {
       captureDir = undefined;
@@ -1175,12 +1196,13 @@ export async function rsyncFixMetaDirs(
     logLevel?: LogLevel;
     sshPort?: number;
     direction?;
+    captureDirs?: string[];
   } = {},
-): Promise<{ ok: boolean; zero: boolean }> {
+): Promise<{ ok: boolean; zero: boolean; transfers: RsyncTransferRecord[] }> {
   const { logger, debug } = resolveLogContext(opts);
   if (!(await fileNonEmpty(listFile, debug ? logger : undefined))) {
     if (debug) logger.debug(`>>> rsync ${label} (meta dirs): nothing to do`);
-    return { ok: true, zero: false };
+    return { ok: true, zero: false, transfers: [] };
   }
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta dirs) (${fromRoot} -> ${toRoot})`);
@@ -1194,7 +1216,11 @@ export async function rsyncFixMetaDirs(
     to,
   ];
   applySshTransport(args, from, to, opts);
-  const res = await run("rsync", args, [0, 23, 24], opts);
+  const captureSpec = opts.captureDirs ? { paths: opts.captureDirs } : undefined;
+  const res = await run("rsync", args, [0, 23, 24], {
+    ...opts,
+    captureTransfers: captureSpec,
+  });
   assertRsyncOk(`${label} (meta dirs)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta dirs): done`, {
@@ -1202,7 +1228,7 @@ export async function rsyncFixMetaDirs(
       ok: res.ok,
     });
   }
-  return { ok: true, zero: res.zero };
+  return { ok: true, zero: res.zero, transfers: res.transfers ?? [] };
 }
 
 // -- DELETE --

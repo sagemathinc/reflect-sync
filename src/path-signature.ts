@@ -14,7 +14,10 @@ export type PathSignatureResult = {
   target?: string | null;
 };
 
-function appendIds(hash: string, st: { uid?: number; gid?: number } | null) {
+export function appendIds(
+  hash: string,
+  st: { uid?: number; gid?: number } | null,
+) {
   if (!st) return hash;
   const uid = Number.isFinite(st.uid ?? NaN) ? Number(st.uid) : 0;
   const gid = Number.isFinite(st.gid ?? NaN) ? Number(st.gid) : 0;
