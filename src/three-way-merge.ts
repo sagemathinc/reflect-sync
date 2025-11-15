@@ -674,9 +674,7 @@ async function performDirCopies(params: {
       mirrorNodesFromSourceBatch(
         params.sourceDb,
         params.destDb,
-        params.baseDb,
         copiedDirs,
-        { updateBase: true },
       );
       if (params.tracer && params.opName) {
         for (const path of copiedDirs) {
@@ -812,9 +810,7 @@ async function performFileCopies(params: {
     mirrorNodesFromSourceBatch(
       params.sourceDb,
       params.destDb,
-      params.baseDb,
       succeeded,
-      { updateBase: true },
     );
     if (params.tracer && params.opName) {
       for (const path of succeeded) {
@@ -941,45 +937,25 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
 function mirrorNodesFromSourceBatch(
   sourceDb: ReturnType<typeof getDb>,
   destDb: ReturnType<typeof getDb>,
-  baseDb: ReturnType<typeof getDb>,
   paths: string[],
-  opts: { updateBase: boolean },
 ): void {
   const destRows: NodeRecord[] = [];
-  const baseRows: NodeRecord[] = [];
   for (const path of paths) {
     const row = fetchNode(sourceDb, path);
     if (!row) continue;
     const destRow = { ...row, last_error: null, copy_pending: 1 };
     destRows.push(destRow);
-    if (opts.updateBase) {
-      baseRows.push({ ...row, last_error: null, copy_pending: 0 });
-    }
   }
-  if (!destRows.length) return;
-  const applyDest = destDb.transaction(
-    (entries: NodeRecord[], clearCopy?: boolean) => {
-      for (const entry of entries) {
-        if (clearCopy) entry.copy_pending = 0;
-        upsertNode(destDb, entry);
-      }
-    },
-  );
-  applyDest(destRows);
-  if (opts.updateBase) {
-    const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
-      for (const entry of entries) {
-        entry.copy_pending = 0;
-        upsertNode(baseDb, entry);
-      }
-    });
-    applyBase(baseRows);
-  }
-  if (opts.updateBase && baseRows.length) {
-    const applyBase = baseDb.transaction((entries: NodeRecord[]) => {
-      for (const entry of entries) upsertNode(baseDb, entry);
-    });
-    applyBase(baseRows);
+  if (destRows.length) {
+    const applyDest = destDb.transaction(
+      (entries: NodeRecord[], clearCopy?: boolean) => {
+        for (const entry of entries) {
+          if (clearCopy) entry.copy_pending = 0;
+          upsertNode(destDb, entry);
+        }
+      },
+    );
+    applyDest(destRows);
   }
 }
 
