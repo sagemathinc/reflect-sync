@@ -23,14 +23,17 @@ import { spawnSchedulerForSession } from "../../session-runner.js";
 import { Database } from "../../db.js";
 import { SSH_ENABLED } from "../ssh.remote-test-util.js";
 
+if (!process.env.REFLECT_LOG_LEVEL) {
+  process.env.REFLECT_LOG_LEVEL = "info";
+}
+
 const DIST = path.resolve(__dirname, "../../../dist");
 const CLI = path.join(DIST, "cli.js");
 const KEEP_WORKSPACE =
   process.env.REFLECT_TEST_KEEP_WORKSPACE === "1" ||
   process.env.DEBUG_TESTS === "1";
 const DEBUG_LOGS =
-  process.env.REFLECT_TEST_DEBUG === "1" ||
-  process.env.DEBUG_TESTS === "1";
+  process.env.REFLECT_TEST_DEBUG === "1" || process.env.DEBUG_TESTS === "1";
 
 type RemoteSide = {
   host?: string;
@@ -162,12 +165,7 @@ export class TestSession {
     this.alpha = new TestSessionSide(alphaRoot);
     this.beta = new TestSessionSide(betaRoot);
     this.sessionDb = sessionDb;
-    this.baseDbPath = path.join(
-      reflectHome,
-      "sessions",
-      String(id),
-      "base.db",
-    );
+    this.baseDbPath = path.join(reflectHome, "sessions", String(id), "base.db");
   }
 
   // just like the normal sync subcommand, except maxCycles defaults to 1.
