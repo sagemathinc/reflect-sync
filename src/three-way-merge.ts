@@ -258,96 +258,104 @@ export async function executeThreeWayMerge(
   try {
     const buckets = categorizeOperations(plan);
 
-    await performDeletes({
-      paths: buckets.deleteAlpha,
-      root: opts.alphaRoot,
-      side: "alpha",
-      deleteFn: alphaDeleteFn,
-      logger,
-      targetDb: alphaConn,
-      baseDb: baseConn,
-      logicalClock: clock,
-      tracer,
-      opName: operationName({ op: "delete", side: "alpha" }),
-    });
-    await performDeletes({
-      paths: buckets.deleteBeta,
-      root: opts.betaRoot,
-      side: "beta",
-      deleteFn: betaDeleteFn,
-      logger,
-      targetDb: betaConn,
-      baseDb: baseConn,
-      logicalClock: clock,
-      tracer,
-      opName: operationName({ op: "delete", side: "beta" }),
-    });
+    await Promise.all([
+      performDeletes({
+        paths: buckets.deleteAlpha,
+        root: opts.alphaRoot,
+        side: "alpha",
+        deleteFn: alphaDeleteFn,
+        logger,
+        targetDb: alphaConn,
+        baseDb: baseConn,
+        logicalClock: clock,
+        tracer,
+        opName: operationName({ op: "delete", side: "alpha" }),
+      }),
+      performDeletes({
+        paths: buckets.deleteBeta,
+        root: opts.betaRoot,
+        side: "beta",
+        deleteFn: betaDeleteFn,
+        logger,
+        targetDb: betaConn,
+        baseDb: baseConn,
+        logicalClock: clock,
+        tracer,
+        opName: operationName({ op: "delete", side: "beta" }),
+      }),
+    ]);
 
-    await performDirCopies({
-      paths: buckets.copyAlphaBetaDirs,
-      workDir: tmpWork,
-      fromRoot: alphaSpec,
-      toRoot: betaSpec,
-      direction: "alpha->beta",
-      tempDir: betaTempArg,
-      rsyncOpts: rsyncBase,
-      sourceDb: alphaConn,
-      destDb: betaConn,
-      baseDb: baseConn,
-      logicalClock: clock,
-      tracer,
-      opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
-    });
-    await performDirCopies({
-      paths: buckets.copyBetaAlphaDirs,
-      workDir: tmpWork,
-      fromRoot: betaSpec,
-      toRoot: alphaSpec,
-      direction: "beta->alpha",
-      tempDir: alphaTempArg,
-      rsyncOpts: rsyncBase,
-      sourceDb: betaConn,
-      destDb: alphaConn,
-      baseDb: baseConn,
-      logicalClock: clock,
-      tracer,
-      opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
-    });
+    const alphaPipeline = (async () => {
+      await performDirCopies({
+        paths: buckets.copyAlphaBetaDirs,
+        workDir: tmpWork,
+        fromRoot: alphaSpec,
+        toRoot: betaSpec,
+        direction: "alpha->beta",
+        tempDir: betaTempArg,
+        rsyncOpts: rsyncBase,
+        sourceDb: alphaConn,
+        destDb: betaConn,
+        baseDb: baseConn,
+        logicalClock: clock,
+        tracer,
+        opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
+      });
+      await performFileCopies({
+        paths: buckets.copyAlphaBetaFiles,
+        workDir: tmpWork,
+        fromRoot: alphaSpec,
+        toRoot: betaSpec,
+        direction: "alpha->beta",
+        tempDir: betaTempArg,
+        rsyncOpts: rsyncBase,
+        sourceDb: alphaConn,
+        destDb: betaConn,
+        baseDb: baseConn,
+        sourceSide: "alpha",
+        logger,
+        tracer,
+        opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
+        logicalClock: clock,
+      });
+    })();
 
-    await performFileCopies({
-      paths: buckets.copyAlphaBetaFiles,
-      workDir: tmpWork,
-      fromRoot: alphaSpec,
-      toRoot: betaSpec,
-      direction: "alpha->beta",
-      tempDir: betaTempArg,
-      rsyncOpts: rsyncBase,
-      sourceDb: alphaConn,
-      destDb: betaConn,
-      baseDb: baseConn,
-      sourceSide: "alpha",
-      logger,
-      tracer,
-      opName: operationName({ op: "copy", from: "alpha", to: "beta" }),
-      logicalClock: clock,
-    });
-    await performFileCopies({
-      paths: buckets.copyBetaAlphaFiles,
-      workDir: tmpWork,
-      fromRoot: betaSpec,
-      toRoot: alphaSpec,
-      direction: "beta->alpha",
-      tempDir: alphaTempArg,
-      rsyncOpts: rsyncBase,
-      sourceDb: betaConn,
-      destDb: alphaConn,
-      baseDb: baseConn,
-      sourceSide: "beta",
-      logger,
-      tracer,
-      opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
-      logicalClock: clock,
-    });
+    const betaPipeline = (async () => {
+      await performDirCopies({
+        paths: buckets.copyBetaAlphaDirs,
+        workDir: tmpWork,
+        fromRoot: betaSpec,
+        toRoot: alphaSpec,
+        direction: "beta->alpha",
+        tempDir: alphaTempArg,
+        rsyncOpts: rsyncBase,
+        sourceDb: betaConn,
+        destDb: alphaConn,
+        baseDb: baseConn,
+        logicalClock: clock,
+        tracer,
+        opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
+      });
+      await performFileCopies({
+        paths: buckets.copyBetaAlphaFiles,
+        workDir: tmpWork,
+        fromRoot: betaSpec,
+        toRoot: alphaSpec,
+        direction: "beta->alpha",
+        tempDir: alphaTempArg,
+        rsyncOpts: rsyncBase,
+        sourceDb: betaConn,
+        destDb: alphaConn,
+        baseDb: baseConn,
+        sourceSide: "beta",
+        logger,
+        tracer,
+        opName: operationName({ op: "copy", from: "beta", to: "alpha" }),
+        logicalClock: clock,
+      });
+    })();
+
+    await Promise.all([alphaPipeline, betaPipeline]);
 
     return { plan, ok: true };
   } finally {

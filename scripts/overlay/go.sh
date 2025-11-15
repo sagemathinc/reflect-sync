@@ -26,8 +26,7 @@ export SCHED_MIN_MS="1000"
 export SCHED_MAX_MS="2000"
 export SCHED_MAX_BACKOFF_MS="2000"
 export REFLECT_RSYNC_BWLIMIT=5M
-reflect daemon stop
-reflect daemon start
+reflect daemon restart
 
 # this fails very quickly with fb68a88f18ae81ec5cf5c546226399fcfd825349
 
