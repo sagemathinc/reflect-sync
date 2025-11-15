@@ -127,6 +127,11 @@ export function configureScanCommand(
     .option(
       "--scan-tick <number>",
       "(internal) override logical timestamp used for this scan",
+    )
+    .option(
+      "--mark-case-conflicts",
+      "mark paths whose names conflict by case for the counterpart root",
+      false,
     );
 }
 
@@ -153,6 +158,7 @@ type ScanOptions = {
   clockBase?: string[];
   scanTick?: number;
   filesystemCaps?: FilesystemCapabilities;
+  markCaseConflicts?: boolean;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -173,6 +179,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     restrictedPaths = [],
     logicalClock,
     scanTick: scanTickOverride,
+    filesystemCaps: providedCaps,
+    markCaseConflicts = false,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const clock = logicalClock;
@@ -190,11 +198,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const absRoot = path.resolve(root);
   await ensureTempDir(absRoot);
   const detectedCaps =
-    opts.filesystemCaps ??
+    providedCaps ??
     (await detectFilesystemCapabilities(absRoot, { logger }));
   const filesystemCaps = detectedCaps ?? DEFAULT_FILESYSTEM_CAPABILITIES;
   const canonicalEnabled =
-    filesystemCaps.caseInsensitive || filesystemCaps.normalizesUnicode;
+    markCaseConflicts ||
+    filesystemCaps.caseInsensitive ||
+    filesystemCaps.normalizesUnicode;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -753,6 +763,17 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     deltaBuf.length = 0;
   }
 
+  const checkCanonicalExists = async (rel: string): Promise<boolean> => {
+    if (!rel) return false;
+    const abs = path.join(absRoot, rel);
+    try {
+      await lstatAsync(abs);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const canonicalMap = canonicalEnabled ? new Map<string, string>() : null;
   const conflictDirSet = canonicalEnabled ? new Set<string>() : null;
   const conflictReports = canonicalEnabled
@@ -1058,10 +1079,17 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
       const isDir = entry.dirent.isDirectory();
       let caseConflict = 0;
-      let canonicalKey: string | null = null;
+      const canonicalKey = canonicalEnabled ? canonicalKeyFor(rpath) : null;
       if (canonicalEnabled) {
-        canonicalKey = canonicalKeyFor(rpath);
-        if (hasConflictAncestor(rpath)) {
+        const preferExistingCanonical =
+          markCaseConflicts &&
+          canonicalKey &&
+          canonicalKey !== rpath &&
+          (await checkCanonicalExists(canonicalKey));
+        if (preferExistingCanonical) {
+          caseConflict = 1;
+          noteConflict(canonicalKey!, rpath);
+        } else if (hasConflictAncestor(rpath)) {
           caseConflict = 1;
         } else if (canonicalKey && canonicalMap) {
           const winner = canonicalMap.get(canonicalKey);

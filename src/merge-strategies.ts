@@ -21,6 +21,7 @@ export type MergeDiffRow = {
   a_hash?: string | null;
   a_hash_pending?: number | null;
   a_copy_pending?: number | null;
+  a_case_conflict?: number | null;
   a_ctime?: number | null;
   a_change_start?: number | null;
   a_change_end?: number | null;
@@ -33,6 +34,7 @@ export type MergeDiffRow = {
   b_hash?: string | null;
   b_hash_pending?: number | null;
   b_copy_pending?: number | null;
+  b_case_conflict?: number | null;
   b_ctime?: number | null;
   b_change_start?: number | null;
   b_change_end?: number | null;
@@ -45,6 +47,7 @@ export type MergeDiffRow = {
   base_hash?: string | null;
   base_hash_pending?: number | null;
   base_copy_pending?: number | null;
+  base_case_conflict?: number | null;
   base_ctime?: number | null;
   base_change_start?: number | null;
   base_change_end?: number | null;

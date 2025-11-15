@@ -1,18 +1,13 @@
-import fs from "node:fs";
-import path from "node:path";
 import {
   detectFilesystemCapabilities,
   canonicalizePath,
 } from "../fs-capabilities.js";
-
-const CASEFOLD_ROOT = path.join(process.cwd(), "casefold");
-const NOT_CASEFOLD_ROOT = path.join(process.cwd(), "not-casefold");
-
-const casefoldExists = fs.existsSync(CASEFOLD_ROOT);
-const notCasefoldExists = fs.existsSync(NOT_CASEFOLD_ROOT);
-
-const describeIfCasefold = casefoldExists ? describe : describe.skip;
-const describeIfNotCasefold = notCasefoldExists ? describe : describe.skip;
+import {
+  CASEFOLD_ROOT,
+  NOT_CASEFOLD_ROOT,
+  describeIfCasefold,
+  describeIfNotCasefold,
+} from "./casefold.js";
 
 describeIfCasefold("fs capabilities on casefold mount", () => {
   it("detects case insensitivity and unicode normalization", async () => {

@@ -115,7 +115,8 @@ export function planThreeWayMerge(
     const rows = queryDiffs(db, restrictionActive);
     const strategy = resolveMergeStrategy(strategyName);
     const ctx: MergeStrategyContext = { prefer };
-    const operations = strategy(rows, ctx);
+    const planned = strategy(rows, ctx);
+    const operations = filterCaseConflictOperations(rows, planned, logger);
     logger?.debug("three-way merge plan", {
       diffs: rows.length,
       operations: operations.length,
@@ -151,6 +152,84 @@ export function planThreeWayMerge(
     } catch {}
     db.close();
   }
+}
+
+function filterCaseConflictOperations(
+  rows: MergeDiffRow[],
+  operations: PlannedOperation[],
+  logger?: Logger,
+): PlannedOperation[] {
+  if (!operations.length) return operations;
+  const byPath = new Map(rows.map((row) => [row.path, row]));
+  const seen = new Set<string>();
+  const filtered: PlannedOperation[] = [];
+  for (const op of operations) {
+    if (op.op === "noop") {
+      filtered.push(op);
+      continue;
+    }
+    const row = byPath.get(op.path);
+    if (!row) {
+      filtered.push(op);
+      continue;
+    }
+    if (shouldSkipForConflict(op, row)) {
+      const key = conflictKey(op);
+      if (!seen.has(key)) {
+        logger?.warn?.("skipping operation due to case-sensitive conflict", {
+          path: op.path,
+          operation: op.op,
+          target: conflictTarget(op),
+        });
+        seen.add(key);
+      }
+      filtered.push({ op: "noop", path: op.path });
+      continue;
+    }
+    filtered.push(op);
+  }
+  return filtered;
+}
+
+function shouldSkipForConflict(
+  op: PlannedOperation,
+  row: MergeDiffRow,
+): boolean {
+  if (op.op === "copy") {
+    return (
+      hasCaseConflict(row, op.to) || hasCaseConflict(row, op.from)
+    );
+  }
+  if (op.op === "delete") {
+    return hasCaseConflict(row, op.side);
+  }
+  return false;
+}
+
+function conflictKey(op: PlannedOperation): string {
+  if (op.op === "copy") {
+    return `${op.from}->${op.to}:${op.path}`;
+  }
+  if (op.op === "delete") {
+    return `delete:${op.side}:${op.path}`;
+  }
+  return `noop:${op.path}`;
+}
+
+function conflictTarget(op: PlannedOperation): string {
+  if (op.op === "copy") {
+    return `${op.from}->${op.to}`;
+  }
+  if (op.op === "delete") {
+    return op.side;
+  }
+  return "noop";
+}
+
+function hasCaseConflict(row: MergeDiffRow, side: MergeSide): boolean {
+  const flag =
+    side === "alpha" ? row.a_case_conflict ?? 0 : row.b_case_conflict ?? 0;
+  return Number(flag) === 1;
 }
 
 type DeleteFn = (paths: string[]) => Promise<string[]>;
@@ -397,6 +476,7 @@ pairs AS (
     a.hash    AS a_hash,
     a.hash_pending AS a_hash_pending,
     a.copy_pending AS a_copy_pending,
+    a.case_conflict AS a_case_conflict,
     a.change_start AS a_change_start,
     a.change_end AS a_change_end,
     a.ctime   AS a_ctime,
@@ -409,6 +489,7 @@ pairs AS (
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
     b.copy_pending AS b_copy_pending,
+    b.case_conflict AS b_case_conflict,
     b.change_start AS b_change_start,
     b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
@@ -432,6 +513,7 @@ beta_only AS (
     NULL AS a_hash,
     NULL AS a_hash_pending,
     NULL AS a_copy_pending,
+    NULL AS a_case_conflict,
     NULL AS a_change_start,
     NULL AS a_change_end,
     NULL AS a_ctime,
@@ -444,6 +526,7 @@ beta_only AS (
     b.hash    AS b_hash,
     b.hash_pending AS b_hash_pending,
     b.copy_pending AS b_copy_pending,
+    b.case_conflict AS b_case_conflict,
     b.change_start AS b_change_start,
     b.change_end AS b_change_end,
     b.ctime   AS b_ctime,
@@ -469,6 +552,7 @@ SELECT
   diff.a_hash,
   diff.a_hash_pending,
   diff.a_copy_pending,
+  diff.a_case_conflict,
   diff.a_change_start,
   diff.a_change_end,
   diff.a_ctime,
@@ -481,6 +565,7 @@ SELECT
   diff.b_hash,
   diff.b_hash_pending,
   diff.b_copy_pending,
+  diff.b_case_conflict,
   diff.b_change_start,
   diff.b_change_end,
   diff.b_ctime,
@@ -493,6 +578,7 @@ SELECT
   base.hash       AS base_hash,
   base.hash_pending AS base_hash_pending,
   base.copy_pending AS base_copy_pending,
+  base.case_conflict AS base_case_conflict,
   base.change_start AS base_change_start,
   base.change_end AS base_change_end,
   base.ctime      AS base_ctime,

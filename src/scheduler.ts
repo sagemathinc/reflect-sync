@@ -524,7 +524,6 @@ export async function runScheduler({
     (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
     (await isRoot(betaHost, remoteLogConfig, betaPort));
 
-
   const controlMasterDisabled =
     (process.env.REFLECT_SSH_CONTROL ?? "").trim() === "0";
   const remoteControlHost = alphaIsRemote ? alphaHost : betaHost;
@@ -713,7 +712,10 @@ export async function runScheduler({
       if (!isRemote) return true;
       if (localOnly) return true;
       const lastCheck = remoteRootLastCheck[side];
-      if (remoteRootVerified[side] && Date.now() - lastCheck < REMOTE_ROOT_CACHE_MS) {
+      if (
+        remoteRootVerified[side] &&
+        Date.now() - lastCheck < REMOTE_ROOT_CACHE_MS
+      ) {
         return true;
       }
       const host = side === "alpha" ? alphaHost! : betaHost!;
@@ -792,6 +794,11 @@ export async function runScheduler({
     });
   }
 
+  const markAlphaConflicts =
+    alphaFsCaps.caseInsensitive || alphaFsCaps.normalizesUnicode;
+  const markBetaConflicts =
+    betaFsCaps.caseInsensitive || betaFsCaps.normalizesUnicode;
+
   await ensureRootsExist();
   const logicalClock = await createLogicalClock([alphaDb, betaDb, baseDb]);
 
@@ -833,6 +840,7 @@ export async function runScheduler({
       ignoreRules: string[];
       restrictedPaths?: string[];
       scanTick?: number;
+      markCaseConflicts?: boolean;
     },
     retried = false,
   ): Promise<{
@@ -862,7 +870,8 @@ export async function runScheduler({
         hash,
         "--vacuum",
       );
-      for (const pattern of params.ignoreRules) sshArgs.push("--ignore", pattern);
+      for (const pattern of params.ignoreRules)
+        sshArgs.push("--ignore", pattern);
       if (numericIds) sshArgs.push("--numeric-ids");
       if (lastRemoteScan.ok && lastRemoteScan.start) {
         sshArgs.push("--prune-ms");
@@ -879,6 +888,9 @@ export async function runScheduler({
           if (!rel) continue;
           sshArgs.push("--restricted-path", rel);
         }
+      }
+      if (params.markCaseConflicts) {
+        sshArgs.push("--mark-case-conflicts");
       }
       lastRemoteScan.start = Date.now();
       lastRemoteScan.ok = false;
@@ -936,7 +948,9 @@ export async function runScheduler({
       });
 
       const wait = (p: ChildProcess) =>
-        new Promise<number | null>((resolve) => p.on("exit", (c) => resolve(c)));
+        new Promise<number | null>((resolve) =>
+          p.on("exit", (c) => resolve(c)),
+        );
 
       let sshCode: number | null = null;
       let ingestError: unknown = null;
@@ -1882,6 +1896,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths,
             scanTick,
+            markCaseConflicts: markAlphaConflicts,
           });
         } catch (err) {
           invalidateRemoteRoot("alpha");
@@ -1889,41 +1904,42 @@ export async function runScheduler({
         }
       } else {
         a = await (async () => {
-            try {
-              await runScan({
-                root: alphaRoot,
-                db: alphaDb,
-                emitDelta: false,
-                hash,
-                vacuum: false,
-                numericIds,
-                logger: scanLogger,
-                ignoreRules,
-                restrictedPaths,
-                logicalClock,
-                scanTick: alphaTick,
-                filesystemCaps: filesystemCaps.alpha,
-              });
-              return {
-                code: 0,
-                ok: true,
-                lastZero: true,
-                ms: Date.now() - tAlphaStart,
-              };
-            } catch (err) {
-              const duration = Date.now() - tAlphaStart;
-              scanLogger.error("scan failed", {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              return {
-                code: 1,
-                ok: false,
-                lastZero: false,
-                ms: duration,
-                error: err,
-              };
-            }
-          })();
+          try {
+            await runScan({
+              root: alphaRoot,
+              db: alphaDb,
+              emitDelta: false,
+              hash,
+              vacuum: false,
+              numericIds,
+              logger: scanLogger,
+              ignoreRules,
+              restrictedPaths,
+              logicalClock,
+              scanTick: alphaTick,
+              filesystemCaps: filesystemCaps.alpha,
+              markCaseConflicts: markAlphaConflicts,
+            });
+            return {
+              code: 0,
+              ok: true,
+              lastZero: true,
+              ms: Date.now() - tAlphaStart,
+            };
+          } catch (err) {
+            const duration = Date.now() - tAlphaStart;
+            scanLogger.error("scan failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return {
+              code: 1,
+              ok: false,
+              lastZero: false,
+              ms: duration,
+              error: err,
+            };
+          }
+        })();
       }
       if (!hasRestrictions) {
         seedHotFromDb(
@@ -1956,6 +1972,7 @@ export async function runScheduler({
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             scanTick,
+            markCaseConflicts: markBetaConflicts,
           });
         } catch (err) {
           invalidateRemoteRoot("beta");
@@ -1963,41 +1980,42 @@ export async function runScheduler({
         }
       } else {
         b = await (async () => {
-            try {
-              await runScan({
-                root: betaRoot,
-                db: betaDb,
-                emitDelta: false,
-                hash,
-                vacuum: false,
-                numericIds,
-                logger: scanLogger,
-                ignoreRules,
-                restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
-                logicalClock,
-                scanTick: betaTick,
-                filesystemCaps: filesystemCaps.beta,
-              });
-              return {
-                code: 0,
-                ok: true,
-                lastZero: true,
-                ms: Date.now() - tBetaStart,
-              };
-            } catch (err) {
-              const duration = Date.now() - tBetaStart;
-              scanLogger.error("scan failed", {
-                error: err instanceof Error ? err.message : String(err),
-              });
-              return {
-                code: 1,
-                ok: false,
-                lastZero: false,
-                ms: duration,
-                error: err,
-              };
-            }
-          })();
+          try {
+            await runScan({
+              root: betaRoot,
+              db: betaDb,
+              emitDelta: false,
+              hash,
+              vacuum: false,
+              numericIds,
+              logger: scanLogger,
+              ignoreRules,
+              restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+              logicalClock,
+              scanTick: betaTick,
+              filesystemCaps: filesystemCaps.beta,
+              markCaseConflicts: markBetaConflicts,
+            });
+            return {
+              code: 0,
+              ok: true,
+              lastZero: true,
+              ms: Date.now() - tBetaStart,
+            };
+          } catch (err) {
+            const duration = Date.now() - tBetaStart;
+            scanLogger.error("scan failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return {
+              code: 1,
+              ok: false,
+              lastZero: false,
+              ms: duration,
+              error: err,
+            };
+          }
+        })();
       }
       if (!hasRestrictions) {
         seedHotFromDb(

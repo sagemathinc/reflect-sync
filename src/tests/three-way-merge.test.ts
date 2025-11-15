@@ -14,17 +14,19 @@ function insertNode(
     updated: number;
     size?: number;
     deleted?: number;
+    case_conflict?: number;
   },
 ) {
   const db = getDb(dbPath);
   try {
     db.prepare(
-      `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, confirmed_at, last_seen, link_target, last_error)
-       VALUES(@path, @kind, @hash, @mtime, @mtime, NULL, @updated, @size, @deleted, @updated, NULL, NULL, NULL)`,
+      `INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, confirmed_at, last_seen, case_conflict, link_target, last_error)
+       VALUES(@path, @kind, @hash, @mtime, @mtime, NULL, @updated, @size, @deleted, @updated, NULL, @case_conflict, NULL, NULL)`,
     ).run({
       ...row,
       size: row.size ?? 0,
       deleted: row.deleted ?? 0,
+      case_conflict: row.case_conflict ?? 0,
     });
   } finally {
     db.close();
@@ -46,6 +48,17 @@ describe("three-way merge planner", () => {
     getDb(alphaDb).close();
     getDb(betaDb).close();
     getDb(baseDb).close();
+  });
+
+  beforeEach(() => {
+    for (const dbPath of [alphaDb, betaDb, baseDb]) {
+      const db = getDb(dbPath);
+      try {
+        db.exec("DELETE FROM nodes;");
+      } finally {
+        db.close();
+      }
+    }
   });
 
   afterAll(async () => {
@@ -90,5 +103,50 @@ describe("three-way merge planner", () => {
     expect(
       plan.operations.find((op) => "path" in op && op.path === target),
     ).toBeUndefined();
+  });
+
+  test("skips operations targeting sides with case conflicts", () => {
+    const target = "foo/conflict.txt";
+    const now = Date.now();
+    insertNode(alphaDb, {
+      path: target,
+      kind: "f",
+      hash: "alpha",
+      mtime: now + 10,
+      updated: now + 10,
+    });
+    insertNode(betaDb, {
+      path: target,
+      kind: "f",
+      hash: "beta",
+      mtime: now,
+      updated: now,
+      case_conflict: 1,
+    });
+    insertNode(baseDb, {
+      path: target,
+      kind: "f",
+      hash: "beta",
+      mtime: now,
+      updated: now,
+    });
+
+    const plan = planThreeWayMerge({
+      alphaDb,
+      betaDb,
+      baseDb,
+      prefer: "alpha",
+    });
+
+    expect(
+      plan.operations.find(
+        (op) => op.op === "copy" && "path" in op && op.path === target,
+      ),
+    ).toBeUndefined();
+    expect(
+      plan.operations.find(
+        (op) => op.op === "noop" && op.path === target,
+      ),
+    ).toBeDefined();
   });
 });

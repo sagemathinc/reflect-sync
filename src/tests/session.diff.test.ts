@@ -13,8 +13,8 @@ function insertFile(dbPath: string, relPath: string, hash: string) {
   const db = getDb(dbPath);
   try {
     db.prepare(
-      `INSERT OR REPLACE INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, link_target, last_error)
-       VALUES(?, 'f', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+      `INSERT OR REPLACE INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, last_seen, case_conflict, link_target, last_error)
+       VALUES(?, 'f', ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL)`,
     ).run(relPath, hash, now, now, now, now, 0, 0, now);
   } finally {
     db.close();
@@ -107,5 +107,22 @@ describe("session diff restrictions", () => {
       restrictedPaths: ["include.txt"],
     }).map((entry) => entry.path);
     expect(pathRestricted).toEqual(["include.txt"]);
+  });
+
+  it("marks conflicts for sides with case-insensitive collisions", () => {
+    const session = baseSessionRow(alphaDb, betaDb);
+    const db = getDb(alphaDb);
+    try {
+      db.prepare(`UPDATE nodes SET case_conflict = 1 WHERE path = ?`).run(
+        "include.txt",
+      );
+    } finally {
+      db.close();
+    }
+    const diff = diffSession(session).find(
+      (entry) => entry.path === "include.txt",
+    );
+    expect(diff).toBeTruthy();
+    expect(diff?.conflicts).toEqual(["alpha"]);
   });
 });

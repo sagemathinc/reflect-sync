@@ -4,6 +4,7 @@ import path from "node:path";
 import { deriveSessionPaths, type SessionRow } from "./session-db.js";
 import { dedupeRestrictedList } from "./restrict.js";
 import { planThreeWayMerge } from "./three-way-merge.js";
+import type { MergeSide } from "./merge-strategies.js";
 
 export type DiffEntryType = "file" | "dir" | "link";
 
@@ -11,6 +12,7 @@ export interface DiffEntry {
   path: string;
   type: DiffEntryType;
   mtime: number | null;
+  conflicts: MergeSide[];
 }
 
 export interface SessionDiffOptions {
@@ -48,10 +50,14 @@ export function diffSession(
         row.b_updated ??
         row.base_updated ??
         null;
+      const conflicts: MergeSide[] = [];
+      if (row.a_case_conflict) conflicts.push("alpha");
+      if (row.b_case_conflict) conflicts.push("beta");
       return {
         path: normalizePath(row.path),
         type,
         mtime,
+        conflicts,
       };
     })
     .filter((entry): entry is DiffEntry => !!entry && allowed(entry.path))

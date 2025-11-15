@@ -857,9 +857,9 @@ export function registerSessionCommands(program: Command) {
             return;
           }
           const table = new AsciiTable3("Session Differences")
-            .setHeading("Path", "Type", "Modified", "Age")
+            .setHeading("Path", "Type", "Modified", "Age", "Conflicts")
             .setStyle("unicode-round");
-          [0, 1, 2, 3].forEach((idx) =>
+          [0, 1, 2, 3, 4].forEach((idx) =>
             table.setAlign(idx, AlignmentEnum.LEFT),
           );
           for (const entry of differences) {
@@ -867,7 +867,9 @@ export function registerSessionCommands(program: Command) {
               ? new Date(entry.mtime).toLocaleString()
               : "-";
             const age = entry.mtime ? fmtAgo(entry.mtime) : "-";
-            table.addRow(entry.path, entry.type, mtime, age);
+            const conflicts =
+              entry.conflicts.length > 0 ? entry.conflicts.join(",") : "-";
+            table.addRow(entry.path, entry.type, mtime, age, conflicts);
           }
           console.log(table.toString());
           if (opts.maxPaths && differences.length === opts.maxPaths) {
