@@ -9,3 +9,6 @@ sudo rm -rf "$root" "$upperdir" "$upperdir2" "$workdir"
 rm -f $HOME/.local/share/reflect-sync/beta.db
 
 reflect terminate o
+
+# remove custom env var config
+reflect daemon restart
