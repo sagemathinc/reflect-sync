@@ -86,6 +86,7 @@ export function getDb(dbPath: string): Database {
     deleted     INTEGER NOT NULL DEFAULT 0,
     hash_pending INTEGER NOT NULL DEFAULT 0,
     copy_pending INTEGER NOT NULL DEFAULT 0,
+    case_conflict INTEGER NOT NULL DEFAULT 0,
     last_seen   REAL,
     link_target TEXT,
     last_error  TEXT
@@ -132,6 +133,7 @@ export function getBaseDb(dbPath: string): Database {
        deleted    INTEGER NOT NULL DEFAULT 0,
        hash_pending INTEGER NOT NULL DEFAULT 0,
        copy_pending INTEGER NOT NULL DEFAULT 0,
+       case_conflict INTEGER NOT NULL DEFAULT 0,
        last_seen  REAL,
        link_target TEXT,
        last_error TEXT

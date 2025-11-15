@@ -9,6 +9,7 @@ import {
   lstat as lstatAsync,
 } from "node:fs/promises";
 import { getDb } from "./db.js";
+import type { FilesystemCapabilities } from "./fs-capabilities.js";
 import { Command, Option } from "commander";
 import { cliEntrypoint } from "./cli-util.js";
 import path from "node:path";
@@ -146,6 +147,7 @@ type ScanOptions = {
   logicalClock?: LogicalClock;
   clockBase?: string[];
   scanTick?: number;
+  filesystemCaps?: FilesystemCapabilities;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {

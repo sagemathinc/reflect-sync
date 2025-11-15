@@ -82,6 +82,10 @@ import {
   maybeRestartSshControl,
   type SshControlHandle,
 } from "./ssh-control.js";
+import {
+  detectFilesystemCapabilities,
+  DEFAULT_FILESYSTEM_CAPABILITIES,
+} from "./fs-capabilities.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
@@ -520,6 +524,7 @@ export async function runScheduler({
     (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
     (await isRoot(betaHost, remoteLogConfig, betaPort));
 
+
   const controlMasterDisabled =
     (process.env.REFLECT_SSH_CONTROL ?? "").trim() === "0";
   const remoteControlHost = alphaIsRemote ? alphaHost : betaHost;
@@ -757,6 +762,34 @@ export async function runScheduler({
       invalidateRemoteRoot("beta");
       failMissingRoot("beta");
     }
+  }
+
+  await ensureRootsExist({ localOnly: true });
+  const alphaFsCaps = alphaIsRemote
+    ? { ...DEFAULT_FILESYSTEM_CAPABILITIES }
+    : await detectFilesystemCapabilities(alphaRoot, {
+        logger: scoped("fs.alpha"),
+      });
+  const betaFsCaps = betaIsRemote
+    ? { ...DEFAULT_FILESYSTEM_CAPABILITIES }
+    : await detectFilesystemCapabilities(betaRoot, {
+        logger: scoped("fs.beta"),
+      });
+  const filesystemCaps = {
+    alpha: alphaFsCaps,
+    beta: betaFsCaps,
+  };
+  if (!alphaIsRemote) {
+    scoped("fs.alpha").info("filesystem capabilities", {
+      caseInsensitive: alphaFsCaps.caseInsensitive,
+      normalizesUnicode: alphaFsCaps.normalizesUnicode,
+    });
+  }
+  if (!betaIsRemote) {
+    scoped("fs.beta").info("filesystem capabilities", {
+      caseInsensitive: betaFsCaps.caseInsensitive,
+      normalizesUnicode: betaFsCaps.normalizesUnicode,
+    });
   }
 
   await ensureRootsExist();
@@ -1869,6 +1902,7 @@ export async function runScheduler({
                 restrictedPaths,
                 logicalClock,
                 scanTick: alphaTick,
+                filesystemCaps: filesystemCaps.alpha,
               });
               return {
                 code: 0,
@@ -1942,6 +1976,7 @@ export async function runScheduler({
                 restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
                 logicalClock,
                 scanTick: betaTick,
+                filesystemCaps: filesystemCaps.beta,
               });
               return {
                 code: 0,
