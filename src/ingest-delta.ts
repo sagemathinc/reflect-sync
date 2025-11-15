@@ -123,13 +123,14 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     updated?: number;
     hash_pending?: number;
     change_start?: number | null;
-    change_end?: number | null;
-    confirmed_at?: number | null;
-    copy_pending?: number;
-  };
-  const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
+  change_end?: number | null;
+  confirmed_at?: number | null;
+  copy_pending?: number;
+  case_conflict?: number | null;
+};
+const nodeUpsertStmt = db.prepare(`
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, case_conflict, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @case_conflict, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -144,6 +145,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
           change_start=excluded.change_start,
           change_end=excluded.change_end,
           confirmed_at=excluded.confirmed_at,
+          case_conflict=excluded.case_conflict,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -173,6 +175,8 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       change_end: changeEnd,
       confirmed_at:
         params.confirmed_at === undefined ? null : params.confirmed_at,
+      case_conflict:
+        params.case_conflict === undefined ? null : params.case_conflict,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -225,6 +229,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       change_end: logicalUpdated,
       confirmed_at: logicalUpdated,
       copy_pending: 0,
+      case_conflict: 0,
     };
   };
   let processedRows = 0;
@@ -270,6 +275,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       } else if (copyPendingState === 1) {
         copyPendingState = 2;
       }
+      const caseConflict = r.case_conflict === 1 ? 1 : 0;
 
       if (r.kind === "dir") {
         if (isDelete) {
@@ -293,6 +299,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_end: op_ts,
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
+            case_conflict: caseConflict,
           });
         }
       } else if (r.kind === "link") {
@@ -318,12 +325,14 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_end: op_ts,
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
+            case_conflict: caseConflict,
           });
         }
       } else {
         if (isDelete) {
           writeNode({
             ...buildDeleteParams(r.path, "f", now),
+            case_conflict: 0,
           });
           insTouch.run(r.path, now);
         } else if (r.hash == null) {
@@ -348,6 +357,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_end: updatedTick,
             confirmed_at: updatedTick,
             copy_pending: copyPendingState,
+            case_conflict: caseConflict,
           });
           insTouch.run(r.path, now);
         }

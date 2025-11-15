@@ -95,6 +95,8 @@ export function getDb(dbPath: string): Database {
   CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
   `);
 
+  ensureCaseConflictColumn(db);
+
   return db;
 }
 
@@ -141,6 +143,7 @@ export function getBaseDb(dbPath: string): Database {
      CREATE INDEX IF NOT EXISTS nodes_deleted_path_idx ON nodes(deleted, path);
      CREATE INDEX IF NOT EXISTS nodes_updated_idx ON nodes(updated);
     `);
+  ensureCaseConflictColumn(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY NOT NULL,
@@ -148,4 +151,14 @@ export function getBaseDb(dbPath: string): Database {
     );
   `);
   return db;
+}
+
+function ensureCaseConflictColumn(db: Database) {
+  try {
+    db.exec(
+      `ALTER TABLE nodes ADD COLUMN case_conflict INTEGER NOT NULL DEFAULT 0;`,
+    );
+  } catch {
+    // column already exists
+  }
 }

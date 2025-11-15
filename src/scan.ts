@@ -39,6 +39,11 @@ import {
 } from "./restrict.js";
 import { createLogicalClock } from "./logical-clock.js";
 import type { LogicalClock } from "./logical-clock.js";
+import {
+  canonicalizePath,
+  DEFAULT_FILESYSTEM_CAPABILITIES,
+  detectFilesystemCapabilities,
+} from "./fs-capabilities.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -184,6 +189,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   if (Array.isArray(ignoreCliOpt)) ignoreRaw.push(...ignoreCliOpt);
   const absRoot = path.resolve(root);
   await ensureTempDir(absRoot);
+  const detectedCaps =
+    opts.filesystemCaps ??
+    (await detectFilesystemCapabilities(absRoot, { logger }));
+  const filesystemCaps = detectedCaps ?? DEFAULT_FILESYSTEM_CAPABILITIES;
+  const canonicalEnabled =
+    filesystemCaps.caseInsensitive || filesystemCaps.normalizesUnicode;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -220,6 +231,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     pending_start: number | null;
     confirmed_at: number | null;
     copy_pending: number;
+    case_conflict: number;
   };
 
   type HashMeta = {
@@ -321,10 +333,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     change_start?: number | null;
     change_end?: number | null;
     confirmed_at?: number | null;
+    case_conflict?: number | null;
   };
   const nodeUpsertStmt = db.prepare(`
-        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, last_seen, link_target, last_error)
-        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @last_seen, @link_target, @last_error)
+        INSERT INTO nodes(path, kind, hash, mtime, ctime, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, case_conflict, last_seen, link_target, last_error)
+        VALUES (@path, @kind, @hash, @mtime, @ctime, @hashed_ctime, @updated, @size, @deleted, @hash_pending, @copy_pending, @change_start, @change_end, @confirmed_at, @case_conflict, @last_seen, @link_target, @last_error)
         ON CONFLICT(path) DO UPDATE SET
           kind=excluded.kind,
           hash=excluded.hash,
@@ -339,6 +352,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_start=excluded.change_start,
           change_end=excluded.change_end,
           confirmed_at=excluded.confirmed_at,
+          case_conflict=excluded.case_conflict,
           last_seen=excluded.last_seen,
           link_target=excluded.link_target,
           last_error=excluded.last_error
@@ -368,6 +382,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       change_end: changeEnd,
       confirmed_at:
         params.confirmed_at === undefined ? null : params.confirmed_at,
+      case_conflict:
+        params.case_conflict === undefined ? null : params.case_conflict,
       last_seen: params.last_seen ?? null,
       link_target: params.link_target ?? null,
       last_error: params.last_error === undefined ? null : params.last_error,
@@ -486,6 +502,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     change_end: number | null;
     confirmed_at: number | null;
     copy_pending: number;
+    case_conflict: number;
   };
 
   const applyDirBatch = db.transaction((rows: DirRow[]) => {
@@ -505,6 +522,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         change_start: r.change_start ?? r.op_ts,
         change_end: r.change_end ?? r.op_ts,
         confirmed_at: r.confirmed_at ?? r.op_ts,
+        case_conflict: r.case_conflict ?? 0,
         link_target: null,
         last_error: null,
       });
@@ -530,6 +548,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         change_end: r.change_end ?? (r.hash_pending ? null : r.op_ts),
         confirmed_at: r.confirmed_at ?? (r.hash_pending ? null : r.op_ts),
         copy_pending: r.copy_pending ?? 0,
+        case_conflict: r.case_conflict ?? 0,
         link_target: null,
         last_error: null,
       });
@@ -580,6 +599,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash_pending: 0,
           confirmed_at: confirmedAt ?? scanTick,
           copy_pending: copyPendingState,
+          case_conflict: meta?.case_conflict ?? null,
           link_target: null,
           last_error: null,
         });
@@ -601,6 +621,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     change_end: number | null;
     confirmed_at: number | null;
     copy_pending: number;
+    case_conflict: number;
   };
 
   const applyLinksBatch = db.transaction((rows: LinkRow[]) => {
@@ -620,6 +641,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         change_end: r.change_end ?? r.op_ts,
         confirmed_at: r.confirmed_at ?? r.op_ts,
         copy_pending: r.copy_pending ?? 0,
+        case_conflict: r.case_conflict ?? 0,
         hash_pending: 0,
         last_error: null,
       });
@@ -712,6 +734,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     mtime?: number;
     hash?: string;
     target?: string; // for links
+    case_conflict?: number;
   }) => {
     if (!emitDelta) {
       throw Error("do not call emitObj if emitDelta isn't enabled");
@@ -730,13 +753,50 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     deltaBuf.length = 0;
   }
 
+  const canonicalMap = canonicalEnabled ? new Map<string, string>() : null;
+  const conflictDirSet = canonicalEnabled ? new Set<string>() : null;
+  const conflictReports = canonicalEnabled
+    ? new Map<string, Set<string>>()
+    : null;
+
+  const canonicalKeyFor = (rel: string): string => {
+    if (!canonicalEnabled) return rel;
+    return canonicalizePath(rel, filesystemCaps);
+  };
+
+  const hasConflictAncestor = (rel: string): boolean => {
+    if (!canonicalEnabled || !conflictDirSet || conflictDirSet.size === 0) {
+      return false;
+    }
+    let current = rel;
+    while (true) {
+      const idx = current.lastIndexOf("/");
+      if (idx === -1) break;
+      current = current.slice(0, idx);
+      if (conflictDirSet.has(current)) return true;
+    }
+    return conflictDirSet.has("");
+  };
+
+  const noteConflict = (key: string, pathValue: string) => {
+    if (!canonicalEnabled || !conflictReports || !canonicalMap) return;
+    let set = conflictReports.get(key);
+    if (!set) {
+      set = new Set<string>();
+      const winner = canonicalMap.get(key);
+      if (winner) set.add(winner);
+      conflictReports.set(key, set);
+    }
+    set.add(pathValue);
+  };
+
   async function emitReplaySinceTs(dbSince: number) {
     if (!emitDelta) return;
 
     const nodes = db
       .prepare(
         `
-    SELECT path, kind, size, ctime, mtime, updated AS op_ts, hash, link_target, deleted
+    SELECT path, kind, size, ctime, mtime, updated AS op_ts, hash, link_target, deleted, case_conflict
       FROM nodes
      WHERE updated >= ?${restrictedClause}
      ORDER BY op_ts ASC, path ASC
@@ -752,6 +812,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       hash: string | null;
       link_target: string | null;
       deleted: number;
+      case_conflict: number | null;
     }[];
 
     for (const r of nodes) {
@@ -766,6 +827,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         hash: r.hash ?? undefined,
         target: kind === "l" ? (r.link_target ?? undefined) : undefined,
         deleted: r.deleted,
+        case_conflict: r.case_conflict ?? undefined,
       });
     }
     flushDeltaBuf();
@@ -803,6 +865,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       pending_start: number | null;
       confirmed_at: number | null;
       copy_pending: number;
+      case_conflict: number;
     }
   >();
 
@@ -993,8 +1056,28 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      const isDir = entry.dirent.isDirectory();
+      let caseConflict = 0;
+      let canonicalKey: string | null = null;
+      if (canonicalEnabled) {
+        canonicalKey = canonicalKeyFor(rpath);
+        if (hasConflictAncestor(rpath)) {
+          caseConflict = 1;
+        } else if (canonicalKey && canonicalMap) {
+          const winner = canonicalMap.get(canonicalKey);
+          if (!winner) {
+            canonicalMap.set(canonicalKey, rpath);
+          } else if (winner !== rpath) {
+            caseConflict = 1;
+            noteConflict(canonicalKey, rpath);
+          }
+        }
+      }
+      if (caseConflict && isDir && conflictDirSet) {
+        conflictDirSet.add(rpath);
+      }
 
-      if (entry.dirent.isDirectory()) {
+      if (isDir) {
         const prev = getExistingDir.get(rpath) as
           | {
               hash: string | null;
@@ -1041,6 +1124,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_end: dirChangeEnd,
           confirmed_at: dirConfirmedAt,
           copy_pending: dirCopyPending,
+          case_conflict: caseConflict,
         });
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
           applyDirBatch(dirMetaBuf);
@@ -1056,6 +1140,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             hash,
             op_ts,
             deleted: 0,
+            case_conflict: caseConflict || undefined,
           });
         }
 
@@ -1157,6 +1242,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           pending_start: pendingStart,
           confirmed_at: confirmedValue,
           copy_pending: copyPendingState,
+          case_conflict: caseConflict,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
@@ -1193,6 +1279,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             pending_start: pendingStart,
             confirmed_at: rowConfirmed ?? null,
             copy_pending: row?.copy_pending ?? 0,
+            case_conflict: caseConflict,
           });
         }
       } else if (entry.dirent.isSymbolicLink()) {
@@ -1249,6 +1336,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           change_end: linkChangeEnd,
           confirmed_at: linkConfirmedAt,
           copy_pending: linkCopyPending,
+          case_conflict: caseConflict,
         });
         if (linksBuf.length >= DB_BATCH_SIZE) {
           applyLinksBatch(linksBuf);
@@ -1265,6 +1353,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             hash,
             target,
             deleted: 0,
+            case_conflict: caseConflict || undefined,
           });
         }
 
@@ -1373,6 +1462,18 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   }
 
   await scan();
+
+  if (canonicalEnabled && conflictReports && conflictReports.size > 0) {
+    for (const [canonicalName, paths] of conflictReports.entries()) {
+      logger.warn(
+        "case-insensitive name conflict; only the first observed variant is synchronized",
+        {
+          canonical: canonicalName,
+          paths: Array.from(paths).sort(),
+        },
+      );
+    }
+  }
 
   async function processHashJobs(jobs: Job[]) {
     if (!jobs.length) return;
