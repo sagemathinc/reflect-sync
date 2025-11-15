@@ -37,7 +37,20 @@ import {
   RemoteConnectionError,
 } from "./remote.js";
 import type { SendSignature } from "./recent-send.js";
-import type { SignatureEntry } from "./signature-store.js";
+type SignatureEntry = {
+  path: string;
+  kind?: "f" | "l" | "d";
+  size?: number;
+  hash?: string;
+  link_target?: string;
+  ctime?: number;
+  mtime?: number;
+  copy_pending?: number;
+  change_start?: number;
+  change_end?: number;
+  confirmed_at?: number;
+  signature?: SendSignature;
+};
 import { CLI_NAME, MAX_WATCHERS } from "./constants.js";
 import { listSupportedHashes, defaultHashAlg } from "./hash.js";
 import { resolveCompression } from "./rsync-compression.js";
@@ -1177,10 +1190,6 @@ export async function runScheduler({
               entries.push({
                 path: String(entry.path),
                 signature: entry.signature as SendSignature,
-                target:
-                  entry.target === undefined
-                    ? undefined
-                    : (entry.target ?? null),
               });
             }
           }
