@@ -1024,8 +1024,11 @@ export function registerSessionCommands(program: Command) {
             const label = row.name ?? String(row.id);
             try {
               await resetSession({ sessionDb, id: row.id, logger: cliLogger });
+              const pid = startSessionRow(sessionDb, row);
               console.log(
-                `reset session ${label}; run 'reflect start ${label}' to restart`,
+                pid
+                  ? `started session ${row.name ?? row.id} (pid ${pid})`
+                  : `failed to start session ${row.name ?? row.id}`,
               );
             } catch (err) {
               hadError = true;

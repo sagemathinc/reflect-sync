@@ -132,6 +132,16 @@ export function configureScanCommand(
       "--mark-case-conflicts",
       "mark paths whose names conflict by case for the counterpart root",
       false,
+    )
+    .option(
+      "--case-conflict-case-insensitive",
+      "(internal) when marking conflicts, fold names as if the counterpart root were case-insensitive",
+      false,
+    )
+    .option(
+      "--case-conflict-normalizes-unicode",
+      "(internal) when marking conflicts, fold names as if the counterpart root normalized Unicode",
+      false,
     );
 }
 
@@ -159,6 +169,7 @@ type ScanOptions = {
   scanTick?: number;
   filesystemCaps?: FilesystemCapabilities;
   markCaseConflicts?: boolean;
+  caseConflictCaps?: FilesystemCapabilities;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -181,6 +192,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     scanTick: scanTickOverride,
     filesystemCaps: providedCaps,
     markCaseConflicts = false,
+    caseConflictCaps: caseConflictCapsOverride,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const clock = logicalClock;
@@ -201,10 +213,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     providedCaps ??
     (await detectFilesystemCapabilities(absRoot, { logger }));
   const filesystemCaps = detectedCaps ?? DEFAULT_FILESYSTEM_CAPABILITIES;
+  const canonicalCaps =
+    markCaseConflicts && caseConflictCapsOverride
+      ? caseConflictCapsOverride
+      : filesystemCaps;
   const canonicalEnabled =
     markCaseConflicts ||
-    filesystemCaps.caseInsensitive ||
-    filesystemCaps.normalizesUnicode;
+    canonicalCaps.caseInsensitive ||
+    canonicalCaps.normalizesUnicode;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -782,7 +798,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   const canonicalKeyFor = (rel: string): string => {
     if (!canonicalEnabled) return rel;
-    return canonicalizePath(rel, filesystemCaps);
+    return canonicalizePath(rel, canonicalCaps);
   };
 
   const hasConflictAncestor = (rel: string): boolean => {
@@ -1527,7 +1543,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 }
 
 // ---------- CLI entry (preserved) ----------
-cliEntrypoint<ScanOptions & { restrictedPath: string[] }>(
+cliEntrypoint<
+  ScanOptions & {
+    restrictedPath: string[];
+    caseConflictCaseInsensitive?: boolean;
+    caseConflictNormalizesUnicode?: boolean;
+  }
+>(
   import.meta.url,
   buildProgram,
   async (options) => {
@@ -1542,10 +1564,25 @@ cliEntrypoint<ScanOptions & { restrictedPath: string[] }>(
     if (options.restrictedPath) {
       options.restrictedPaths = options.restrictedPath;
     }
+    const {
+      caseConflictCaseInsensitive,
+      caseConflictNormalizesUnicode,
+      restrictedPath: _ignoredRestrictedPath,
+      ...rest
+    } = options;
+    const caseConflictCaps =
+      caseConflictCaseInsensitive || caseConflictNormalizesUnicode
+        ? {
+            ...DEFAULT_FILESYSTEM_CAPABILITIES,
+            caseInsensitive: !!caseConflictCaseInsensitive,
+            normalizesUnicode: !!caseConflictNormalizesUnicode,
+          }
+        : undefined;
     await runScan({
-      ...options,
+      ...rest,
       logicalClock: clock,
       scanTick: scanTickOverride,
+      caseConflictCaps,
     });
   },
   {

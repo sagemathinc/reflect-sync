@@ -85,6 +85,7 @@ import {
 import {
   detectFilesystemCapabilities,
   DEFAULT_FILESYSTEM_CAPABILITIES,
+  type FilesystemCapabilities,
 } from "./fs-capabilities.js";
 
 const PRUNE_REMOTE_DATABASE_MS = 30_000;
@@ -795,9 +796,11 @@ export async function runScheduler({
   }
 
   const markAlphaConflicts =
-    alphaFsCaps.caseInsensitive || alphaFsCaps.normalizesUnicode;
-  const markBetaConflicts =
     betaFsCaps.caseInsensitive || betaFsCaps.normalizesUnicode;
+  const markBetaConflicts =
+    alphaFsCaps.caseInsensitive || alphaFsCaps.normalizesUnicode;
+  const alphaCaseConflictCaps = markAlphaConflicts ? betaFsCaps : undefined;
+  const betaCaseConflictCaps = markBetaConflicts ? alphaFsCaps : undefined;
 
   await ensureRootsExist();
   const logicalClock = await createLogicalClock([alphaDb, betaDb, baseDb]);
@@ -841,6 +844,7 @@ export async function runScheduler({
       restrictedPaths?: string[];
       scanTick?: number;
       markCaseConflicts?: boolean;
+      caseConflictCaps?: FilesystemCapabilities;
     },
     retried = false,
   ): Promise<{
@@ -891,6 +895,12 @@ export async function runScheduler({
       }
       if (params.markCaseConflicts) {
         sshArgs.push("--mark-case-conflicts");
+        if (params.caseConflictCaps?.caseInsensitive) {
+          sshArgs.push("--case-conflict-case-insensitive");
+        }
+        if (params.caseConflictCaps?.normalizesUnicode) {
+          sshArgs.push("--case-conflict-normalizes-unicode");
+        }
       }
       lastRemoteScan.start = Date.now();
       lastRemoteScan.ok = false;
@@ -1897,6 +1907,7 @@ export async function runScheduler({
             restrictedPaths,
             scanTick,
             markCaseConflicts: markAlphaConflicts,
+            caseConflictCaps: alphaCaseConflictCaps,
           });
         } catch (err) {
           invalidateRemoteRoot("alpha");
@@ -1919,6 +1930,7 @@ export async function runScheduler({
               scanTick: alphaTick,
               filesystemCaps: filesystemCaps.alpha,
               markCaseConflicts: markAlphaConflicts,
+              caseConflictCaps: alphaCaseConflictCaps,
             });
             return {
               code: 0,
@@ -1973,6 +1985,7 @@ export async function runScheduler({
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
             scanTick,
             markCaseConflicts: markBetaConflicts,
+            caseConflictCaps: betaCaseConflictCaps,
           });
         } catch (err) {
           invalidateRemoteRoot("beta");
@@ -1995,6 +2008,7 @@ export async function runScheduler({
               scanTick: betaTick,
               filesystemCaps: filesystemCaps.beta,
               markCaseConflicts: markBetaConflicts,
+              caseConflictCaps: betaCaseConflictCaps,
             });
             return {
               code: 0,
