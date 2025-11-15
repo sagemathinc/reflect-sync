@@ -168,11 +168,10 @@ export class TestSession {
     this.baseDbPath = path.join(reflectHome, "sessions", String(id), "base.db");
   }
 
-  // just like the normal sync subcommand, except maxCycles defaults to 1.
   async sync(options: TestSessionSyncOptions = {}): Promise<void> {
     const args = ["sync", String(this.id), "--session-db", this.sessionDb];
     if (options.maxCycles !== undefined) {
-      args.push("--max-cycles", String(options.maxCycles ?? 1));
+      args.push("--max-cycles", String(options.maxCycles));
     }
     if (options.timeoutMs !== undefined) {
       args.push("--timeout", String(options.timeoutMs));
