@@ -261,6 +261,15 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
       if (r.path == null) {
         throw Error(`invalid data -- ${JSON.stringify(r)}`);
       }
+      const existing = selectMetaStmt.get(r.path) as
+        | ExistingMetaRow
+        | undefined;
+      let copyPendingState = existing?.copy_pending ?? 0;
+      if (isDelete) {
+        copyPendingState = 0;
+      } else if (copyPendingState === 1) {
+        copyPendingState = 2;
+      }
 
       if (r.kind === "dir") {
         if (isDelete) {
@@ -283,6 +292,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_start: op_ts,
             change_end: op_ts,
             confirmed_at: updatedTick,
+            copy_pending: copyPendingState,
           });
         }
       } else if (r.kind === "link") {
@@ -307,6 +317,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_start: op_ts,
             change_end: op_ts,
             confirmed_at: updatedTick,
+            copy_pending: copyPendingState,
           });
         }
       } else {
@@ -336,6 +347,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
             change_start: op_ts,
             change_end: updatedTick,
             confirmed_at: updatedTick,
+            copy_pending: copyPendingState,
           });
           insTouch.run(r.path, now);
         }
