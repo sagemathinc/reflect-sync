@@ -108,10 +108,10 @@ describe("reflect reset CLI", () => {
 
     const row = loadSessionById(sessionDbPath, sessionId)!;
     expect(row.name).toBe(sessionName);
-    expect(row.actual_state).toBe("stopped");
-    expect(row.desired_state).toBe("stopped");
-    expect(row.scheduler_pid).toBeNull();
-    expect(row.last_heartbeat).toBeNull();
+    expect(row.actual_state).toBe("running");
+    expect(row.desired_state).toBe("running");
+    expect(row.scheduler_pid).not.toBeNull();
+    expect(row.last_heartbeat).not.toBeNull();
 
     const dbAfter = ensureSessionDb(sessionDbPath);
     try {
