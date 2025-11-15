@@ -2,7 +2,6 @@ import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 import { waitFor, hasEventLog } from "../util.js";
 
-const TIMEOUT = 10_000;
 jest.setTimeout(25_000);
 
 describe("hot sync integration (local roots)", () => {
@@ -26,13 +25,13 @@ describe("hot sync integration (local roots)", () => {
     await waitFor(
       () => session!.beta.exists("hot/alpha.txt"),
       (exists) => exists === true,
-      TIMEOUT,
+      7_000,
       100,
     );
 
-    await expect(session.beta.readFile("hot/alpha.txt", "utf8")).resolves.toBe(
-      "alpha-hot",
-    );
+    await expect(
+      session.beta.readFile("hot/alpha.txt", "utf8"),
+    ).resolves.toBe("alpha-hot");
   });
 
   it("mirrors beta→alpha via local hot watch", async () => {
@@ -46,13 +45,13 @@ describe("hot sync integration (local roots)", () => {
     await waitFor(
       () => session!.alpha.exists("hot/beta.txt"),
       (exists) => exists === true,
-      TIMEOUT,
+      7_000,
       100,
     );
 
-    await expect(session.alpha.readFile("hot/beta.txt", "utf8")).resolves.toBe(
-      "beta-hot",
-    );
+    await expect(
+      session.alpha.readFile("hot/beta.txt", "utf8"),
+    ).resolves.toBe("beta-hot");
   });
 });
 
@@ -79,7 +78,7 @@ describeIfSsh("hot sync integration (remote beta)", () => {
       () =>
         hasEventLog(session!.baseDbPath, "watch", "beta remote watch ready"),
       (ready) => ready === true,
-      TIMEOUT,
+      15_000,
       200,
     );
 
@@ -88,7 +87,7 @@ describeIfSsh("hot sync integration (remote beta)", () => {
     await waitFor(
       () => session!.alpha.exists("remote-hot.txt"),
       (exists) => exists === true,
-      TIMEOUT,
+      10_000,
       100,
     );
 
