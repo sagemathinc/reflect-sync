@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "description": "Fast bidirectional file synchronization using rsync and sqlite",
   "type": "module",
   "main": "dist/bundle.mjs",
