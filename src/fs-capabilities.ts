@@ -16,6 +16,33 @@ undefined
 >
 wstein@macos:~$ ls -lht *cole*
 -rw-r--r--  1 wstein  staff     2B Nov 15 07:19 ??cole
+
+
+On linux:
+
+sudo mkdir -p /mnt/casefold
+sudo truncate -s 1G /mnt/casefold.img
+sudo mkfs.ext4 -F -O casefold /mnt/casefold.img
+sudo mount -o loop /mnt/casefold.img /mnt/casefold
+sudo rm -rf /mnt/casefold/lost+found/
+sudo chattr +F /mnt/casefold
+sudo chown wstein:wstein /mnt/casefold
+
+Then:
+
+wstein@lite:/mnt/casefold$ node
+Welcome to Node.js v24.8.0.
+Type ".help" for more information.
+> a="école"; b="école"; a == b
+false
+> require('fs').writeFileSync(a,'hi'); require('fs').writeFileSync(b,'hi')
+undefined
+>
+wstein@lite:/mnt/casefold$ ls
+école
+wstein@lite:/mnt/casefold$ touch a.txt A.txt
+wstein@lite:/mnt/casefold$ ls
+a.txt  école
 */
 
 
