@@ -40,10 +40,18 @@ export default [
           missingExports: true,
         },
       ],
-      '@typescript-eslint/consistent-type-imports': [
-        'warn',
-        { prefer: 'type-imports', fixStyle: 'separate-type-imports' },
-      ],
+    },
+  },
+  {
+    files: [
+      'src/tests/**/*.{ts,tsx}',
+      'src/**/cli*.ts',
+      'src/forward-cli.ts',
+      'src/hash-worker.ts',
+      'src/install-cli.ts',
+    ],
+    rules: {
+      'import/no-unused-modules': 'off',
     },
   },
 ];

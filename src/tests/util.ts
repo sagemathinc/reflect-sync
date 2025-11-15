@@ -131,7 +131,6 @@ export async function waitFor<T>(
   intervalMs = 50,
 ): Promise<T> {
   const t0 = Date.now();
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const v = await fn();
     if (await predicate(v)) return v;
