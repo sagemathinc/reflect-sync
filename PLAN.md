@@ -1,3 +1,5 @@
+## \(this is completely done now\)
+
 ## Rewrite Plan
 
 We now understand the problem space well enough to aim for a clean, obviously-correct implementation. The goals:
@@ -174,8 +176,7 @@ With this approach, we could have a full scan *and* several hot watch
 transfers safely happening all at once.   The real limit is the
 impact on cpu/bandwidth.  
 
-### (NOT done) My overlayfs apt-get stress test fails
-
+### \(done\) My overlayfs apt\-get stress test fails
 
 See src/scripts/overlay/  
 
@@ -183,77 +184,6 @@ The test fails every time I've tried it, with files getting corrupted,
 which means something likely got copied back in the wrong direction,
 due to a mistake.  "reflect diff" also outputs all this, but I looked at one of these files and it is deleted on both sides, so I think
 `reflect diff` is wrong.
-
-```sh
-│ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
-│ var/cache/apt/archives/perl_5.40.1-6build1_amd64.deb                              │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
-│ var/cache/apt/archives/publicsuffix_20250328.1952-0.1_all.deb                     │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
-│ var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb                              │ file │ 11/11/2025, 12:31:36 PM │ 7 minutes ago │
-╰───────────────────────────────────────────────────────────────────────────────────┴──────┴─────────────────────────┴───────────────╯
-
-wstein@lite:~/build/reflect-sync/scripts/overlay$ r diff o|wc -l
-796
-
-also:
-
-
-wstein@lite:~/.local/share/reflect-sync/sessions/8$ sqlite3
--- Loading resources from /home/wstein/.sqliterc
-SQLite version 3.46.1 2024-08-13 09:16:08
-Enter ".help" for usage hints.
-Connected to a transient in-memory database.
-Use ".open FILENAME" to reopen on a persistent database.
-sqlite> attach 'alpha.db' as alpha; attach 'beta.db' as beta; attach 'base.db' as base;
-Run Time: real 0.001 user 0.000000 sys 0.001264
-sqlite> .mode lines
-sqlite> attach 'alpha.db' as alpha; attach 'beta.db' as beta; attach 'base.db' as base;
-Run Time: real 0.000 user 0.000009 sys 0.000015
-Runtime error: database alpha is already in use
-
-
-sqlite> select * from alpha.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
-        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
-        kind = f
-        hash = 
-       mtime = 1762893096375.0
-       ctime = 1762893096375.0
-hashed_ctime = NULL
-     updated = 1762893096481.0
-        size = 0
-     deleted = 1
-   last_seen = 1762893096375.0
- link_target = NULL
-  last_error = NULL
-Run Time: real 0.000 user 0.000098 sys 0.000164
-sqlite> select * from beta.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
-        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
-        kind = f
-        hash = mUYjPMgGPhNs9QKItzre2R6Vu/M+7JBii4XuFh5k4Og=|1a4
-       mtime = 1762893093154.0
-       ctime = 1762893085252.54
-hashed_ctime = 1762893085252.54
-     updated = 1762894696104.0
-        size = 26576
-     deleted = 1
-   last_seen = NULL
- link_target = NULL
-  last_error = NULL
-Run Time: real 0.000 user 0.000094 sys 0.000157
-sqlite> select * from base.nodes where path='var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb';
-        path = var/cache/apt/archives/xauth_1%3a1.1.2-1.1_amd64.deb
-        kind = f
-        hash = mUYjPMgGPhNs9QKItzre2R6Vu/M+7JBii4XuFh5k4Og=|1a4
-       mtime = 1733269648000.0
-       ctime = 1762893085252.54
-hashed_ctime = 1762893085252.54
-     updated = 1762894706112.0
-        size = 26576
-     deleted = 1
-   last_seen = 1762893087275.0
- link_target = NULL
-  last_error = NULL
-Run Time: real 0.001 user 0.000407 sys 0.000000
-```
 
 Since both alpha and beta have this as deleted, it shouldn't be in the merge plan at all, right?
 
@@ -287,14 +217,14 @@ ls -lht ~/.local/share/reflect-sync/sessions/7/*.db
 -rw-r--r-- 1 wstein wstein 83M Nov 11 10:37 /home/wstein/.local/share/reflect-sync/sessions/7/base.db
 ```
 
-## (not done) Use a socket and a single ssh session
+## \(done\) Use a socket and a single ssh session
 
 There's a way to run a single persistent ssh session that all these
 remote commands (e.g., scans, rsync copies, etc.) all reuse, which addresses that connecting over ssh may be expensive.  We should
 just use this if possible as it could be a massive win (often ssh
 takes 1s or more and can break in general).
 
-## (not done) robustness and self healing
+## \(done\) robustness and self healing
 
 If there is an error doing a copy operation, do something so that 
 file gets scanned again during the next cycle (or do a targeted
@@ -311,7 +241,9 @@ then update local accordingly.
 
 I did see this edge case when stress testing.
 
-## Remote agent feasibility
+## \(done\) Remote agent feasibility
+
+\(not worth it!\)
 
 Long-term we may want a lightweight remote watcher/scan agent that replaces the SEA bundle on hosts where installing Node is painful. The required features boil down to SQLite access, a directory walker, a file watcher, and SHA-256 hashing; both Go and Rust ecosystems cover these pieces with portable libraries.
 
@@ -320,3 +252,4 @@ Long-term we may want a lightweight remote watcher/scan agent that replaces the 
 - **Portability targets**: Linux + macOS on x86/ARM. Go handles this out of the box; Rust can as well but expects more manual setup for glibc vs musl builds.
 - **Protocol fidelity**: whichever language we choose must exactly mirror today’s scan/watch behavior—ignore rules, hashing, NDJSON framing, lock/unlock semantics—so this effort should only start once those behaviors are fully specified and proven stable.
 - **Performance**: both languages can saturate disks for full scans and deliver low-latency watcher events via native backends (inotify/kqueue/FSEvents). The challenge is less about raw speed and more about faithfully reproducing our existing throttling and batching logic.
+
