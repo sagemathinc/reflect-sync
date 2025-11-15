@@ -29,9 +29,9 @@ describe("hot sync integration (local roots)", () => {
       100,
     );
 
-    await expect(
-      session.beta.readFile("hot/alpha.txt", "utf8"),
-    ).resolves.toBe("alpha-hot");
+    await expect(session.beta.readFile("hot/alpha.txt", "utf8")).resolves.toBe(
+      "alpha-hot",
+    );
   });
 
   it("mirrors beta→alpha via local hot watch", async () => {
@@ -49,9 +49,9 @@ describe("hot sync integration (local roots)", () => {
       100,
     );
 
-    await expect(
-      session.alpha.readFile("hot/beta.txt", "utf8"),
-    ).resolves.toBe("beta-hot");
+    await expect(session.alpha.readFile("hot/beta.txt", "utf8")).resolves.toBe(
+      "beta-hot",
+    );
   });
 });
 

@@ -24,26 +24,14 @@
     "sea:blob": "node --experimental-sea-config sea.config.json",
     "sea:inject": "cp $(command -v node) dist/reflect-sync && pnpx postject dist/reflect-sync NODE_SEA_BLOB dist/reflect-sync.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 2>&1 | sed -E '/find string offset for section name/d'",
     "sea": "pnpm bundle && pnpm sea:blob && pnpm sea:inject",
-    "lint": "eslint \"src/**/*.{ts,tsx}\""
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "sanity": "pnpm prettier-all && pnpm build && pnpm lint && pnpm test"
   },
   "engines": {
     "node": ">=22"
   },
-  "files": [
-    "bin",
-    "dist/bundle.mjs",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "rsync",
-    "sqlite",
-    "sync",
-    "watch",
-    "ssh",
-    "mutagen",
-    "backup"
-  ],
+  "files": ["bin", "dist/bundle.mjs", "README.md", "LICENSE"],
+  "keywords": ["rsync", "sqlite", "sync", "watch", "ssh", "mutagen", "backup"],
   "license": "MIT",
   "packageManager": "pnpm@10.19.0",
   "devDependencies": {

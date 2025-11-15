@@ -40,10 +40,13 @@ import {
 import { createLogicalClock } from "./logical-clock.js";
 import type { LogicalClock } from "./logical-clock.js";
 import {
-  canonicalizePath,
   DEFAULT_FILESYSTEM_CAPABILITIES,
   detectFilesystemCapabilities,
 } from "./fs-capabilities.js";
+import {
+  createCanonicalTracker,
+  type CanonicalTracker,
+} from "./scan-canonical.js";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -220,6 +223,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     markCaseConflicts ||
     canonicalCaps.caseInsensitive ||
     canonicalCaps.normalizesUnicode;
+  const trackCanonicalConflicts = markCaseConflicts && canonicalEnabled;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -300,6 +304,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   // ----------------- SQLite setup -----------------
   const db = getDb(DB_PATH);
+  const canonicalTracker: CanonicalTracker = createCanonicalTracker({
+    db,
+    absRoot,
+    filesystemCaps: canonicalCaps,
+    enableCanonicalization: canonicalEnabled,
+    trackConflicts: trackCanonicalConflicts,
+  });
   const metaSelectStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
   const metaUpsertStmt = db.prepare(
     `INSERT INTO meta(key, value) VALUES (@key, @value) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -790,54 +801,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     deltaBuf.length = 0;
   }
 
-  const checkCanonicalExists = async (rel: string): Promise<boolean> => {
-    if (!rel) return false;
-    const abs = path.join(absRoot, rel);
-    try {
-      await lstatAsync(abs);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const canonicalMap = canonicalEnabled ? new Map<string, string>() : null;
-  const conflictDirSet = canonicalEnabled ? new Set<string>() : null;
-  const conflictReports = canonicalEnabled
-    ? new Map<string, Set<string>>()
-    : null;
-
-  const canonicalKeyFor = (rel: string): string => {
-    if (!canonicalEnabled) return rel;
-    return canonicalizePath(rel, canonicalCaps);
-  };
-
-  const hasConflictAncestor = (rel: string): boolean => {
-    if (!canonicalEnabled || !conflictDirSet || conflictDirSet.size === 0) {
-      return false;
-    }
-    let current = rel;
-    while (true) {
-      const idx = current.lastIndexOf("/");
-      if (idx === -1) break;
-      current = current.slice(0, idx);
-      if (conflictDirSet.has(current)) return true;
-    }
-    return conflictDirSet.has("");
-  };
-
-  const noteConflict = (key: string, pathValue: string) => {
-    if (!canonicalEnabled || !conflictReports || !canonicalMap) return;
-    let set = conflictReports.get(key);
-    if (!set) {
-      set = new Set<string>();
-      const winner = canonicalMap.get(key);
-      if (winner) set.add(winner);
-      conflictReports.set(key, set);
-    }
-    set.add(pathValue);
-  };
-
   async function emitReplaySinceTs(dbSince: number) {
     if (!emitDelta) return;
 
@@ -1113,30 +1076,27 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
       const isDir = entry.dirent.isDirectory();
       let caseConflict = 0;
-      const canonicalKey = canonicalEnabled ? canonicalKeyFor(rpath) : null;
-      if (canonicalEnabled) {
+      const canonicalKey =
+        canonicalTracker.tracking && canonicalTracker.enabled
+          ? canonicalTracker.canonicalKeyFor(rpath)
+          : null;
+      if (canonicalTracker.tracking && canonicalKey) {
         const preferExistingCanonical =
-          markCaseConflicts &&
-          canonicalKey &&
-          canonicalKey !== rpath &&
-          (await checkCanonicalExists(canonicalKey));
+          await canonicalTracker.shouldPreferExisting(canonicalKey, rpath);
         if (preferExistingCanonical) {
           caseConflict = 1;
-          noteConflict(canonicalKey!, rpath);
-        } else if (hasConflictAncestor(rpath)) {
+          canonicalTracker.noteConflict(canonicalKey, rpath);
+        } else if (canonicalTracker.hasConflictAncestor(rpath)) {
           caseConflict = 1;
-        } else if (canonicalKey && canonicalMap) {
-          const winner = canonicalMap.get(canonicalKey);
-          if (!winner) {
-            canonicalMap.set(canonicalKey, rpath);
-          } else if (winner !== rpath) {
-            caseConflict = 1;
-            noteConflict(canonicalKey, rpath);
-          }
+        } else {
+          caseConflict = await canonicalTracker.classifyEntry(
+            canonicalKey,
+            rpath,
+          );
         }
       }
-      if (caseConflict && isDir && conflictDirSet) {
-        conflictDirSet.add(rpath);
+      if (caseConflict && isDir) {
+        canonicalTracker.markConflictDir(rpath);
       }
 
       if (isDir) {
@@ -1151,6 +1111,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_start: number | null;
               change_end: number | null;
               confirmed_at: number | null;
+              canonical_key: string | null;
             }
           | undefined;
         let hash = modeHash(st.mode);
@@ -1175,6 +1136,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         let dirCopyPending = prev?.copy_pending ?? 0;
         if (dirCopyPending === 1) dirCopyPending = 2;
 
+        const nextDirCanonical = canonicalKey ?? prev?.canonical_key ?? null;
+
         dirMetaBuf.push({
           path: rpath,
           ctime,
@@ -1187,7 +1150,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           confirmed_at: dirConfirmedAt,
           copy_pending: dirCopyPending,
           case_conflict: caseConflict,
-          canonical_key: canonicalKey ?? null,
+          canonical_key: nextDirCanonical,
         });
         if (dirMetaBuf.length >= DB_BATCH_SIZE) {
           applyDirBatch(dirMetaBuf);
@@ -1204,7 +1167,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             op_ts,
             deleted: 0,
             case_conflict: caseConflict || undefined,
-            canonical_key: canonicalKey ?? undefined,
+            canonical_key: nextDirCanonical ?? undefined,
           });
         }
 
@@ -1227,6 +1190,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_start: number | null;
               change_end: number | null;
               confirmed_at: number | null;
+              canonical_key: string | null;
             }
           | undefined;
         const copyPending = row?.copy_pending ?? 0;
@@ -1290,6 +1254,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             ? scanTick
             : (rowConfirmed ?? null);
 
+        const nextCanonicalKey = canonicalKey ?? row?.canonical_key ?? null;
+
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
           path: rpath,
@@ -1307,7 +1273,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           confirmed_at: confirmedValue,
           copy_pending: copyPendingState,
           case_conflict: caseConflict,
-          canonical_key: canonicalKey ?? null,
+          canonical_key: nextCanonicalKey,
         });
 
         if (metaBuf.length >= DB_BATCH_SIZE) {
@@ -1327,7 +1293,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             confirmed_at: rowConfirmed ?? null,
             copy_pending: row?.copy_pending ?? 0,
             case_conflict: caseConflict,
-            canonical_key: canonicalKey ?? null,
+            canonical_key: nextCanonicalKey,
           });
           hashJobs.push({ path: abs, size, ctime, mtime });
           hashTotalFiles += 1;
@@ -1347,7 +1313,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             confirmed_at: rowConfirmed ?? null,
             copy_pending: row?.copy_pending ?? 0,
             case_conflict: caseConflict,
-            canonical_key: canonicalKey ?? null,
+            canonical_key: nextCanonicalKey,
           });
         }
       } else if (entry.dirent.isSymbolicLink()) {
@@ -1368,6 +1334,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_start: number | null;
               change_end: number | null;
               confirmed_at: number | null;
+              canonical_key: string | null;
             }
           | undefined;
         const linkChanged =
@@ -1392,6 +1359,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         let linkCopyPending = prev?.copy_pending ?? 0;
         if (linkCopyPending === 1) linkCopyPending = 2;
 
+        const nextLinkCanonical = canonicalKey ?? prev?.canonical_key ?? null;
+
         linksBuf.push({
           path: rpath,
           target,
@@ -1405,7 +1374,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           confirmed_at: linkConfirmedAt,
           copy_pending: linkCopyPending,
           case_conflict: caseConflict,
-          canonical_key: canonicalKey ?? null,
+          canonical_key: nextLinkCanonical,
         });
         if (linksBuf.length >= DB_BATCH_SIZE) {
           applyLinksBatch(linksBuf);
@@ -1423,7 +1392,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             target,
             deleted: 0,
             case_conflict: caseConflict || undefined,
-            canonical_key: canonicalKey ?? undefined,
+            canonical_key: nextLinkCanonical ?? undefined,
           });
         }
 
@@ -1540,16 +1509,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
   await scan();
 
-  if (canonicalEnabled && conflictReports && conflictReports.size > 0) {
-    for (const [canonicalName, paths] of conflictReports.entries()) {
-      logger.warn(
-        "case-insensitive name conflict; only the first observed variant is synchronized",
-        {
-          canonical: canonicalName,
-          paths: Array.from(paths).sort(),
-        },
-      );
-    }
+  if (canonicalTracker.tracking) {
+    canonicalTracker.flushReports(logger);
   }
 
   async function processHashJobs(jobs: Job[]) {

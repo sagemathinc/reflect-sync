@@ -993,6 +993,7 @@ type NodeRecord = {
   last_seen: number | null;
   link_target: string | null;
   last_error: string | null;
+  canonical_key: string | null;
 };
 
 function uniquePaths(paths: string[]): string[] {
@@ -1006,7 +1007,7 @@ function fetchNode(
   return (
     (db
       .prepare(
-        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error FROM nodes WHERE path = ?`,
+        `SELECT path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error, canonical_key FROM nodes WHERE path = ?`,
       )
       .get(path) as NodeRecord | undefined) ?? null
   );
@@ -1014,8 +1015,8 @@ function fetchNode(
 
 function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
   db.prepare(
-    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error)
-     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@confirmed_at,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@copy_pending,@last_seen,@link_target,@last_error)
+    `INSERT INTO nodes(path, kind, hash, mtime, ctime, change_start, change_end, confirmed_at, hashed_ctime, updated, size, deleted, hash_pending, copy_pending, last_seen, link_target, last_error, canonical_key)
+     VALUES (@path,@kind,@hash,@mtime,@ctime,@change_start,@change_end,@confirmed_at,@hashed_ctime,@updated,@size,@deleted,@hash_pending,@copy_pending,@last_seen,@link_target,@last_error,@canonical_key)
      ON CONFLICT(path) DO UPDATE SET
        kind=excluded.kind,
        hash=excluded.hash,
@@ -1032,12 +1033,14 @@ function upsertNode(db: ReturnType<typeof getDb>, row: NodeRecord): void {
        copy_pending=excluded.copy_pending,
        last_seen=excluded.last_seen,
        link_target=excluded.link_target,
-       last_error=excluded.last_error`,
+       last_error=excluded.last_error,
+       canonical_key=excluded.canonical_key`,
   ).run({
     ...row,
     change_start: row.change_start ?? null,
     change_end: row.change_end ?? null,
     confirmed_at: row.confirmed_at ?? null,
+    canonical_key: row.canonical_key ?? null,
   });
 }
 
@@ -1232,6 +1235,7 @@ function markNodesDeletedBatch(
         last_seen: null,
         link_target: null,
         last_error: null,
+        canonical_key: null,
       };
     }
     rows.push(row);
