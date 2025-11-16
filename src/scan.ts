@@ -47,6 +47,7 @@ import {
   createCanonicalTracker,
   type CanonicalTracker,
 } from "./scan-canonical.js";
+import type { Dirent, Stats } from "node:fs";
 
 declare global {
   // Set during bundle by Rollup banner.
@@ -496,10 +497,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     isSocket(): boolean;
   };
 
-  function makeVirtualDirent(
-    name: string,
-    st: import("fs").Stats,
-  ): VirtualDirent {
+  function makeVirtualDirent(name: string, st: Stats): VirtualDirent {
     return {
       name,
       isDirectory: () => st.isDirectory(),
@@ -518,7 +516,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   ): AsyncIterable<{
     dirent: VirtualDirent;
     path: string;
-    stats?: import("fs").Stats;
+    stats?: Stats;
   }> {
     const seen = new Set<string>();
     for (const rel of relPaths) {
@@ -529,7 +527,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       if (!normalized || seen.has(normalized)) continue;
       seen.add(normalized);
       const abs = path.join(absRoot, normalized);
-      let stats: import("fs").Stats;
+      let stats: Stats;
       try {
         stats = await lstatAsync(abs);
       } catch {
@@ -1003,14 +1001,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     // stream entries with stats so we avoid a second stat in main thread
     const stream: AsyncIterable<{
-      dirent: import("fs").Dirent;
+      dirent: Dirent;
       path: string;
-      stats?: import("fs").Stats;
+      stats?: Stats;
     }> = hasRestrictions
       ? (restrictedEntryStream(absRoot, restrictedPathList) as AsyncIterable<{
-          dirent: import("fs").Dirent;
+          dirent: Dirent;
           path: string;
-          stats?: import("fs").Stats;
+          stats?: Stats;
         }>)
       : walk.walkStream(absRoot, {
           stats: true,
@@ -1024,7 +1022,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           },
           // Do not emit ignored or out-of-scope entries
           entryFilter: (e) => {
-            const st = (e as { stats?: import("fs").Stats }).stats;
+            const st = (e as { stats?: Stats }).stats;
             if (rootDevice !== undefined && st && st.dev !== rootDevice) {
               return false;
             }
@@ -1075,7 +1073,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     for await (const entry of stream as AsyncIterable<{
       dirent;
       path: string; // ABS
-      stats: import("fs").Stats;
+      stats: Stats;
     }>) {
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
