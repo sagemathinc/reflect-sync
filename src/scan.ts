@@ -1595,296 +1595,157 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     }
 
     // ------------------------------
-    // Links still use existing per-entry logic (to be migrated next)
+    // Links (streamed)
     // ------------------------------
-    const existingRows = db
-      .prepare(
-        `SELECT path, kind, size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict, link_target
-           FROM nodes
-          WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}
-            AND kind = 'l'`,
-      )
-      .all() as {
-      path: string;
-      kind: NodeKind;
-      size: number | null;
-      ctime: number | null;
-      mtime: number | null;
-      hashed_ctime: number | null;
-      hash: string | null;
-      updated: number | null;
-      deleted: number | null;
-      hash_pending: number | null;
-      copy_pending: number | null;
-      change_start: number | null;
-      change_end: number | null;
-      confirmed_at: number | null;
-      canonical_key: string | null;
-      case_conflict: number | null;
-      link_target: string | null;
-    }[];
-    const existingMap = new Map<string, (typeof existingRows)[number]>();
-    for (const row of existingRows) existingMap.set(row.path, row);
+    const linkStmt = db.prepare(
+      `SELECT
+         s.path,
+         s.mtime,
+         s.ctime,
+         s.link_target,
+         COALESCE(s.case_conflict, 0) AS case_conflict,
+         s.canonical_key,
+         n.hash AS prev_hash,
+         n.deleted AS prev_deleted,
+         n.updated AS prev_updated,
+         n.copy_pending AS prev_copy_pending,
+         n.change_start AS prev_change_start,
+         n.change_end AS prev_change_end,
+         n.confirmed_at AS prev_confirmed_at,
+         n.canonical_key AS prev_canonical_key,
+         n.case_conflict AS prev_case_conflict,
+         n.link_target AS prev_link_target,
+         n.ctime AS prev_ctime,
+         n.mtime AS prev_mtime
+       FROM tmp_scan s
+       LEFT JOIN nodes n ON n.path = s.path AND n.kind = 'l'
+      WHERE s.kind = 'l'
+        AND (
+          n.hash IS NULL
+         OR n.deleted = 1
+          OR n.link_target <> s.link_target
+          OR n.ctime <> s.ctime
+          OR n.mtime <> s.mtime
+          OR COALESCE(n.case_conflict, 0) <> COALESCE(s.case_conflict, 0)
+          OR COALESCE(n.canonical_key, '') <> COALESCE(s.canonical_key, '')
+          OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+        )`,
+    );
 
-    const scannedRows = db
-      .prepare(
-        `SELECT path, kind, size, mtime, ctime, mode, uid, gid, case_conflict, canonical_key, link_target
-           FROM tmp_scan
-          WHERE kind = 'l'`,
-      )
-      .all() as {
+    for (const row of linkStmt.iterate() as Iterable<{
       path: string;
-      kind: NodeKind;
-      size: number;
       mtime: number;
       ctime: number;
-      mode: number;
-      uid: number | null;
-      gid: number | null;
-      case_conflict: number | null;
-      canonical_key: string | null;
       link_target: string | null;
-    }[];
-
-    for (const row of scannedRows) {
+      case_conflict: number;
+      canonical_key: string | null;
+      prev_hash: string | null;
+      prev_deleted: number | null;
+      prev_updated: number | null;
+      prev_copy_pending: number | null;
+      prev_change_start: number | null;
+      prev_change_end: number | null;
+      prev_confirmed_at: number | null;
+      prev_canonical_key: string | null;
+      prev_case_conflict: number | null;
+      prev_link_target: string | null;
+      prev_ctime: number | null;
+      prev_mtime: number | null;
+    }>) {
       const rpath = row.path;
-      const prev = existingMap.get(rpath);
-      const prevKind = prev?.kind ?? null;
       const canonicalKey = row.canonical_key ?? null;
       const caseConflict = row.case_conflict ?? 0;
 
-      if (row.kind === "f") {
-        const prevFile = prevKind === "f" ? prev : undefined;
-        const size = row.size;
-        const modeHex = modeHash(row.mode);
-        const copyPending = prevFile?.copy_pending ?? 0;
+      const prevLink =
+        row.prev_hash === null &&
+        row.prev_deleted === null &&
+        row.prev_link_target === null
+          ? undefined
+          : {
+              ctime: row.prev_ctime ?? row.ctime,
+              mtime: row.prev_mtime ?? row.mtime,
+              hash: row.prev_hash ?? null,
+              target: row.prev_link_target ?? "",
+              deleted: row.prev_deleted ?? 0,
+              updated: row.prev_updated ?? null,
+              copy_pending: row.prev_copy_pending ?? 0,
+              change_start: row.prev_change_start ?? null,
+              change_end: row.prev_change_end ?? null,
+              confirmed_at: row.prev_confirmed_at ?? null,
+              canonical_key: row.prev_canonical_key ?? null,
+              case_conflict: row.prev_case_conflict ?? 0,
+            };
+      const target = row.link_target ?? "";
+      const hash = stringDigest(HASH_ALG, target);
 
-        const resurrecting = prevFile?.deleted === 1;
-        let needsHash =
-          resurrecting ||
-          !prevFile ||
-          prevFile.hashed_ctime !== row.ctime ||
-          prevFile.size !== size ||
-          prevFile.mtime !== row.mtime;
-        if (!needsHash && prevFile?.hash) {
-          const meta = parseHashMeta(prevFile.hash);
-          if (meta.modeHash && meta.modeHash !== modeHex) {
-            needsHash = true;
-          } else if (
-            numericIds &&
-            meta.uid !== undefined &&
-            meta.gid !== undefined &&
-            (meta.uid !== row.uid || meta.gid !== row.gid)
-          ) {
-            needsHash = true;
-          }
+      const linkChanged =
+        !prevLink ||
+        prevLink.deleted === 1 ||
+        prevLink.mtime !== row.mtime ||
+        prevLink.ctime !== row.ctime ||
+        prevLink.hash !== hash ||
+        prevLink.target !== target;
+      const op_ts = linkChanged
+        ? scanTick
+        : (prevLink?.updated ?? prevLink?.mtime ?? row.mtime);
+
+      const linkBaseline = lowerBoundFor(prevLink?.confirmed_at ?? null);
+      const linkChangeStart = linkChanged
+        ? linkBaseline
+        : (prevLink?.change_start ?? prevLink?.change_end ?? linkBaseline);
+      const linkChangeEnd = linkChanged
+        ? op_ts
+        : (prevLink?.change_end ?? op_ts);
+      const linkConfirmedAt = linkChanged
+        ? op_ts
+        : (prevLink?.confirmed_at ?? op_ts);
+      let linkCopyPending = prevLink?.copy_pending ?? 0;
+      if (linkCopyPending === 1) linkCopyPending = 2;
+
+      const linkCanonicalSame =
+        (prevLink?.canonical_key ?? null) === canonicalKey;
+      const linkCaseSame = (prevLink?.case_conflict ?? 0) === caseConflict;
+      const unchangedLink =
+        prevLink &&
+        !linkChanged &&
+        (linkCopyPending === 0 || linkCopyPending === 2) &&
+        linkCanonicalSame &&
+        linkCaseSame &&
+        !emitDelta;
+      if (!unchangedLink) {
+        linksBuf.push({
+          path: rpath,
+          target,
+          ctime: row.ctime,
+          mtime: row.mtime,
+          op_ts,
+          hash,
+          scan_id,
+          change_start: linkChangeStart,
+          change_end: linkChangeEnd,
+          confirmed_at: linkConfirmedAt,
+          copy_pending: linkCopyPending,
+          case_conflict: caseConflict,
+          canonical_key: canonicalKey ?? prevLink?.canonical_key ?? null,
+        });
+        if (linksBuf.length >= DB_BATCH_SIZE) {
+          applyLinksBatch(linksBuf);
+          linksBuf.length = 0;
         }
-        const copyMetaMatches =
-          !!prevFile &&
-          !prevFile.deleted &&
-          !!prevFile.hash &&
-          prevFile.size === size &&
-          prevFile.mtime === row.mtime;
-        if (copyPending > 0 && copyMetaMatches) {
-          needsHash = false;
-        }
 
-        const op_ts =
-          needsHash || !prevFile
-            ? scanTick
-            : (prevFile?.updated ?? prevFile?.mtime ?? row.mtime);
-
-        const rowConfirmed = prevFile?.confirmed_at ?? null;
-        const baseline = lowerBoundFor(rowConfirmed);
-        let changeStart = prevFile?.change_start ?? null;
-        let changeEnd = prevFile?.change_end ?? null;
-        let pendingStart: number | null = null;
-        if (!prevFile) {
-          changeStart = baseline;
-          changeEnd = needsHash ? null : op_ts;
-        } else if (needsHash) {
-          pendingStart = baseline;
-          changeStart = baseline;
-          changeEnd = null;
-        } else {
-          changeStart = prevFile.change_start ?? baseline;
-          changeEnd = prevFile.change_end ?? prevFile.change_start ?? baseline;
-        }
-        const hashPendingFlag = needsHash ? 1 : (prevFile?.hash_pending ?? 0);
-        let copyPendingState = copyPending;
-        if (!needsHash && copyPendingState === 1) {
-          copyPendingState = 2;
-        }
-        const confirmedValue =
-          !needsHash && copyPendingState > 0
-            ? scanTick
-            : (rowConfirmed ?? null);
-
-        const nextCanonicalKey =
-          canonicalKey ?? prevFile?.canonical_key ?? null;
-        const caseConflictSame =
-          (prevFile?.case_conflict ?? 0) === caseConflict;
-        const canonicalSame =
-          (prevFile?.canonical_key ?? null) === nextCanonicalKey;
-
-        const unchangedFile =
-          !!prevFile &&
-          prevFile.deleted === 0 &&
-          !needsHash &&
-          hashPendingFlag === 0 &&
-          (copyPendingState === 0 || copyPendingState === 2) &&
-          prevFile.size === size &&
-          prevFile.mtime === row.mtime &&
-          prevFile.ctime === row.ctime &&
-          canonicalSame &&
-          caseConflictSame &&
-          !emitDelta;
-        if (!unchangedFile) {
-          metaBuf.push({
+        if (emitDelta && linkChanged) {
+          emitObj({
+            kind: "link",
             path: rpath,
-            size,
-            ctime: row.ctime,
-            mtime: row.mtime,
-            op_ts,
-            hash: prevFile?.hash ?? null,
-            last_seen: scan_id,
-            hashed_ctime: prevFile?.hashed_ctime ?? null,
-            hash_pending: hashPendingFlag,
-            change_start: changeStart,
-            change_end: changeEnd,
-            pending_start: pendingStart,
-            confirmed_at: confirmedValue,
-            copy_pending: copyPendingState,
-            case_conflict: caseConflict,
-            canonical_key: nextCanonicalKey,
-          });
-
-          if (metaBuf.length >= DB_BATCH_SIZE) {
-            applyMetaBatch(metaBuf);
-            metaBuf.length = 0;
-          }
-        }
-
-        if (needsHash) {
-          const absPath = path.join(absRoot, rpath);
-          pendingMeta.set(absPath, {
-            size,
-            ctime: row.ctime,
-            mtime: row.mtime,
-            updated: op_ts,
-            change_start: changeStart,
-            change_end: changeEnd,
-            pending_start: pendingStart,
-            confirmed_at: rowConfirmed ?? null,
-            copy_pending: prevFile?.copy_pending ?? 0,
-            case_conflict: caseConflict,
-            canonical_key: nextCanonicalKey,
-          });
-          hashJobs.push({
-            path: absPath,
-            size,
-            ctime: row.ctime,
-            mtime: row.mtime,
-          });
-          hashTotalFiles += 1;
-          hashTotalBytes += size;
-          fileNodeMeta.set(rpath, {
-            size,
-            mtime: row.mtime,
-            ctime: row.ctime,
-            last_seen: scan_id,
-            updated: op_ts,
-            prevUpdated: prevFile?.updated ?? null,
-            prevHash: prevFile?.hash ?? null,
-            hash_pending: 1,
-            change_start: changeStart,
-            change_end: changeEnd,
-            pending_start: pendingStart,
-            confirmed_at: rowConfirmed ?? null,
-            copy_pending: prevFile?.copy_pending ?? 0,
-            case_conflict: caseConflict,
-            canonical_key: nextCanonicalKey,
-          });
-        }
-
-        continue;
-      }
-
-      if (row.kind === "l") {
-        const prevLink = prevKind === "l" ? prev : undefined;
-        const hash = stringDigest(HASH_ALG, row.link_target ?? "");
-
-        const linkChanged =
-          !prevLink ||
-          prevLink.deleted === 1 ||
-          prevLink.mtime !== row.mtime ||
-          prevLink.ctime !== row.ctime ||
-          prevLink.hash !== hash ||
-          prevLink.link_target !== row.link_target;
-        const op_ts = linkChanged
-          ? scanTick
-          : (prevLink?.updated ?? prevLink?.mtime ?? row.mtime);
-
-        const linkBaseline = lowerBoundFor(prevLink?.confirmed_at ?? null);
-        const linkChangeStart = linkChanged
-          ? linkBaseline
-          : (prevLink?.change_start ?? prevLink?.change_end ?? linkBaseline);
-        const linkChangeEnd = linkChanged
-          ? op_ts
-          : (prevLink?.change_end ?? op_ts);
-        const linkConfirmedAt = linkChanged
-          ? op_ts
-          : (prevLink?.confirmed_at ?? op_ts);
-        let linkCopyPending = prevLink?.copy_pending ?? 0;
-        if (linkCopyPending === 1) linkCopyPending = 2;
-
-        const nextLinkCanonical =
-          canonicalKey ?? prevLink?.canonical_key ?? null;
-        const linkCanonicalSame =
-          (prevLink?.canonical_key ?? null) === nextLinkCanonical;
-        const linkCaseSame = (prevLink?.case_conflict ?? 0) === caseConflict;
-        const unchangedLink =
-          prevLink &&
-          !linkChanged &&
-          (linkCopyPending === 0 || linkCopyPending === 2) &&
-          linkCanonicalSame &&
-          linkCaseSame &&
-          !emitDelta;
-        if (!unchangedLink) {
-          linksBuf.push({
-            path: rpath,
-            target: row.link_target ?? "",
             ctime: row.ctime,
             mtime: row.mtime,
             op_ts,
             hash,
-            scan_id,
-            change_start: linkChangeStart,
-            change_end: linkChangeEnd,
-            confirmed_at: linkConfirmedAt,
-            copy_pending: linkCopyPending,
-            case_conflict: caseConflict,
-            canonical_key: nextLinkCanonical,
+            target,
+            deleted: 0,
+            case_conflict: caseConflict || undefined,
+            canonical_key: canonicalKey ?? prevLink?.canonical_key ?? undefined,
           });
-          if (linksBuf.length >= DB_BATCH_SIZE) {
-            applyLinksBatch(linksBuf);
-            linksBuf.length = 0;
-          }
-
-          if (emitDelta && linkChanged) {
-            emitObj({
-              kind: "link",
-              path: rpath,
-              ctime: row.ctime,
-              mtime: row.mtime,
-              op_ts,
-              hash,
-              target: row.link_target ?? "",
-              deleted: 0,
-              case_conflict: caseConflict || undefined,
-              canonical_key: nextLinkCanonical ?? undefined,
-            });
-          }
         }
       }
     }
