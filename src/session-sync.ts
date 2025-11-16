@@ -16,7 +16,7 @@ import { wait } from "./util.js";
 import { ConsoleLogger } from "./logger.js";
 
 const POLL_INTERVAL_MS = 200;
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_MAX_CYCLES = 3;
 const PROGRESS_MESSAGE_FILTER = "progress";
 

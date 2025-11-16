@@ -158,6 +158,36 @@ function buildProgram(): Command {
   return configureScanCommand(new Command(), { standalone: true });
 }
 
+// Simple phase profiler (opt-in via REFLECT_SCAN_PROFILE)
+function createProfiler(enabled: boolean): ScanProfiler {
+  if (!enabled) {
+    return {
+      mark: () => {},
+      flush: () => {},
+    };
+  }
+  const t0 = Date.now();
+  const marks: { label: string; t: number; rss: number; heap: number }[] = [];
+  const snapshot = (label: string) => {
+    const mem = process.memoryUsage();
+    marks.push({
+      label,
+      t: Date.now() - t0,
+      rss: mem.rss,
+      heap: mem.heapUsed,
+    });
+  };
+  return {
+    mark: snapshot,
+    flush: (logger: Logger) => {
+      if (!marks.length) return;
+      logger.info("scan profile", {
+        marks,
+      });
+    },
+  };
+}
+
 type ScanOptions = {
   db: string;
   emitDelta: boolean;
@@ -180,6 +210,11 @@ type ScanOptions = {
   filesystemCaps?: FilesystemCapabilities;
   markCaseConflicts?: boolean;
   caseConflictCaps?: FilesystemCapabilities;
+};
+
+type ScanProfiler = {
+  mark(label: string): void;
+  flush(logger: Logger): void;
 };
 
 export async function runScan(opts: ScanOptions): Promise<void> {
@@ -206,6 +241,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     caseConflictCaps: caseConflictCapsOverride,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
+  const profiler = createProfiler(process.env.REFLECT_SCAN_PROFILE === "1");
   const clock = logicalClock;
   let standaloneClock = Date.now();
   const newClockValue = () => {
@@ -309,7 +345,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   }
 
   const CPU_COUNT = Math.min(os.cpus().length, 8);
-  const DB_BATCH_SIZE = 2000;
+  const DB_BATCH_SIZE = 2_000;
   const DISPATCH_BATCH = 256; // files per worker message
   const HASH_PROGRESS_INTERVAL_MS = Number(
     process.env.REFLECT_HASH_PROGRESS_MS ?? 3000,
@@ -1025,6 +1061,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const t0 = Date.now();
     const scan_id = Date.now();
     skippedUnstableHashes = 0;
+    profiler.mark("start");
 
     // If requested, first replay a bounded window from the DB,
     // then proceed to the actual filesystem walk (which will emit new changes).
@@ -1087,6 +1124,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
       flushDeltaBuf();
     }, 500).unref();
+
+    profiler.mark("walker-ready");
 
     // Mini-buffers
     const metaBuf: Row[] = [];
@@ -1220,6 +1259,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     }
 
     clearInterval(periodicFlush);
+    profiler.mark("walker-done");
 
     // ------------------------------
     // ------------------------------
@@ -1347,6 +1387,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
     }
 
+    profiler.mark("dirs-processed");
+
     // ------------------------------
     // Files (streamed)
     // ------------------------------
@@ -1389,7 +1431,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           OR COALESCE(n.case_conflict, 0) <> COALESCE(s.case_conflict, 0)
           OR COALESCE(n.canonical_key, '') <> COALESCE(s.canonical_key, '')
           OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
-          OR (n.hash IS NOT NULL AND n.hash <> s.mode_hash)
         )`,
     );
 
@@ -1594,6 +1635,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
     }
 
+    profiler.mark("files-processed");
+
     // ------------------------------
     // Links (streamed)
     // ------------------------------
@@ -1750,6 +1793,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       }
     }
 
+    profiler.mark("links-processed");
+
     // Flush remaining meta
     if (metaBuf.length) {
       applyMetaBatch(metaBuf);
@@ -1865,6 +1910,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   if (canonicalTracker.tracking) {
     canonicalTracker.flushReports(logger);
   }
+  profiler.flush(logger);
 
   async function processHashJobs(jobs: Job[]) {
     if (!jobs.length) return;
