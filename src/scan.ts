@@ -732,7 +732,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           hash_pending: 0,
           confirmed_at: confirmedAt ?? scanTick,
           copy_pending: copyPendingState,
-          case_conflict: meta?.case_conflict ?? null,
+          case_conflict: meta?.case_conflict ?? 0,
           canonical_key: meta?.canonical_key ?? null,
           link_target: null,
           last_error: null,
@@ -1821,6 +1821,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       flushTouchBatch(touchBatch);
     }
     flushDeltaBuf();
+    // Drop per-file hash metadata now that hashing results are applied.
+    fileNodeMeta.clear();
 
     // Update last_seen for everything we observed this scan.
     db.prepare(
