@@ -173,8 +173,8 @@ function createProfiler(enabled: boolean): ScanProfiler {
     marks.push({
       label,
       t: Date.now() - t0,
-      rss: mem.rss,
-      heap: mem.heapUsed,
+      rss: mem.rss/1e6,
+      heap: mem.heapUsed/1e6,
     });
   };
   return {
@@ -186,6 +186,11 @@ function createProfiler(enabled: boolean): ScanProfiler {
       });
     },
   };
+}
+
+function createGcConfig(): ScanGcConfig {
+  const enabled = process.env.REFLECT_SCAN_FORCE_GC === "1" && typeof global.gc === "function";
+  return { enabled };
 }
 
 type ScanOptions = {
@@ -217,6 +222,9 @@ type ScanProfiler = {
   flush(logger: Logger): void;
 };
 
+type ScanGcConfig = {
+  enabled: boolean;
+};
 export async function runScan(opts: ScanOptions): Promise<void> {
   const {
     root,
@@ -242,6 +250,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const profiler = createProfiler(process.env.REFLECT_SCAN_PROFILE === "1");
+  const gcConfig = createGcConfig();
   const clock = logicalClock;
   let standaloneClock = Date.now();
   const newClockValue = () => {
@@ -1260,6 +1269,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     clearInterval(periodicFlush);
     profiler.mark("walker-done");
+    if (gcConfig.enabled && typeof global.gc === "function") {
+      global.gc();
+      profiler.mark("gc-after-walk");
+    }
 
     // ------------------------------
     // ------------------------------
@@ -1823,6 +1836,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     flushDeltaBuf();
     // Drop per-file hash metadata now that hashing results are applied.
     fileNodeMeta.clear();
+    if (gcConfig.enabled && typeof global.gc === "function") {
+      global.gc();
+      profiler.mark("gc-after-hash");
+    }
 
     // Update last_seen for everything we observed this scan.
     db.prepare(
