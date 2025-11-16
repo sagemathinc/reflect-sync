@@ -516,6 +516,8 @@ export async function runScheduler({
     betaPort,
   );
 
+  const alphaPrivileged = await isRoot(alphaHost, remoteLogConfig, alphaPort);
+  const betaPrivileged = await isRoot(betaHost, remoteLogConfig, betaPort);
   const alphaDeviceBoundary =
     !alphaIsRemote && !disableHotWatch
       ? await DeviceBoundary.create(alphaRoot)
@@ -524,9 +526,19 @@ export async function runScheduler({
     !betaIsRemote && !disableHotWatch
       ? await DeviceBoundary.create(betaRoot)
       : null;
-  const numericIds =
-    (await isRoot(alphaHost, remoteLogConfig, alphaPort)) &&
-    (await isRoot(betaHost, remoteLogConfig, betaPort));
+  const numericIds = alphaPrivileged && betaPrivileged;
+  const ownershipMismatch = alphaPrivileged !== betaPrivileged;
+  if (ownershipMismatch) {
+    log(
+      "info",
+      "scheduler",
+      "ownership preservation disabled (mixed privilege roots)",
+      {
+        alphaPrivileged,
+        betaPrivileged,
+      },
+    );
+  }
 
   const controlMasterDisabled =
     (process.env.REFLECT_SSH_CONTROL ?? "").trim() === "0";
