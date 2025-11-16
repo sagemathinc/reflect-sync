@@ -114,6 +114,11 @@ export function configureScanCommand(
       collectListOption,
       [] as string[],
     )
+    .option(
+      "--restricted-paths-stdin",
+      "read NUL-separated restricted paths from stdin",
+      false,
+    )
     .option("--numeric-ids", "include uid and gid in file hashes", false)
     .option(
       "-i, --ignore <pattern>",
@@ -167,6 +172,7 @@ type ScanOptions = {
   ignoreRules?: string[];
   ignore?: string[];
   restrictedPaths?: string[];
+  restrictedPathsStdin?: boolean;
   logicalClock?: LogicalClock;
   clockBase?: string[];
   scanTick?: number;
@@ -191,6 +197,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     ignoreRules: ignoreRulesOpt = [],
     ignore: ignoreCliOpt = [],
     restrictedPaths = [],
+    restrictedPathsStdin = false,
     logicalClock,
     scanTick: scanTickOverride,
     filesystemCaps: providedCaps,
@@ -239,8 +246,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   ignoreRaw.push(...autoIgnoreForRoot(absRoot, syncHome));
   const ignoreRules = normalizeIgnorePatterns(ignoreRaw);
 
+  const stdinRestricted: string[] = [];
+  if (restrictedPathsStdin) {
+    const buf = await readPathsFromStdin();
+    stdinRestricted.push(...buf);
+  }
   const restrictedPathList = dedupeRestrictedList(
-    includeAncestors(restrictedPaths),
+    includeAncestors([...restrictedPaths, ...stdinRestricted]),
   );
   const hasRestrictions = restrictedPathList.length > 0;
 
@@ -1534,6 +1546,20 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     emitHashProgress(true);
   }
+}
+
+async function readPathsFromStdin(): Promise<string[]> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    process.stdin.on("data", (chunk) => chunks.push(chunk as Buffer));
+    process.stdin.on("end", () => {
+      if (chunks.length === 0) return resolve([]);
+      const buf = Buffer.concat(chunks);
+      const parts = buf.toString("utf8").split("\u0000");
+      resolve(parts.filter(Boolean));
+    });
+    process.stdin.resume();
+  });
 }
 
 // ---------- CLI entry (preserved) ----------

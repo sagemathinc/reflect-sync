@@ -94,7 +94,7 @@ const PRUNE_REMOTE_DATABASE_MS = 30_000;
 
 // never sync more than this many files at once using hot sync
 // (discards more)
-const MAX_HOT_SYNC = 200;
+const MAX_HOT_SYNC = 1_000;
 
 class FatalSchedulerError extends Error {
   constructor(message: string) {
@@ -137,6 +137,7 @@ export type SchedulerOptions = {
 
 type CycleOptions = {
   restrictedPaths?: string[];
+  restrictedPathsFromStdin?: boolean;
   label?: string;
 };
 
@@ -910,6 +911,7 @@ export async function runScheduler({
       numericIds?: boolean;
       ignoreRules: string[];
       restrictedPaths?: string[];
+      restrictedPathsStdin?: boolean;
       scanTick?: number;
       markCaseConflicts?: boolean;
       caseConflictCaps?: FilesystemCapabilities;
@@ -955,11 +957,17 @@ export async function runScheduler({
         sshArgs.push("--emit-since-age");
         sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
       }
-      if (params.restrictedPaths?.length) {
+      const stdinPaths = params.restrictedPathsStdin
+        ? (params.restrictedPaths ?? [])
+        : [];
+      if (params.restrictedPaths?.length && !params.restrictedPathsStdin) {
         for (const rel of params.restrictedPaths) {
           if (!rel) continue;
           sshArgs.push("--restricted-path", rel);
         }
+      }
+      if (stdinPaths.length) {
+        sshArgs.push("--restricted-paths-stdin");
       }
       if (params.markCaseConflicts) {
         sshArgs.push("--mark-case-conflicts");
@@ -988,8 +996,13 @@ export async function runScheduler({
       );
 
       const sshP = spawn("ssh", sshArgs, {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: params.restrictedPathsStdin
+          ? ["pipe", "pipe", "pipe"]
+          : ["ignore", "pipe", "pipe"],
       });
+      if (stdinPaths.length && sshP.stdin) {
+        sshP.stdin.end(stdinPaths.join("\u0000"));
+      }
       const stderrChunks: string[] = [];
       sshP.stderr?.on("data", (chunk) => {
         const text = chunk.toString();
@@ -1692,6 +1705,7 @@ export async function runScheduler({
       if (!expandedRestricted.length) return;
       await runCycle({
         restrictedPaths: expandedRestricted,
+        restrictedPathsFromStdin: alphaIsRemote || betaIsRemote,
         label: "hot",
       });
     } catch (e: any) {
@@ -1973,6 +1987,7 @@ export async function runScheduler({
             numericIds,
             ignoreRules,
             restrictedPaths,
+            restrictedPathsStdin: options.restrictedPathsFromStdin,
             scanTick,
             markCaseConflicts: markAlphaConflicts,
             caseConflictCaps: alphaCaseConflictCaps,
@@ -2051,6 +2066,8 @@ export async function runScheduler({
             numericIds,
             ignoreRules,
             restrictedPaths: hasRestrictions ? restrictedPaths : undefined,
+            restrictedPathsStdin:
+              options.restrictedPathsFromStdin && hasRestrictions,
             scanTick,
             markCaseConflicts: markBetaConflicts,
             caseConflictCaps: betaCaseConflictCaps,
@@ -2395,7 +2412,11 @@ export async function runScheduler({
             while (1) {
               let status;
               if (restrictedPaths?.length) {
-                status = await runCycle({ restrictedPaths, label: "hot" });
+                status = await runCycle({
+                  restrictedPaths,
+                  restrictedPathsFromStdin: alphaIsRemote || betaIsRemote,
+                  label: "hot",
+                });
               } else {
                 status = await runCycle();
               }
