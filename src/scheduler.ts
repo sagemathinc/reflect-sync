@@ -942,8 +942,10 @@ export async function runScheduler({
         params.remoteDb,
         "--hash",
         hash,
-        "--vacuum",
       );
+      if (Math.random() <= 0.025) {
+        sshArgs.push("--vacuum");
+      }
       for (const pattern of params.ignoreRules)
         sshArgs.push("--ignore", pattern);
       if (numericIds) sshArgs.push("--numeric-ids");
