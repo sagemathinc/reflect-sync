@@ -1073,12 +1073,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     for await (const entry of stream as AsyncIterable<{
       dirent;
       path: string; // ABS
-      stats: Stats;
+      stats?: Stats;
     }>) {
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
-      const st =
-        !numericIds && entry.stats ? entry.stats : await lstatAsync(abs);
+      // Prefer the walker-provided lstat; only hit the filesystem if missing.
+      const st = entry.stats ?? (await lstatAsync(abs));
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
       }
