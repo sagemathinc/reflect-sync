@@ -70,3 +70,80 @@ describeIfCasefold("casefold integration", () => {
     );
   });
 });
+
+describeIfCasefold("casefold reverse integration", () => {
+  let session: TestSession | undefined;
+  let alphaRoot: string | undefined;
+  let betaRoot: string | undefined;
+
+  beforeEach(async () => {
+    alphaRoot = await fsp.mkdtemp(
+      path.join(NOT_CASEFOLD_ROOT, "reflect-casefold-alpha-"),
+    );
+    betaRoot = await fsp.mkdtemp(
+      path.join(CASEFOLD_ROOT, "reflect-casefold-beta-"),
+    );
+    session = await createTestSession({
+      hot: false,
+      full: false,
+      alpha: { root: alphaRoot },
+      beta: { root: betaRoot },
+    });
+  });
+
+  afterEach(async () => {
+    if (session) {
+      await session.dispose();
+      session = undefined;
+    }
+    if (alphaRoot) {
+      await fsp.rm(alphaRoot, { recursive: true, force: true });
+      alphaRoot = undefined;
+    }
+    if (betaRoot) {
+      await fsp.rm(betaRoot, { recursive: true, force: true });
+      betaRoot = undefined;
+    }
+  });
+
+  it("preserves case variants on the sensitive side when the insensitive side deletes its winner", async () => {
+    if (!session) throw new Error("session not initialized");
+
+    await session.alpha.writeFile("c.txt", "lowercase");
+    await session.alpha.writeFile("C.txt", "uppercase");
+    await session.sync();
+
+    const betaFiles = (
+      await fsp.readdir(session.beta.path(""), { withFileTypes: false })
+    ).filter((name) => name.endsWith(".txt"));
+    expect(betaFiles.length).toBe(1);
+    const preserved = betaFiles[0];
+
+    await session.beta.rm(preserved, { recursive: false, force: true });
+    await session.sync();
+
+    const alphaFiles = (
+      await fsp.readdir(session.alpha.path(""), { withFileTypes: false })
+    ).filter((name) => name.endsWith(".txt"));
+    expect(alphaFiles.length).toBe(1);
+
+    const betaAfter = (
+      await fsp.readdir(session.beta.path(""), { withFileTypes: false })
+    ).filter((name) => name.endsWith(".txt"));
+    expect(betaAfter.length).toBe(0);
+    // console.log({ betaAfter, alphaFiles });
+
+    // now that one is deleted, the other takes over and gets sync'd
+    await session.sync();
+    const alphaFiles2 = (
+      await fsp.readdir(session.alpha.path(""), { withFileTypes: false })
+    ).filter((name) => name.endsWith(".txt"));
+    expect(alphaFiles2.length).toBe(1);
+    const betaAfter2 = (
+      await fsp.readdir(session.beta.path(""), { withFileTypes: false })
+    ).filter((name) => name.endsWith(".txt"));
+    expect(betaAfter2.length).toBe(1);
+    expect(alphaFiles2).toEqual(betaAfter2);
+    // console.log({ betaAfter2, alphaFiles2 });
+  });
+});
