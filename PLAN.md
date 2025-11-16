@@ -1,4 +1,23 @@
-# Case Sensitivity versus Insensitivity
+# Home stretch
+
+  1. Remote binary version check – totally agree. We already rely on invoking reflect remotely for scans/watch/fscap probes, so it’s easy to run reflect --version (or reflect
+     info) once per session startup and ensure it matches the local pkg.version. If it mismatches, fail fast with a clear error so users don’t end up with mismatched schema/
+     features.
+  2. Forced scan support – makes sense as a guardrail when metadata can’t be trusted (e.g., btrfs snapshot diff, external tools mutating files). Architecturally I’d add two
+     pieces:
+      - CLI knob (“full” flag or reflect sync --force-scan) that tells the scheduler to run runScan({ forced: true }), which walks every path regardless of ctime/hash heuristic.
+      - Optional file-list mode where we feed a NUL-separated list into scan (or a companion command) so advanced users can leverage snapshot-diff or rsync “–files-from” output.
+        That’d reuse the existing worker pool, just seed the stream with the supplied paths.
+  3. Mixed privilege copies – good catch. Today we always pass rsync -a/-o/-g, which only works when both sides can set ownership. We need a per-session knob (or automatic
+     detection) that switches to “preserve mode/mtime but skip owner/group” when one side runs as root and the other doesn’t. Implementation-wise:
+      - Detect at session creation whether alpha/beta roots are owned by the current user; if they differ, mark the session as “ownership mismatch”.
+      - Teach the rsync helper to drop --owner/--group (and avoid chown/cloned metadata) when that flag is set. For local copies we may need to call cp without
+        --preserve=ownership, and for rsync we can still preserve permissions/mtimes but let the destination pick the owning user.
+
+
+
+
+# (Done) Case Sensitivity versus Insensitivity
 
 ## Goal
 
