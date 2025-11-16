@@ -35,6 +35,7 @@ import {
   remoteDirExists,
   remoteWhich,
   RemoteConnectionError,
+  detectRemoteFilesystemCapabilities,
 } from "./remote.js";
 import type { SendSignature } from "./recent-send.js";
 type SignatureEntry = {
@@ -84,7 +85,6 @@ import {
 } from "./ssh-control.js";
 import {
   detectFilesystemCapabilities,
-  DEFAULT_FILESYSTEM_CAPABILITIES,
   type FilesystemCapabilities,
 } from "./fs-capabilities.js";
 
@@ -768,13 +768,42 @@ export async function runScheduler({
   }
 
   await ensureRootsExist({ localOnly: true });
+
+  async function resolveRemoteCommandFor(
+    host: string,
+    port?: number,
+  ): Promise<string> {
+    if (remoteCommand) return remoteCommand;
+    remoteCommand = await remoteWhich(host, CLI_NAME, {
+      logger: scoped("remote"),
+      port,
+    });
+    return remoteCommand!;
+  }
+
+  const detectRemoteCaps = async (
+    side: "alpha" | "beta",
+    host: string,
+    port: number | undefined,
+    rootPath: string,
+  ) => {
+    const command = await resolveRemoteCommandFor(host, port);
+    return await detectRemoteFilesystemCapabilities({
+      host,
+      port,
+      root: rootPath,
+      remoteCommand: command,
+      logger: scoped(`fs.${side}`),
+    });
+  };
+
   const alphaFsCaps = alphaIsRemote
-    ? { ...DEFAULT_FILESYSTEM_CAPABILITIES }
+    ? await detectRemoteCaps("alpha", alphaHost!, alphaPort, alphaRoot)
     : await detectFilesystemCapabilities(alphaRoot, {
         logger: scoped("fs.alpha"),
       });
   const betaFsCaps = betaIsRemote
-    ? { ...DEFAULT_FILESYSTEM_CAPABILITIES }
+    ? await detectRemoteCaps("beta", betaHost!, betaPort, betaRoot)
     : await detectFilesystemCapabilities(betaRoot, {
         logger: scoped("fs.beta"),
       });

@@ -229,12 +229,10 @@ describeIfCasefold("casefold reverse integration", () => {
     await session.alpha.writeFile("docs/todo.txt", "docs-todo");
     await session.sync();
 
-    const betaRows = readCaseConflictRows(session.betaDbPath, [
-      "Docs",
-      "docs",
-    ]);
+    const betaRows = readCaseConflictRows(session.betaDbPath, ["Docs", "docs"]);
     const canonicalRow =
-      betaRows.find((row) => Number(row.case_conflict ?? 0) === 0) ?? betaRows[0];
+      betaRows.find((row) => Number(row.case_conflict ?? 0) === 0) ??
+      betaRows[0];
     await session.beta.rm(canonicalRow.path, {
       recursive: true,
       force: true,

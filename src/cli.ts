@@ -18,6 +18,7 @@ import { registerInstallCommand } from "./install-cli.js";
 import { configureScanCommand } from "./scan.js";
 import { configureSchedulerCommand } from "./scheduler.js";
 import { configureWatchCommand } from "./watch.js";
+import { detectFilesystemCapabilities } from "./fs-capabilities.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -87,6 +88,7 @@ const ADVANCED_COMMANDS = new Set([
   "merge",
   "scheduler",
   "watch",
+  "fs-capabilities",
 ]);
 
 const shouldShowAdvanced = () => {
@@ -166,6 +168,18 @@ configureWatchCommand(program.command("watch")).action(
     await runWatch(merged);
   },
 );
+
+program
+  .command("fs-capabilities")
+  .description("inspect filesystem case-sensitivity and unicode normalization")
+  .requiredOption("--root <path>", "path to probe")
+  .action(async (opts: { root: string }, command) => {
+    const params = mergeOptsWithLogger(command, opts);
+    const caps = await detectFilesystemCapabilities(params.root, {
+      logger: params.logger,
+    });
+    process.stdout.write(JSON.stringify(caps) + "\n");
+  });
 
 // Default help when no subcommand given
 if (process.argv.length <= 2) {

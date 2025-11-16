@@ -6,6 +6,7 @@ import { join, posix } from "node:path";
 import { spawn } from "node:child_process";
 import type { Logger } from "./logger.js";
 import { maybeRestartSshControl } from "./ssh-control.js";
+import type { FilesystemCapabilities } from "./fs-capabilities.js";
 
 type RemoteLogOptions = {
   logger?: Logger;
@@ -229,6 +230,52 @@ export async function ensureRemoteParentDir({
   }
   args.push(host, "--", cmd);
   await ssh(host, args, logCfg, cmd);
+}
+
+export async function detectRemoteFilesystemCapabilities({
+  host,
+  port,
+  root,
+  remoteCommand,
+  logger,
+}: {
+  host: string;
+  port?: number;
+  root: string;
+  remoteCommand: string;
+  logger?: Logger;
+}): Promise<FilesystemCapabilities> {
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+  ];
+  if (port != null) {
+    args.push("-p", String(port));
+  }
+  args.push(host, `${remoteCommand} fs-capabilities`, "--root", root);
+  const logCfg = logger ? { logger } : undefined;
+  let stdout: string;
+  try {
+    const result = await ssh(host, args, logCfg, "fs-capabilities");
+    stdout = result.stdout;
+  } catch (err) {
+    throw new Error(
+      `remote filesystem capability probe failed for ${host}:${root}`,
+      { cause: err },
+    );
+  }
+  try {
+    return JSON.parse(stdout.trim()) as FilesystemCapabilities;
+  } catch (err) {
+    throw new Error(
+      `failed to parse remote filesystem capabilities for ${host}:${root}: ${stdout}`,
+      { cause: err },
+    );
+  }
 }
 
 export class RemoteConnectionError extends Error {
