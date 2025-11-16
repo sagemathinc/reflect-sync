@@ -13,7 +13,7 @@ Let mixed case-sensitive (Linux/btrfs) ↔ case-insensitive or Unicode-normalizi
    - Add a `case_conflict INTEGER NOT NULL DEFAULT 0` column to `nodes` in alpha, beta, and base DBs. Include it in the indexes we already rely on \(`nodes_deleted_path_idx`, etc.\).
    - No need to worry about migrations \-\- project isn't released yet.
 
-3. **Scan/ingest changes for insensitive or Unicode\-normalizing roots**
+3. **\(done\) Scan/ingest changes for insensitive or Unicode\-normalizing roots**
    - While scanning \(or ingesting remote watch deltas\) on a lossy root, maintain a map of `canonical(path) -> canonicalRow`, where `canonical()` lowercase\-folds and converts to NFC before comparison. For each directory:
      - If we encounter `p` and `canonical(p)` is unused, insert it into the map and proceed as today \(write row with `case_conflict = 0`\).
      - If `canonical(p)` already has a different canonical path, pick a winner \(e.g., the newest `mtime`, or deterministically the lexicographically smallest; for a directory, consider the mtimes of everything under that directory\). Mark every loser in that conflict set with `case_conflict = 1`. Their metadata stays accurate so the Linux side still knows about them, but future merges targeting the insensitive side will skip them; for directories we also mark the entire subtree so children behave like an ignored path.

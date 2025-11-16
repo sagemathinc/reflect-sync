@@ -236,7 +236,14 @@ async function runSyncForSession(
       restrictedPaths: paths,
     });
 
-    if (plan.diffs.length === 0 && plan.operations.length === 0) {
+    const actionableDiffs = plan.diffs.filter((row) => {
+      const alphaConflict = Number(row.a_case_conflict ?? 0) === 1;
+      const betaConflict = Number(row.b_case_conflict ?? 0) === 1;
+      return !(alphaConflict || betaConflict);
+    });
+    const actionableOps = plan.operations.filter((op) => op.op !== "noop");
+
+    if (actionableDiffs.length === 0 && actionableOps.length === 0) {
       const pendingAlpha = countCopyPending(alphaDbPath);
       const pendingBeta = countCopyPending(betaDbPath);
       if (pendingAlpha || pendingBeta) {
@@ -250,6 +257,11 @@ async function runSyncForSession(
         }
         continue;
       }
+      if (plan.diffs.length > 0) {
+        console.log(
+          `session ${label}: only case-conflict differences remain; treating as synchronized`,
+        );
+      }
       console.log(
         `session ${label} synchronized after ${attempt} ${
           attempt === 1 ? "cycle" : "cycles"
@@ -258,16 +270,16 @@ async function runSyncForSession(
       return 0;
     }
 
-    const sample = plan.diffs.slice(0, 5).map((row) => row.path);
+    const sample = actionableDiffs.slice(0, 5).map((row) => row.path);
     console.log(
-      `session ${label}: ${plan.diffs.length} paths still differ (examples: ${
+      `session ${label}: ${actionableDiffs.length} paths still differ (examples: ${
         sample.join(", ") || "n/a"
       })`,
     );
 
     if (attempt === maxCycles) {
       throw new Error(
-        `session ${label}: still has ${plan.diffs.length} differing paths after ${maxCycles} cycles`,
+        `session ${label}: still has ${actionableDiffs.length} differing paths after ${maxCycles} cycles`,
       );
     }
   }
