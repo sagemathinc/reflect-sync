@@ -466,19 +466,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   }
 
   db.exec(`
-    DROP TABLE IF EXISTS seen_paths;
-    CREATE TEMP TABLE seen_paths(
-      path TEXT PRIMARY KEY
-    ) WITHOUT ROWID;
-  `);
-  const insertSeen = db.prepare(
-    `INSERT OR IGNORE INTO seen_paths(path) VALUES (?)`,
-  );
-  const insertSeenBatch = db.transaction((paths: string[]) => {
-    for (const p of paths) insertSeen.run(p);
-  });
-
-  db.exec(`
     DROP TABLE IF EXISTS tmp_scan;
     CREATE TEMP TABLE tmp_scan(
       path TEXT PRIMARY KEY,
@@ -1104,7 +1091,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const metaBuf: Row[] = [];
     const dirMetaBuf: DirRow[] = [];
     const linksBuf: LinkRow[] = [];
-    const seenBuf: string[] = [];
     const tmpScanBuf: {
       path: string;
       kind: NodeKind;
@@ -1150,11 +1136,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const st = entry.stats ?? (await lstatAsync(abs));
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
-      }
-      seenBuf.push(rpath);
-      if (seenBuf.length >= DB_BATCH_SIZE) {
-        insertSeenBatch(seenBuf);
-        seenBuf.length = 0;
       }
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
@@ -1657,10 +1638,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       insertTmpScanBatch(tmpScanBuf);
       tmpScanBuf.length = 0;
     }
-    if (seenBuf.length) {
-      insertSeenBatch(seenBuf);
-      seenBuf.length = 0;
-    }
 
     clearInterval(periodicFlush);
 
@@ -1675,7 +1652,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     // Update last_seen for everything we observed this scan.
     db.prepare(
-      `UPDATE nodes SET last_seen = @scan WHERE path IN (SELECT path FROM seen_paths)${restrictedClause}`,
+      `UPDATE nodes SET last_seen = @scan WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}`,
     ).run({ scan: scan_id });
 
     // Compute deletions (anything not seen this pass and not already deleted)
@@ -1684,7 +1661,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         `SELECT path, kind, case_conflict, canonical_key
            FROM nodes
           WHERE deleted = 0${restrictedClause}
-            AND path NOT IN (SELECT path FROM seen_paths)`,
+            AND path NOT IN (SELECT path FROM tmp_scan)`,
       )
       .all() as {
       path: string;
@@ -1715,7 +1692,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 hash_pending = 0,
                 last_error = NULL
           WHERE deleted = 0${restrictedClause}
-            AND path NOT IN (SELECT path FROM seen_paths)`,
+            AND path NOT IN (SELECT path FROM tmp_scan)`,
       ).run({ ts: deleteTs, lower: fallbackLowerBoundBase });
 
       if (emitDelta) {
