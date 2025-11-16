@@ -478,6 +478,48 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     for (const p of paths) insertSeen.run(p);
   });
 
+  db.exec(`
+    DROP TABLE IF EXISTS tmp_scan;
+    CREATE TEMP TABLE tmp_scan(
+      path TEXT PRIMARY KEY,
+      kind TEXT,
+      size INTEGER,
+      mtime REAL,
+      ctime REAL,
+      mode INTEGER,
+      uid INTEGER,
+      gid INTEGER,
+      case_conflict INTEGER,
+      canonical_key TEXT,
+      link_target TEXT
+    ) WITHOUT ROWID;
+  `);
+  const insertTmpScan = db.prepare(
+    `INSERT OR REPLACE INTO tmp_scan(path, kind, size, mtime, ctime, mode, uid, gid, case_conflict, canonical_key, link_target)
+     VALUES (@path, @kind, @size, @mtime, @ctime, @mode, @uid, @gid, @case_conflict, @canonical_key, @link_target)`,
+  );
+  const insertTmpScanBatch = db.transaction(
+    (
+      rows: {
+        path: string;
+        kind: NodeKind;
+        size: number;
+        mtime: number;
+        ctime: number;
+        mode: number;
+        uid: number | null;
+        gid: number | null;
+        case_conflict: number;
+        canonical_key: string | null;
+        link_target: string | null;
+      }[],
+    ) => {
+      for (const row of rows) {
+        insertTmpScan.run(row);
+      }
+    },
+  );
+
   if (pruneMs) {
     const olderThanTs = Date.now() - Number(pruneMs);
     db.prepare(`DELETE FROM nodes WHERE deleted = 1 AND updated < ?`).run(
@@ -1063,6 +1105,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const dirMetaBuf: DirRow[] = [];
     const linksBuf: LinkRow[] = [];
     const seenBuf: string[] = [];
+    const tmpScanBuf: {
+      path: string;
+      kind: NodeKind;
+      size: number;
+      mtime: number;
+      ctime: number;
+      mode: number;
+      uid: number | null;
+      gid: number | null;
+      case_conflict: number;
+      canonical_key: string | null;
+      link_target: string | null;
+    }[] = [];
     const hashJobs: Job[] = [];
 
     // Existing-meta lookup by rpath
@@ -1178,6 +1233,23 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           dirCanonicalSame &&
           !emitDelta;
         if (unchangedDir) {
+          tmpScanBuf.push({
+            path: rpath,
+            kind: "d",
+            size: 0,
+            mtime,
+            ctime,
+            mode: st.mode,
+            uid: numericIds ? st.uid : null,
+            gid: numericIds ? st.gid : null,
+            case_conflict: caseConflict,
+            canonical_key: nextDirCanonical,
+            link_target: null,
+          });
+          if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+            insertTmpScanBatch(tmpScanBuf);
+            tmpScanBuf.length = 0;
+          }
           continue;
         }
 
@@ -1212,6 +1284,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             case_conflict: caseConflict || undefined,
             canonical_key: nextDirCanonical ?? undefined,
           });
+        }
+
+        tmpScanBuf.push({
+          path: rpath,
+          kind: "d",
+          size: 0,
+          mtime,
+          ctime,
+          mode: st.mode,
+          uid: numericIds ? st.uid : null,
+          gid: numericIds ? st.gid : null,
+          case_conflict: caseConflict,
+          canonical_key: nextDirCanonical,
+          link_target: null,
+        });
+        if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+          insertTmpScanBatch(tmpScanBuf);
+          tmpScanBuf.length = 0;
         }
 
         continue;
@@ -1316,6 +1406,23 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           caseConflictSame &&
           !emitDelta;
         if (unchangedFile) {
+          tmpScanBuf.push({
+            path: rpath,
+            kind: "f",
+            size,
+            mtime,
+            ctime,
+            mode: st.mode,
+            uid: numericIds ? st.uid : null,
+            gid: numericIds ? st.gid : null,
+            case_conflict: caseConflict,
+            canonical_key: nextCanonicalKey,
+            link_target: null,
+          });
+          if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+            insertTmpScanBatch(tmpScanBuf);
+            tmpScanBuf.length = 0;
+          }
           continue;
         }
 
@@ -1379,6 +1486,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             canonical_key: nextCanonicalKey,
           });
         }
+
+        tmpScanBuf.push({
+          path: rpath,
+          kind: "f",
+          size,
+          mtime,
+          ctime,
+          mode: st.mode,
+          uid: numericIds ? st.uid : null,
+          gid: numericIds ? st.gid : null,
+          case_conflict: caseConflict,
+          canonical_key: nextCanonicalKey,
+          link_target: null,
+        });
+        if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+          insertTmpScanBatch(tmpScanBuf);
+          tmpScanBuf.length = 0;
+        }
       } else if (entry.dirent.isSymbolicLink()) {
         let target = "";
         try {
@@ -1434,6 +1559,23 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           linkCaseSame &&
           !emitDelta;
         if (unchangedLink) {
+          tmpScanBuf.push({
+            path: rpath,
+            kind: "l",
+            size: st.size,
+            mtime,
+            ctime,
+            mode: st.mode,
+            uid: numericIds ? st.uid : null,
+            gid: numericIds ? st.gid : null,
+            case_conflict: caseConflict,
+            canonical_key: nextLinkCanonical,
+            link_target: target,
+          });
+          if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+            insertTmpScanBatch(tmpScanBuf);
+            tmpScanBuf.length = 0;
+          }
           continue;
         }
 
@@ -1472,6 +1614,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           });
         }
 
+        tmpScanBuf.push({
+          path: rpath,
+          kind: "l",
+          size: st.size,
+          mtime,
+          ctime,
+          mode: st.mode,
+          uid: numericIds ? st.uid : null,
+          gid: numericIds ? st.gid : null,
+          case_conflict: caseConflict,
+          canonical_key: nextLinkCanonical,
+          link_target: target,
+        });
+        if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+          insertTmpScanBatch(tmpScanBuf);
+          tmpScanBuf.length = 0;
+        }
+
         continue;
       }
     }
@@ -1492,6 +1652,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     if (linksBuf.length) {
       applyLinksBatch(linksBuf);
       linksBuf.length = 0;
+    }
+    if (tmpScanBuf.length) {
+      insertTmpScanBatch(tmpScanBuf);
+      tmpScanBuf.length = 0;
     }
     if (seenBuf.length) {
       insertSeenBatch(seenBuf);
