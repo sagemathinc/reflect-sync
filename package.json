@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist node_modules bundle",
     "prettier-all": "prettier -w src",
-    "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest --maxWorkers 1pnp",
+    "test": "pnpm build && NODE_OPTIONS='--no-warnings' jest --maxWorkers 30%",
     "test:watch": "pnpm build &&  NODE_OPTIONS='--no-warnings' jest --watch",
     "prepublishOnly": "pnpm clean && pnpm bundle && pnpm lint && pnpm audit && rm dist/bundle.cjs",
     "bundle:worker": "rollup -c rollup.worker.mjs",

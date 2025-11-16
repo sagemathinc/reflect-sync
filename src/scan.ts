@@ -465,6 +465,19 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     insertRestrictedBatch(restrictedPathList);
   }
 
+  db.exec(`
+    DROP TABLE IF EXISTS seen_paths;
+    CREATE TEMP TABLE seen_paths(
+      path TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
+  `);
+  const insertSeen = db.prepare(
+    `INSERT OR IGNORE INTO seen_paths(path) VALUES (?)`,
+  );
+  const insertSeenBatch = db.transaction((paths: string[]) => {
+    for (const p of paths) insertSeen.run(p);
+  });
+
   if (pruneMs) {
     const olderThanTs = Date.now() - Number(pruneMs);
     db.prepare(`DELETE FROM nodes WHERE deleted = 1 AND updated < ?`).run(
@@ -1049,23 +1062,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const metaBuf: Row[] = [];
     const dirMetaBuf: DirRow[] = [];
     const linksBuf: LinkRow[] = [];
+    const seenBuf: string[] = [];
     const hashJobs: Job[] = [];
 
     // Existing-meta lookup by rpath
     const getExisting = db.prepare(
-      `SELECT size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, canonical_key
+      `SELECT size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict
        FROM nodes
       WHERE path = ? AND kind = 'f'`,
     );
 
     const getExistingDir = db.prepare(
-      `SELECT ctime, mtime, hash, deleted, updated, copy_pending, change_start, change_end, confirmed_at, canonical_key
+      `SELECT ctime, mtime, hash, deleted, updated, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict
        FROM nodes
       WHERE path = ? AND kind = 'd'`,
     );
 
     const getExistingLink = db.prepare(
-      `SELECT ctime, mtime, hash, link_target AS target, deleted, updated, copy_pending, change_start, change_end, confirmed_at, canonical_key
+      `SELECT ctime, mtime, hash, link_target AS target, deleted, updated, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict
        FROM nodes
       WHERE path = ? AND kind = 'l'`,
     );
@@ -1081,6 +1095,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const st = entry.stats ?? (await lstatAsync(abs));
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
+      }
+      seenBuf.push(rpath);
+      if (seenBuf.length >= DB_BATCH_SIZE) {
+        insertSeenBatch(seenBuf);
+        seenBuf.length = 0;
       }
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
@@ -1122,6 +1141,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_end: number | null;
               confirmed_at: number | null;
               canonical_key: string | null;
+              case_conflict: number | null;
             }
           | undefined;
         let hash = modeHash(st.mode);
@@ -1130,6 +1150,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         }
 
         const dirChanged = !prev || prev.deleted === 1 || prev.hash !== hash;
+        const dirCaseSame = (prev?.case_conflict ?? 0) === caseConflict;
+        const dirCanonicalSame =
+          (prev?.canonical_key ?? null) === (canonicalKey ?? null);
 
         const op_ts = dirChanged
           ? scanTick
@@ -1147,6 +1170,16 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         if (dirCopyPending === 1) dirCopyPending = 2;
 
         const nextDirCanonical = canonicalKey ?? prev?.canonical_key ?? null;
+
+        const unchangedDir =
+          !dirChanged &&
+          (dirCopyPending === 0 || dirCopyPending === 2) &&
+          dirCaseSame &&
+          dirCanonicalSame &&
+          !emitDelta;
+        if (unchangedDir) {
+          continue;
+        }
 
         dirMetaBuf.push({
           path: rpath,
@@ -1201,6 +1234,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_end: number | null;
               confirmed_at: number | null;
               canonical_key: string | null;
+              case_conflict: number | null;
             }
           | undefined;
         const copyPending = row?.copy_pending ?? 0;
@@ -1265,6 +1299,25 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             : (rowConfirmed ?? null);
 
         const nextCanonicalKey = canonicalKey ?? row?.canonical_key ?? null;
+        const caseConflictSame =
+          (row?.case_conflict ?? 0) === (caseConflict ?? 0);
+        const canonicalSame = (row?.canonical_key ?? null) === nextCanonicalKey;
+
+        const unchangedFile =
+          !!row &&
+          row.deleted === 0 &&
+          !needsHash &&
+          hashPendingFlag === 0 &&
+          (copyPendingState === 0 || copyPendingState === 2) &&
+          row.size === size &&
+          row.mtime === mtime &&
+          row.ctime === ctime &&
+          canonicalSame &&
+          caseConflictSame &&
+          !emitDelta;
+        if (unchangedFile) {
+          continue;
+        }
 
         // Upsert *metadata only* (no hash/hashed_ctime change here)
         metaBuf.push({
@@ -1345,6 +1398,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
               change_end: number | null;
               confirmed_at: number | null;
               canonical_key: string | null;
+              case_conflict: number | null;
             }
           | undefined;
         const linkChanged =
@@ -1370,6 +1424,18 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         if (linkCopyPending === 1) linkCopyPending = 2;
 
         const nextLinkCanonical = canonicalKey ?? prev?.canonical_key ?? null;
+        const linkCanonicalSame =
+          (prev?.canonical_key ?? null) === nextLinkCanonical;
+        const linkCaseSame = (prev?.case_conflict ?? 0) === caseConflict;
+        const unchangedLink =
+          !linkChanged &&
+          (linkCopyPending === 0 || linkCopyPending === 2) &&
+          linkCanonicalSame &&
+          linkCaseSame &&
+          !emitDelta;
+        if (unchangedLink) {
+          continue;
+        }
 
         linksBuf.push({
           path: rpath,
@@ -1427,6 +1493,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       applyLinksBatch(linksBuf);
       linksBuf.length = 0;
     }
+    if (seenBuf.length) {
+      insertSeenBatch(seenBuf);
+      seenBuf.length = 0;
+    }
 
     clearInterval(periodicFlush);
 
@@ -1439,15 +1509,20 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     }
     flushDeltaBuf();
 
+    // Update last_seen for everything we observed this scan.
+    db.prepare(
+      `UPDATE nodes SET last_seen = @scan WHERE path IN (SELECT path FROM seen_paths)${restrictedClause}`,
+    ).run({ scan: scan_id });
+
     // Compute deletions (anything not seen this pass and not already deleted)
     const toDeleteNodes = db
       .prepare(
         `SELECT path, kind, case_conflict, canonical_key
            FROM nodes
-          WHERE last_seen <> ?
-            AND deleted = 0${restrictedClause}`,
+          WHERE deleted = 0${restrictedClause}
+            AND path NOT IN (SELECT path FROM seen_paths)`,
       )
-      .all(scan_id) as {
+      .all() as {
       path: string;
       kind: NodeKind;
       case_conflict: number | null;
@@ -1475,9 +1550,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 copy_pending = 0,
                 hash_pending = 0,
                 last_error = NULL
-          WHERE last_seen <> @scan
-            AND deleted = 0${restrictedClause}`,
-      ).run({ ts: deleteTs, scan: scan_id, lower: fallbackLowerBoundBase });
+          WHERE deleted = 0${restrictedClause}
+            AND path NOT IN (SELECT path FROM seen_paths)`,
+      ).run({ ts: deleteTs, lower: fallbackLowerBoundBase });
 
       if (emitDelta) {
         for (const r of toDeleteNodes) {
