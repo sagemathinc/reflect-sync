@@ -1,25 +1,59 @@
-# WARNING: NOT READY FOR PRODUCTION USE
-
-November 15, 2025 Status: **THIS IS NOT READY FOR PRODUCTION USE. IT MAY DELETE YOUR FILES.**
-
 # ReflectSync
 
-ReflectSync is a fast bidirectional file synchronization program built on rsync and sqlite, designed for very large trees, low RAM, and observability.
+ReflectSync is a fast, fully observant, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move.
 
-- **Rsync transport** \(latest rsync recommended\)
-- **SQLite indexes** per side \(alpha / beta\) \+ base snapshot for true 3\-way merges
-- **Incremental scans** with content hashes only when needed \(based on ctime\)
-- **Realtime restricted cycles** for hot files \(debounced, safe on partial edits\)
-- **SSH\-friendly**: stream remote deltas over stdin
-- **Supports mixed filesystem types**: that collapse case and normalize unicode (macos, windows)
-- **Copy on Write (optional):** when both roots are local you can opt into `cp --reflink` copies for fast COW transfers (`reflect create … --enable-reflink`); the flag is off by default so nothing attempts reflinks automatically.
-- **Lightweight:** The reflect-sync bundled Javascript distribution is about 100KB compressed, including all dependencies.
+## Why ReflectSync?
 
-> Requires **Node.js 22+**.
+- **SQLite everywhere.** Alpha, beta, and base databases capture hashes, metadata, and logical timestamps so merges are deterministic and auditable.
+- **Modern rsync pipeline.** Each session owns a persistent SSH ControlMaster, rsync batches are chunked, and remote scans stream NDJSON over stdin/stdout instead of temporary files.
+- **Watchers + restricted scans.** Hot paths flow through debounced watchers; forced scans read NUL-separated path lists from stdin.
+- **Filesystem-aware.** Every root is probed for case sensitivity, Unicode normalization, reflink support, and privilege level. Sessions record canonical winners for conflicts so macOS/Windows volumes cannot clobber distinct case variants that originated on Linux.
+- **Transparency-first.** Structured logs, copy_pending enforcement, and `reflect query …` let you inspect exactly what happened. Nothing is hidden inside opaque daemons.
+
+> Requires **Node.js 22+** and a recent rsync.
+
+## Quick start
+
+```bash
+pnpm install -g reflect-sync
+
+# create a session between two paths (local or ssh-style)
+reflect create ~/alpha ~/beta
+
+# run a sync cycle until copy_pending clears
+reflect sync 1
+
+# follow structured progress logs
+reflect logs 1 --follow --message progress
+
+# inspect current state
+reflect status 1
+reflect query recent 1
+```
+
+Remote endpoints use the familiar `user@host:/absolute/path` syntax (or `host:2222:/path` for custom ports). Reflect opens one SSH ControlMaster per session and refuses to run if the remote `reflect-sync` binary reports a different version, preventing protocol drift.
+
+## Architecture at a glance
+
+1. **Scheduler** – coordinates scans, watchers, merge planning, and rsync batches. It can run once via `reflect sync <id>` or stay resident under `reflect daemon`.
+2. **Scans & watchers** – `scan.ts` crawls filesystems (locally or over SSH) while `hotwatch.ts` listens for inotify/FSEvents. Updates flow into alpha/beta/base SQLite DBs.
+3. **Merge planner** – `three-way-merge.ts` compares alpha/beta/base rows, respects merge strategies (default `last-write-wins`), and emits rsync batches while honoring `copy_pending` and canonical conflict winners.
+4. **Transport** – `rsync.ts` and `ssh-control.ts` keep SSH sockets alive, capture transfer logs (mode/user/group), and retry if the ControlMaster dies.
+
+Because state lives in SQLite, you can reproduce or audit any run with normal SQL tooling. The CLI (`reflect query recent`, `reflect query size`, …) provides common summaries without learning the schema.
+
+## Trust & observability
+
+- **Structured logging everywhere.** Scans, merges, rsync batches, and assertions emit JSON logs consumable via `reflect logs … --json`.
+- **Environment probing.** Sessions fail fast if filesystem capability probes (case sensitivity, Unicode normalization, reflinks) or privilege checks fail—we never guess.
+- **Version enforcement.** Remote sessions run `reflect --version` over SSH and compare it to the local version before syncing.
+- **Explicit merge semantics.** The default `last-write-wins` strategy is documented, and logs call out why each path was copied, skipped, or flagged as a conflict.
+- **No black boxes.** Databases live under `~/.local/share/reflect-sync/`; copying that directory lets you replay or inspect every decision offline.
 
 ## LICENSE
 
 Open source under the MIT License.
+
 
 ## Details
 
