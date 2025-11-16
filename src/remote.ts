@@ -278,6 +278,34 @@ export async function detectRemoteFilesystemCapabilities({
   }
 }
 
+export async function fetchRemoteVersion({
+  host,
+  port,
+  remoteCommand,
+  logger,
+}: {
+  host: string;
+  port?: number;
+  remoteCommand: string;
+  logger?: Logger;
+}): Promise<string> {
+  const args = [
+    "-o",
+    `ConnectTimeout=${TIMEOUT}`,
+    "-C",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+  ];
+  if (port != null) {
+    args.push("-p", String(port));
+  }
+  args.push(host, `${remoteCommand} --version`);
+  const logCfg = logger ? { logger } : undefined;
+  const { stdout } = await ssh(host, args, logCfg, "remote version");
+  return stdout.trim();
+}
+
 export class RemoteConnectionError extends Error {
   override readonly cause?: unknown;
   constructor(message: string, options?: { cause?: unknown }) {

@@ -36,7 +36,9 @@ import {
   remoteWhich,
   RemoteConnectionError,
   detectRemoteFilesystemCapabilities,
+  fetchRemoteVersion,
 } from "./remote.js";
+import pkg from "../package.json" with { type: "json" };
 import type { SendSignature } from "./recent-send.js";
 type SignatureEntry = {
   path: string;
@@ -313,6 +315,7 @@ const DEFAULT_SESSION_ECHO_LEVEL = parseLogLevel(
   process.env.REFLECT_SESSION_ECHO_LEVEL ?? process.env.REFLECT_LOG_LEVEL,
   "info",
 );
+const LOCAL_VERSION = pkg.version;
 
 // ---------- core (exported) ----------
 export async function runScheduler({
@@ -697,6 +700,7 @@ export async function runScheduler({
     alpha: 0,
     beta: 0,
   };
+  const remoteVersionCache = new Map<string, string>();
 
   function invalidateRemoteRoot(side: "alpha" | "beta") {
     remoteRootVerified[side] = false;
@@ -769,15 +773,38 @@ export async function runScheduler({
 
   await ensureRootsExist({ localOnly: true });
 
+  async function ensureRemoteVersionMatch(
+    host: string,
+    port: number | undefined,
+    command: string,
+  ): Promise<void> {
+    const key = port != null ? `${host}:${port}` : host;
+    if (remoteVersionCache.has(key)) return;
+    const version = await fetchRemoteVersion({
+      host,
+      port,
+      remoteCommand: command,
+      logger: scoped(`remote.${key}`),
+    });
+    if (version.trim() !== LOCAL_VERSION) {
+      const message = `remote reflect-sync version ${version.trim()} on ${key} does not match local version ${LOCAL_VERSION}`;
+      log("error", "remote", message);
+      throw new Error(message);
+    }
+    remoteVersionCache.set(key, version.trim());
+  }
+
   async function resolveRemoteCommandFor(
     host: string,
     port?: number,
   ): Promise<string> {
-    if (remoteCommand) return remoteCommand;
-    remoteCommand = await remoteWhich(host, CLI_NAME, {
-      logger: scoped("remote"),
-      port,
-    });
+    if (!remoteCommand) {
+      remoteCommand = await remoteWhich(host, CLI_NAME, {
+        logger: scoped("remote"),
+        port,
+      });
+    }
+    await ensureRemoteVersionMatch(host, port, remoteCommand);
     return remoteCommand!;
   }
 
