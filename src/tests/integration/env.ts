@@ -149,6 +149,7 @@ export class TestSession {
   readonly beta: TestSessionSide;
   readonly sessionDb: string;
   readonly baseDbPath: string;
+  private readonly sessionDir: string;
 
   #disposed = false;
 
@@ -165,7 +166,16 @@ export class TestSession {
     this.alpha = new TestSessionSide(alphaRoot);
     this.beta = new TestSessionSide(betaRoot);
     this.sessionDb = sessionDb;
-    this.baseDbPath = path.join(reflectHome, "sessions", String(id), "base.db");
+    this.sessionDir = path.join(reflectHome, "sessions", String(id));
+    this.baseDbPath = path.join(this.sessionDir, "base.db");
+  }
+
+  get alphaDbPath(): string {
+    return path.join(this.sessionDir, "alpha.db");
+  }
+
+  get betaDbPath(): string {
+    return path.join(this.sessionDir, "beta.db");
   }
 
   async sync(options: TestSessionSyncOptions = {}): Promise<void> {
