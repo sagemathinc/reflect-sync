@@ -126,6 +126,11 @@ describeIfCasefold("casefold reverse integration", () => {
       await fsp.readdir(session.alpha.path(""), { withFileTypes: false })
     ).filter((name) => name.endsWith(".txt"));
     expect(alphaFiles.length).toBe(1);
+    const remaining = alphaFiles[0];
+    const remainingContent = (
+      await session.alpha.readFile(remaining, "utf8")
+    ).toString();
+    expect(["lowercase", "uppercase"]).toContain(remainingContent);
 
     const betaAfter = (
       await fsp.readdir(session.beta.path(""), { withFileTypes: false })
@@ -144,6 +149,9 @@ describeIfCasefold("casefold reverse integration", () => {
     ).filter((name) => name.endsWith(".txt"));
     expect(betaAfter2.length).toBe(1);
     expect(alphaFiles2).toEqual(betaAfter2);
-    // console.log({ betaAfter2, alphaFiles2 });
+    const betaContent = (
+      await session.beta.readFile(betaAfter2[0], "utf8")
+    ).toString();
+    expect(betaContent).toBe(remainingContent);
   });
 });
