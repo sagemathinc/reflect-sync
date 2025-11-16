@@ -476,14 +476,15 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       mode INTEGER,
       uid INTEGER,
       gid INTEGER,
+      mode_hash TEXT,
       case_conflict INTEGER,
       canonical_key TEXT,
       link_target TEXT
     ) WITHOUT ROWID;
   `);
   const insertTmpScan = db.prepare(
-    `INSERT OR REPLACE INTO tmp_scan(path, kind, size, mtime, ctime, mode, uid, gid, case_conflict, canonical_key, link_target)
-     VALUES (@path, @kind, @size, @mtime, @ctime, @mode, @uid, @gid, @case_conflict, @canonical_key, @link_target)`,
+    `INSERT OR REPLACE INTO tmp_scan(path, kind, size, mtime, ctime, mode, uid, gid, mode_hash, case_conflict, canonical_key, link_target)
+     VALUES (@path, @kind, @size, @mtime, @ctime, @mode, @uid, @gid, @mode_hash, @case_conflict, @canonical_key, @link_target)`,
   );
   const insertTmpScanBatch = db.transaction(
     (
@@ -1100,6 +1101,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       mode: number;
       uid: number | null;
       gid: number | null;
+      mode_hash: string;
       case_conflict: number;
       canonical_key: string | null;
       link_target: string | null;
@@ -1118,6 +1120,13 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
       }
+      const modeHashVal = (() => {
+        let h = modeHash(st.mode);
+        if (numericIds) {
+          h += `|${st.uid}:${st.gid}`;
+        }
+        return h;
+      })();
       const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
       const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
       const isDir = entry.dirent.isDirectory();
@@ -1155,6 +1164,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           mode: st.mode,
           uid: numericIds ? st.uid : null,
           gid: numericIds ? st.gid : null,
+          mode_hash: modeHashVal,
           case_conflict: caseConflict,
           canonical_key: canonicalKey,
           link_target: null,
@@ -1169,6 +1179,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           mode: st.mode,
           uid: numericIds ? st.uid : null,
           gid: numericIds ? st.gid : null,
+          mode_hash: modeHashVal,
           case_conflict: caseConflict,
           canonical_key: canonicalKey,
           link_target: null,
@@ -1187,6 +1198,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           mode: st.mode,
           uid: numericIds ? st.uid : null,
           gid: numericIds ? st.gid : null,
+          mode_hash: modeHashVal,
           case_conflict: caseConflict,
           canonical_key: canonicalKey,
           link_target: target,
@@ -1210,13 +1222,140 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     clearInterval(periodicFlush);
 
     // ------------------------------
-    // Post-process scanned rows via tmp_scan + existing nodes
+    // ------------------------------
+    // Post-process scanned rows via tmp_scan + existing nodes (directories only)
+    // ------------------------------
+
+    // stream only the CHANGED rows from the database, so we can process them
+    // using O(1) RAM, instead of O(N) RAM, and also only processed what changed,
+    // not everything.
+    const dirStmt = db.prepare(
+      `SELECT
+         s.path,
+         s.mtime,
+         s.ctime,
+         s.mode_hash,
+         COALESCE(s.case_conflict, 0) AS case_conflict,
+         s.canonical_key,
+         n.hash AS prev_hash,
+         n.deleted AS prev_deleted,
+         n.updated AS prev_updated,
+         n.copy_pending AS prev_copy_pending,
+         n.change_start AS prev_change_start,
+         n.change_end AS prev_change_end,
+         n.confirmed_at AS prev_confirmed_at,
+         n.canonical_key AS prev_canonical_key,
+         n.case_conflict AS prev_case_conflict
+       FROM tmp_scan s
+       LEFT JOIN nodes n ON n.path = s.path AND n.kind = 'd'
+      WHERE s.kind = 'd'
+        AND (
+          n.hash IS NULL
+          OR n.deleted = 1
+          OR n.hash <> s.mode_hash
+          OR COALESCE(n.case_conflict, 0) <> COALESCE(s.case_conflict, 0)
+          OR COALESCE(n.canonical_key, '') <> COALESCE(s.canonical_key, '')
+          OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+        )`,
+    );
+
+    for (const row of dirStmt.iterate() as Iterable<{
+      path: string;
+      mtime: number;
+      ctime: number;
+      mode_hash: string;
+      case_conflict: number;
+      canonical_key: string | null;
+      prev_hash: string | null;
+      prev_deleted: number | null;
+      prev_updated: number | null;
+      prev_copy_pending: number | null;
+      prev_change_start: number | null;
+      prev_change_end: number | null;
+      prev_confirmed_at: number | null;
+      prev_canonical_key: string | null;
+      prev_case_conflict: number | null;
+    }>) {
+      const rpath = row.path;
+      const hash = row.mode_hash;
+
+      const dirChanged =
+        !row.prev_hash || row.prev_deleted === 1 || row.prev_hash !== hash;
+      const dirCaseSame = (row.prev_case_conflict ?? 0) === row.case_conflict;
+      const dirCanonicalSame =
+        (row.prev_canonical_key ?? null) === (row.canonical_key ?? null);
+
+      const op_ts = dirChanged
+        ? scanTick
+        : (row.prev_updated ?? row.mtime ?? scanTick);
+
+      const dirBaseline = lowerBoundFor(row.prev_confirmed_at ?? null);
+      const dirChangeStart = dirChanged
+        ? dirBaseline
+        : (row.prev_change_start ?? row.prev_change_end ?? dirBaseline);
+      const dirChangeEnd = dirChanged ? op_ts : (row.prev_change_end ?? op_ts);
+      const dirConfirmedAt = dirChanged
+        ? op_ts
+        : (row.prev_confirmed_at ?? op_ts);
+      let dirCopyPending = row.prev_copy_pending ?? 0;
+      if (dirCopyPending === 1) dirCopyPending = 2;
+
+      const nextDirCanonical =
+        row.canonical_key ?? row.prev_canonical_key ?? null;
+
+      const unchangedDir =
+        row.prev_hash &&
+        row.prev_deleted === 0 &&
+        !dirChanged &&
+        (dirCopyPending === 0 || dirCopyPending === 2) &&
+        dirCaseSame &&
+        dirCanonicalSame &&
+        !emitDelta;
+      if (!unchangedDir) {
+        dirMetaBuf.push({
+          path: rpath,
+          ctime: row.ctime,
+          mtime: row.mtime,
+          hash,
+          scan_id,
+          op_ts,
+          change_start: dirChangeStart,
+          change_end: dirChangeEnd,
+          confirmed_at: dirConfirmedAt,
+          copy_pending: dirCopyPending,
+          case_conflict: row.case_conflict,
+          canonical_key: nextDirCanonical,
+        });
+        if (dirMetaBuf.length >= DB_BATCH_SIZE) {
+          applyDirBatch(dirMetaBuf);
+          dirMetaBuf.length = 0;
+        }
+
+        if (emitDelta && dirChanged) {
+          emitObj({
+            kind: "dir",
+            path: rpath,
+            ctime: row.ctime,
+            mtime: row.mtime,
+            hash,
+            op_ts,
+            deleted: 0,
+            case_conflict: row.case_conflict || undefined,
+            canonical_key: nextDirCanonical ?? undefined,
+          });
+        }
+      }
+    }
+
+    // ------------------------------
+    // Files and links still use existing per-entry logic (to be migrated next)
     // ------------------------------
     const existingRows = db
       .prepare(
         `SELECT path, kind, size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict, link_target
            FROM nodes
-          WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}`,
+          WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}
+            AND kind IN ('f','l')`,
       )
       .all() as {
       path: string;
@@ -1243,7 +1382,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const scannedRows = db
       .prepare(
         `SELECT path, kind, size, mtime, ctime, mode, uid, gid, case_conflict, canonical_key, link_target
-           FROM tmp_scan`,
+           FROM tmp_scan
+          WHERE kind IN ('f','l')`,
       )
       .all() as {
       path: string;
@@ -1265,83 +1405,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const prevKind = prev?.kind ?? null;
       const canonicalKey = row.canonical_key ?? null;
       const caseConflict = row.case_conflict ?? 0;
-
-      if (row.kind === "d") {
-        const prevDir = prevKind === "d" ? prev : undefined;
-        let hash = modeHash(row.mode);
-        if (numericIds && row.uid !== null && row.gid !== null) {
-          hash += `|${row.uid}:${row.gid}`;
-        }
-
-        const dirChanged =
-          !prevDir || prevDir.deleted === 1 || prevDir.hash !== hash;
-        const dirCaseSame = (prevDir?.case_conflict ?? 0) === caseConflict;
-        const dirCanonicalSame =
-          (prevDir?.canonical_key ?? null) === canonicalKey;
-
-        const op_ts = dirChanged
-          ? scanTick
-          : (prevDir?.updated ?? prevDir?.mtime ?? row.mtime);
-
-        const dirBaseline = lowerBoundFor(prevDir?.confirmed_at ?? null);
-        const dirChangeStart = dirChanged
-          ? dirBaseline
-          : (prevDir?.change_start ?? prevDir?.change_end ?? dirBaseline);
-        const dirChangeEnd = dirChanged
-          ? op_ts
-          : (prevDir?.change_end ?? op_ts);
-        const dirConfirmedAt = dirChanged
-          ? op_ts
-          : (prevDir?.confirmed_at ?? op_ts);
-        let dirCopyPending = prevDir?.copy_pending ?? 0;
-        if (dirCopyPending === 1) dirCopyPending = 2;
-
-        const nextDirCanonical = canonicalKey ?? prevDir?.canonical_key ?? null;
-
-        const unchangedDir =
-          prevDir &&
-          !dirChanged &&
-          (dirCopyPending === 0 || dirCopyPending === 2) &&
-          dirCaseSame &&
-          dirCanonicalSame &&
-          !emitDelta;
-        if (!unchangedDir) {
-          dirMetaBuf.push({
-            path: rpath,
-            ctime: row.ctime,
-            mtime: row.mtime,
-            hash,
-            scan_id,
-            op_ts,
-            change_start: dirChangeStart,
-            change_end: dirChangeEnd,
-            confirmed_at: dirConfirmedAt,
-            copy_pending: dirCopyPending,
-            case_conflict: caseConflict,
-            canonical_key: nextDirCanonical,
-          });
-          if (dirMetaBuf.length >= DB_BATCH_SIZE) {
-            applyDirBatch(dirMetaBuf);
-            dirMetaBuf.length = 0;
-          }
-
-          if (emitDelta && dirChanged) {
-            emitObj({
-              kind: "dir",
-              path: rpath,
-              ctime: row.ctime,
-              mtime: row.mtime,
-              hash,
-              op_ts,
-              deleted: 0,
-              case_conflict: caseConflict || undefined,
-              canonical_key: nextDirCanonical ?? undefined,
-            });
-          }
-        }
-
-        continue;
-      }
 
       if (row.kind === "f") {
         const prevFile = prevKind === "f" ? prev : undefined;

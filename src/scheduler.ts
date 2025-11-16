@@ -943,9 +943,6 @@ export async function runScheduler({
         "--hash",
         hash,
       );
-      if (Math.random() <= 0.025) {
-        sshArgs.push("--vacuum");
-      }
       for (const pattern of params.ignoreRules)
         sshArgs.push("--ignore", pattern);
       if (numericIds) sshArgs.push("--numeric-ids");
