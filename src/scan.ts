@@ -1348,14 +1348,261 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     }
 
     // ------------------------------
-    // Files and links still use existing per-entry logic (to be migrated next)
+    // Files (streamed)
+    // ------------------------------
+    const fileStmt = db.prepare(
+      `SELECT
+         s.path,
+         s.size,
+         s.mtime,
+         s.ctime,
+         s.mode,
+         s.uid,
+         s.gid,
+         s.mode_hash,
+         COALESCE(s.case_conflict, 0) AS case_conflict,
+         s.canonical_key,
+         n.hashed_ctime AS prev_hashed_ctime,
+         n.hash AS prev_hash,
+         n.size AS prev_size,
+         n.mtime AS prev_mtime,
+         n.ctime AS prev_ctime,
+         n.deleted AS prev_deleted,
+         n.updated AS prev_updated,
+         n.hash_pending AS prev_hash_pending,
+         n.copy_pending AS prev_copy_pending,
+         n.change_start AS prev_change_start,
+         n.change_end AS prev_change_end,
+         n.confirmed_at AS prev_confirmed_at,
+         n.canonical_key AS prev_canonical_key,
+         n.case_conflict AS prev_case_conflict
+       FROM tmp_scan s
+       LEFT JOIN nodes n ON n.path = s.path AND n.kind = 'f'
+      WHERE s.kind = 'f'
+        AND (
+          n.hash IS NULL
+          OR n.deleted = 1
+          OR n.hashed_ctime <> s.ctime
+          OR n.size <> s.size
+          OR n.mtime <> s.mtime
+          OR n.hash_pending = 1
+          OR COALESCE(n.case_conflict, 0) <> COALESCE(s.case_conflict, 0)
+          OR COALESCE(n.canonical_key, '') <> COALESCE(s.canonical_key, '')
+          OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+          OR (n.hash IS NOT NULL AND n.hash <> s.mode_hash)
+        )`,
+    );
+
+    for (const row of fileStmt.iterate() as Iterable<{
+      path: string;
+      size: number;
+      mtime: number;
+      ctime: number;
+      mode: number;
+      uid: number | null;
+      gid: number | null;
+      mode_hash: string;
+      case_conflict: number;
+      canonical_key: string | null;
+      prev_hashed_ctime: number | null;
+      prev_hash: string | null;
+      prev_size: number | null;
+      prev_mtime: number | null;
+      prev_ctime: number | null;
+      prev_deleted: number | null;
+      prev_updated: number | null;
+      prev_hash_pending: number | null;
+      prev_copy_pending: number | null;
+      prev_change_start: number | null;
+      prev_change_end: number | null;
+      prev_confirmed_at: number | null;
+      prev_canonical_key: string | null;
+      prev_case_conflict: number | null;
+    }>) {
+      const rpath = row.path;
+      const canonicalKey = row.canonical_key ?? null;
+      const caseConflict = row.case_conflict ?? 0;
+      const prevFile =
+        row.prev_hash === null &&
+        row.prev_deleted === null &&
+        row.prev_size === null &&
+        row.prev_mtime === null &&
+        row.prev_ctime === null
+          ? undefined
+          : {
+              hash: row.prev_hash ?? null,
+              hashed_ctime: row.prev_hashed_ctime ?? null,
+              size: row.prev_size ?? 0,
+              mtime: row.prev_mtime ?? row.mtime,
+              ctime: row.prev_ctime ?? row.ctime,
+              deleted: row.prev_deleted ?? 0,
+              updated: row.prev_updated ?? null,
+              hash_pending: row.prev_hash_pending ?? 0,
+              copy_pending: row.prev_copy_pending ?? 0,
+              change_start: row.prev_change_start ?? null,
+              change_end: row.prev_change_end ?? null,
+              confirmed_at: row.prev_confirmed_at ?? null,
+              canonical_key: row.prev_canonical_key ?? null,
+              case_conflict: row.prev_case_conflict ?? 0,
+            };
+      const copyPending = prevFile?.copy_pending ?? 0;
+      const size = row.size;
+      const modeHex = row.mode_hash;
+
+      const resurrecting = prevFile?.deleted === 1;
+      let needsHash =
+        resurrecting ||
+        !prevFile ||
+        prevFile.hashed_ctime !== row.ctime ||
+        prevFile.size !== size ||
+        prevFile.mtime !== row.mtime;
+      if (!needsHash && prevFile?.hash) {
+        const meta = parseHashMeta(prevFile.hash);
+        if (meta.modeHash && meta.modeHash !== modeHex) {
+          needsHash = true;
+        } else if (
+          numericIds &&
+          meta.uid !== undefined &&
+          meta.gid !== undefined &&
+          (meta.uid !== row.uid || meta.gid !== row.gid)
+        ) {
+          needsHash = true;
+        }
+      }
+      const copyMetaMatches =
+        !!prevFile &&
+        prevFile.deleted === 0 &&
+        !!prevFile.hash &&
+        prevFile.size === size &&
+        prevFile.mtime === row.mtime;
+      if (copyPending > 0 && copyMetaMatches) {
+        needsHash = false;
+      }
+
+      const op_ts =
+        needsHash || !prevFile
+          ? scanTick
+          : (prevFile?.updated ?? prevFile?.mtime ?? row.mtime);
+
+      const rowConfirmed = prevFile?.confirmed_at ?? null;
+      const baseline = lowerBoundFor(rowConfirmed);
+      let changeStart = prevFile?.change_start ?? null;
+      let changeEnd = prevFile?.change_end ?? null;
+      let pendingStart: number | null = null;
+      if (!prevFile) {
+        changeStart = baseline;
+        changeEnd = needsHash ? null : op_ts;
+      } else if (needsHash) {
+        pendingStart = baseline;
+        changeStart = baseline;
+        changeEnd = null;
+      } else {
+        changeStart = prevFile.change_start ?? baseline;
+        changeEnd = prevFile.change_end ?? prevFile.change_start ?? baseline;
+      }
+      const hashPendingFlag = needsHash ? 1 : (prevFile?.hash_pending ?? 0);
+      let copyPendingState = copyPending;
+      if (!needsHash && copyPendingState === 1) {
+        copyPendingState = 2;
+      }
+      const confirmedValue =
+        !needsHash && copyPendingState > 0 ? scanTick : (rowConfirmed ?? null);
+
+      const nextCanonicalKey = canonicalKey ?? prevFile?.canonical_key ?? null;
+      const caseConflictSame = (prevFile?.case_conflict ?? 0) === caseConflict;
+      const canonicalSame =
+        (prevFile?.canonical_key ?? null) === nextCanonicalKey;
+
+      const unchangedFile =
+        !!prevFile &&
+        prevFile.deleted === 0 &&
+        !needsHash &&
+        hashPendingFlag === 0 &&
+        (copyPendingState === 0 || copyPendingState === 2) &&
+        prevFile.size === size &&
+        prevFile.mtime === row.mtime &&
+        prevFile.ctime === row.ctime &&
+        canonicalSame &&
+        caseConflictSame &&
+        !emitDelta;
+      if (!unchangedFile) {
+        metaBuf.push({
+          path: rpath,
+          size,
+          ctime: row.ctime,
+          mtime: row.mtime,
+          op_ts,
+          hash: prevFile?.hash ?? null,
+          last_seen: scan_id,
+          hashed_ctime: prevFile?.hashed_ctime ?? null,
+          hash_pending: hashPendingFlag,
+          change_start: changeStart,
+          change_end: changeEnd,
+          pending_start: pendingStart,
+          confirmed_at: confirmedValue,
+          copy_pending: copyPendingState,
+          case_conflict: caseConflict,
+          canonical_key: nextCanonicalKey,
+        });
+
+        if (metaBuf.length >= DB_BATCH_SIZE) {
+          applyMetaBatch(metaBuf);
+          metaBuf.length = 0;
+        }
+      }
+
+      if (needsHash) {
+        const absPath = path.join(absRoot, rpath);
+        pendingMeta.set(absPath, {
+          size,
+          ctime: row.ctime,
+          mtime: row.mtime,
+          updated: op_ts,
+          change_start: changeStart,
+          change_end: changeEnd,
+          pending_start: pendingStart,
+          confirmed_at: rowConfirmed ?? null,
+          copy_pending: prevFile?.copy_pending ?? 0,
+          case_conflict: caseConflict,
+          canonical_key: nextCanonicalKey,
+        });
+        hashJobs.push({
+          path: absPath,
+          size,
+          ctime: row.ctime,
+          mtime: row.mtime,
+        });
+        hashTotalFiles += 1;
+        hashTotalBytes += size;
+        fileNodeMeta.set(rpath, {
+          size,
+          mtime: row.mtime,
+          ctime: row.ctime,
+          last_seen: scan_id,
+          updated: op_ts,
+          prevUpdated: prevFile?.updated ?? null,
+          prevHash: prevFile?.hash ?? null,
+          hash_pending: 1,
+          change_start: changeStart,
+          change_end: changeEnd,
+          pending_start: pendingStart,
+          confirmed_at: rowConfirmed ?? null,
+          copy_pending: prevFile?.copy_pending ?? 0,
+          case_conflict: caseConflict,
+          canonical_key: nextCanonicalKey,
+        });
+      }
+    }
+
+    // ------------------------------
+    // Links still use existing per-entry logic (to be migrated next)
     // ------------------------------
     const existingRows = db
       .prepare(
         `SELECT path, kind, size, ctime, mtime, hashed_ctime, hash, updated, deleted, hash_pending, copy_pending, change_start, change_end, confirmed_at, canonical_key, case_conflict, link_target
            FROM nodes
           WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}
-            AND kind IN ('f','l')`,
+            AND kind = 'l'`,
       )
       .all() as {
       path: string;
@@ -1383,7 +1630,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       .prepare(
         `SELECT path, kind, size, mtime, ctime, mode, uid, gid, case_conflict, canonical_key, link_target
            FROM tmp_scan
-          WHERE kind IN ('f','l')`,
+          WHERE kind = 'l'`,
       )
       .all() as {
       path: string;
