@@ -26,7 +26,9 @@ export class Database extends DatabaseSync {
 const PRAGMAS = [
   "busy_timeout = 5000",
   "auto_vacuum = INCREMENTAL",
-  "temp_store = MEMORY",
+  // Use default temp storage (usually on-disk) so large temp tables
+  // like tmp_scan don't consume heap memory.
+  "temp_store = DEFAULT",
   "journal_mode = WAL",
   "synchronous = NORMAL",
 ];
@@ -107,7 +109,8 @@ export function getBaseDb(dbPath: string): Database {
   const db = new Database(dbPath);
   db.pragma("busy_timeout = 5000");
   db.pragma("auto_vacuum = INCREMENTAL");
-  db.pragma("temp_store = MEMORY");
+  // Keep temp tables off-heap for the base DB as well.
+  db.pragma("temp_store = DEFAULT");
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
 
