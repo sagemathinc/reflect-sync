@@ -1,18 +1,19 @@
-# WARNING:
+# WARNING: NOT READY FOR PRODUCTION USE
 
-November 3, 2025 Status:  **THIS IS NOT READY FOR PRODUCTION USE. IT MAY DELETE YOUR FILES!   WE WOULD LIKE FEEDBACK.**
+November 15, 2025 Status: **THIS IS NOT READY FOR PRODUCTION USE. IT MAY DELETE YOUR FILES.**
 
 # ReflectSync
 
-Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Designed for very large trees, low RAM, and observability.
+ReflectSync is a fast bidirectional file synchronization program built on rsync and sqlite, designed for very large trees, low RAM, and observability.
 
 - **Rsync transport** \(latest rsync recommended\)
 - **SQLite indexes** per side \(alpha / beta\) \+ base snapshot for true 3\-way merges
 - **Incremental scans** with content hashes only when needed \(based on ctime\)
 - **Realtime restricted cycles** for hot files \(debounced, safe on partial edits\)
 - **SSH\-friendly**: stream remote deltas over stdin
+- **Supports mixed filesystem types**: that collapse case and normalize unicode (macos, windows)
 - **Copy on Write (optional):** when both roots are local you can opt into `cp --reflink` copies for fast COW transfers (`reflect create … --enable-reflink`); the flag is off by default so nothing attempts reflinks automatically.
-- **Very Lightweight:** The reflect-sync npm package is under 100KB compressed (about 300KB uncompressed), including all dependencies.
+- **Lightweight:** The reflect-sync bundled Javascript distribution is about 100KB compressed, including all dependencies.
 
 > Requires **Node.js 22+**.
 
@@ -20,25 +21,31 @@ Fast, rsync-powered two-way file sync with SQLite metadata and optional SSH. Des
 
 Open source under the MIT License.
 
-## STATUS: **NOT** SAFE
+## Details
 
-That said, all the planned functionality is implemented and there is a test suite.  Also, this is a relatively lightweight program built on sqlite, rsync and nodejs, and those three components rock solid.   **Do NOT trust valuable data to reflect without extensive backups.**
+All the planned major functionality is now implemented and there is a test suite.
 
-Some differences compared to Mutagen, and todos:
+### Some differences compared to Mutagen:
 
-- the command line options are different:  it's inspired by Mutagen, not a drop in replacement
-- conflicts are resolved using **last write wins** \(clocks are sync'd\), with close ties resolved by one chosen side always wins. There is no manual resolution mode.
-- we use Sha\-256 by default, but also support "sha1", "sha1", "sha512", "blake2b512", "blake2s256", "sha3\\-256", and "sha3\\-512".
-- only supports macos and linux \(currently\)
-- timestamps and permissions are fully preserved, whereas Mutagen mostly ignores them
-- edit sessions after you create them
+Reflect-sync is inspired by Mutagen, but is also completely new, with a different implementation stack and CLI options.  In particular:
+
+- the command line options are different: it's  not a drop in replacement
+- conflicts are resolved using **last write wins** using logical clock intervals. There is no manual conflict resolution mode.
+- we use Sha\-256 by default, but also support "sha1", "sha512", "blake2b512", "blake2s256", "sha3-256", and "sha3-512".
+- only tested on macos and linux \(currently\)
+- timestamps, permissions, uid and gid are fully preserved, whereas Mutagen mostly ignores them
+- edit properties of sessions after you create them
 - query for total bytes under a directory, recent files, etc.
 
 See [Design Details](./DESIGN.md).
 
 ### Consistency guarantees & tradeoffs
 
-Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re-sampling the destination signature (hash + metadata). This gives a practical guarantee: **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** In other words, corruption can only occur if both sides are actively editing the same path (a true conflict). The default merge strategy is **`last-write-wins`**, which compares our logical observation time (`updated`) on each side. This means a freshly-deleted or recreated file always beats an old mtime-preserved copy even if the filesystem timestamp didn’t change. If you truly want to compare raw mtimes, you can opt into the legacy `lww-mtime` strategy.
+Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re\-sampling the destination signature \(hash \+ metadata\). This gives a practical guarantee: 
+
+> **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** 
+
+In other words, corruption can only occur if both sides are actively editing the same path \(a true conflict\). The default merge strategy is **`last-write-wins`**, which compares our logical observation time \(`updated`\) on each side. This means a freshly\-deleted or recreated file always beats an old mtime\-preserved copy even if the filesystem timestamp didn’t change. If you truly want to compare raw mtimes, you can opt into the legacy `lww-mtime` strategy.
 
 Tradeoffs:
 
@@ -56,6 +63,17 @@ Deletions are tracked just like edits: every scan/watch event updates the `nodes
 - If during a single cycle one side edits the file and the other side deletes it, the with last write wins and our conservative choice of mtime, the edit will be preserved.
 
 Practically this means Reflect will only resurrect a deleted file if the other side really does have a newer, surviving edit, which is the safest interpretation for automated sync.
+
+### Filesystem case sensitivity & Unicode normalization
+
+Every session probes both roots so the scheduler knows whether each filesystem collapses case or normalizes Unicode. Local probes use direct syscalls; remote probes invoke `reflect fs-capabilities --root <dir>` over SSH before the first scan. That information drives the canonicalization logic:
+
+- Each row stores a canonical key (case-folded, NFC) and the first variant we ever saw becomes the canonical winner. Other variants are marked with `case_conflict = 1` and never copied into a destination that can’t represent them.
+- Merge planning automatically filters out lossy operations. Instead of deleting data on the sensitive side, Reflect logs the conflict and leaves the non-canonical subtree untouched.
+- Canonical decisions persist in `nodes.canonical_key`, so the same winner survives future scans even if directory enumeration order changes.
+- You can inspect a root manually with `reflect fs-capabilities --root /path` (and remotely via `ssh host reflect fs-capabilities …`) when debugging cross-platform deployments.
+
+This mirrors Mutagen’s probing/scanning guidance and prevents case-insensitive or Unicode-normalizing destinations (e.g., default macOS volumes) from clobbering distinct case variants that originated on case-sensitive filesystems.
 
 ---
 
@@ -210,7 +228,7 @@ The monitor command allows you to watch a potentially huge nested directory with
 
 ## How Reflect works \(short\)
 
-- **Scan** writes metadata \(`path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime`\) to SQLite. Hashing is streamed and parallelized; we only rehash when `ctime` changed since the last hash.  _Scanning never crosses filesytem boundaries._
+- **Scan** writes metadata \(`path, size, ctime, mtime, hash, deleted, last_seen, hashed_ctime`\) to SQLite. Hashing is streamed and parallelized; we only rehash when `ctime` changed since the last hash. _Scanning never crosses filesytem boundaries._
 - **Merge** builds temp tables with _relative_ paths, computes the 3\-way plan \(changed A, changed B, deleted A/B, resolve conflicts by `--prefer`\), then feeds rsync with NUL\-separated `--files-from` lists.
 - **Scheduler**:
   - shallow root watchers \+ bounded deep “hot” watchers \(recently touched subtrees\),
