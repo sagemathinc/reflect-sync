@@ -93,6 +93,9 @@ export function autoIgnoreForRoot(root: string, syncHome: string): string[] {
   };
   const rootAbs = path.resolve(resolveTilde(root));
   if (syncHome) {
+    // this is supposed to exclude the sync config files and database if
+    // they happen to be inside of the sync root, since syncing them could
+    // lead to a feedback loop.
     const homeAbs = path.resolve(syncHome);
     const rel = path.relative(rootAbs, homeAbs);
     if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {

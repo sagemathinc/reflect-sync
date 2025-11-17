@@ -76,25 +76,11 @@ function relR(root: string, abs: string): string {
   return r;
 }
 const parentDir = (r: string) => norm(path.posix.dirname(r || ".")); // "" -> "."
-const isPlainRel = (input: string) => {
-  if (!input) return false;
-  // Normalize separators and collapse "./" components.
-  // Treat backslashes as separators only on Windows; on POSIX they are valid characters.
-  const normalized = path.posix.normalize(
-    path.sep === "\\" ? input.replace(/\\/g, "/") : input,
-  );
-  if (
-    !normalized ||
-    normalized === "." ||
-    normalized.startsWith("/") ||
-    normalized.startsWith("../")
-  ) {
-    return false;
-  }
-  // Reject traversal segments that survive normalization.
-  return normalized
-    .split("/")
-    .every((seg) => seg && seg !== "." && seg !== "..");
+
+export const isPlainRel = (r: string) => {
+  if (!r || r.startsWith("/") || r.startsWith("../")) return false;
+  // Disallow traversal segments like "." or ".." but allow literal ".." inside names.
+  return r.split("/").every((seg) => seg && seg !== "." && seg !== "..");
 };
 
 function emitEvent(abs: string, ev: HotWatchEvent, root: string) {
