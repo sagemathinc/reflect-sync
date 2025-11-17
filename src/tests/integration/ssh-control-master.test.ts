@@ -20,7 +20,7 @@ describeIfSsh("ssh control master resilience", () => {
   });
 
   // TODO: flaky so we are skipping this for now
-  it.skip("recovers when the ssh control master is killed", async () => {
+  it("recovers when the ssh control master is killed", async () => {
     session = await createTestSession({
       hot: false,
       full: false,
@@ -53,10 +53,23 @@ describeIfSsh("ssh control master resilience", () => {
       firstReady.id,
     );
     expect(restarted.id).toBeGreaterThan(firstReady.id);
+    expect(restarted.pid).toBeGreaterThan(0);
+    expect(restarted.pid).not.toEqual(firstReady.pid);
 
     await expect(
       session.alpha.readFile("control-channel.txt", "utf8"),
     ).resolves.toBe("beta after master restart");
+
+    await session.beta.writeFile(
+      "control-channel.txt",
+      "beta after master restart - second write",
+      "utf8",
+    );
+    await session.sync();
+
+    await expect(
+      session.alpha.readFile("control-channel.txt", "utf8"),
+    ).resolves.toBe("beta after master restart - second write");
   });
 });
 

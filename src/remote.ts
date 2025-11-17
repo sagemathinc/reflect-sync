@@ -53,28 +53,21 @@ const remoteCacheKey = (host: string, port?: number) =>
 // timeout in seconds for any ssh command attempt
 const TIMEOUT = 5;
 
-function withControlPath(args: string[]): string[] {
-  const controlPath = process.env.REFLECT_SSH_CONTROL_PATH;
-  if (!controlPath) return args;
-  return ["-S", controlPath, ...args];
-}
-
 async function runSshCommand(
   host: string,
   args: string[],
   log: RemoteLogOptions | undefined,
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
-  const finalArgs = withControlPath(args);
-  log?.logger?.debug(`ssh exec: ssh ${argsJoin(finalArgs)}`, {
+  log?.logger?.debug(`ssh exec: ssh ${argsJoin(args)}`, {
     host,
     label: what,
   });
-  //if (log?.verbose) console.log("$ ssh", argsJoin(finalArgs));
+  //if (log?.verbose) console.log("$ ssh", argsJoin(args));
   let stdout = "",
     stderr = "";
   await new Promise<void>((resolve, reject) => {
-    const p = spawn("ssh", finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
     p.stdout!.on("data", (c) => (stdout += c));
     p.stderr!.on("data", (c) => (stderr += c));
     p.once("exit", (c) =>
@@ -82,7 +75,7 @@ async function runSshCommand(
         ? resolve()
         : reject(
             new Error(
-              `${what ?? argsJoin(finalArgs)} failed on ${host} (exit ${c}) -- ${stderr}`,
+              `${what ?? argsJoin(args)} failed on ${host} (exit ${c}) -- ${stderr}`,
             ),
           ),
     );
@@ -97,14 +90,29 @@ async function ssh(
   log: RemoteLogOptions | undefined,
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
+  const controlPath = process.env.REFLECT_SSH_CONTROL_PATH;
   let attempt = 0;
+  let useControl = Boolean(controlPath);
   while (true) {
+    const finalArgs =
+      useControl && controlPath ? ["-S", controlPath, ...args] : args;
     try {
-      return await runSshCommand(host, args, log, what);
+      return await runSshCommand(host, finalArgs, log, what);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err ?? "");
       if (attempt === 0 && (await maybeRestartSshControl(message))) {
         attempt += 1;
+        // After restart, prefer to try with the control path again if available.
+        useControl = Boolean(process.env.REFLECT_SSH_CONTROL_PATH);
+        continue;
+      }
+      if (useControl) {
+        useControl = false;
+        attempt += 1;
+        log?.logger?.debug?.("ssh exec retry without control master", {
+          host,
+          label: what,
+        });
         continue;
       }
       throw err;
@@ -131,6 +139,8 @@ export async function remoteWhich(
   if (!noCache && remoteWhichCache.has(key)) {
     return remoteWhichCache.get(key)!;
   }
+  const extraPath = "$HOME/bin:$HOME/.local/bin";
+  const lookup = `PATH="$PATH:${extraPath}"; command -v ${shellEscape(cmd)} || which ${shellEscape(cmd)}`;
   const args = [
     "-o",
     `ConnectTimeout=${TIMEOUT}`,
@@ -142,7 +152,7 @@ export async function remoteWhich(
   if (port != null) {
     args.push("-p", String(port));
   }
-  args.push(host, `sh -lc 'which ${cmd}'`);
+  args.push(host, `sh -lc ${shellEscape(lookup)}`);
   const logCfg: RemoteLogOptions | undefined =
     logger || verbose ? { logger, verbose } : undefined;
   let { stdout: out } = await ssh(host, args, logCfg, `which ${cmd}`);

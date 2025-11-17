@@ -607,20 +607,52 @@ async function runScheduler0({
 
   const restartControlMaster = async (): Promise<boolean> => {
     if (controlMasterDisabled || !remoteControlHost) return false;
+    if (sshControl) {
+      try {
+        await sshControl.close();
+      } catch {}
+    }
+    sshControl = null;
+    sshControlPath = undefined;
+    delete process.env.REFLECT_SSH_CONTROL_PATH;
     try {
-      await sshControl?.close();
-    } catch {}
-    const handle = await createControlMaster();
-    if (!handle) return false;
-    sshControl = handle;
-    sshControlPath = handle.socketPath;
-    process.env.REFLECT_SSH_CONTROL_PATH = sshControlPath;
-    logger?.info("ssh control master restarted", {
+      const handle = await createControlMaster();
+      if (!handle) return false;
+      sshControl = handle;
+      sshControlPath = handle.socketPath;
+      process.env.REFLECT_SSH_CONTROL_PATH = sshControlPath;
+      logger?.info("ssh control master restarted", {
+        host: remoteControlHost,
+        socket: sshControlPath,
+      });
+      logControlMasterReady();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const controlMasterAlive = () => {
+    const pid = sshControl?.pid;
+    if (!pid) return true;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const ensureControlMaster = async () => {
+    if (controlMasterDisabled || !remoteControlHost) return;
+    if (!sshControl) return;
+    if (controlMasterAlive()) return;
+    logger?.info("ssh control master missing; restarting", {
       host: remoteControlHost,
-      socket: sshControlPath,
+      socket: sshControl.socketPath,
+      pid: sshControl.pid ?? null,
     });
-    logControlMasterReady();
-    return true;
+    await restartControlMaster();
   };
 
   if (!controlMasterDisabled && remoteControlHost) {
@@ -1976,6 +2008,9 @@ async function runScheduler0({
     skipped: boolean;
     failed?: boolean;
   }> {
+    if (sshControl) {
+      await ensureControlMaster();
+    }
     try {
       await ensureRootsExist();
     } catch (err) {
