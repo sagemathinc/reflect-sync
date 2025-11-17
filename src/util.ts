@@ -22,6 +22,10 @@ export async function deleteRelativePaths(
   for (const rel of unique) {
     const abs = path.join(root, rel);
     try {
+      // ATTENTION: DO NOT CHANGE THIS TO recursive:true!
+      // recursive removes was causing surprise side effects
+      // sometimes, which was one of the biggest bugs in
+      // reflect-sync (which took me days of hard work to find).
       await fsRm(abs, { recursive: false, force: false });
       deleted.push(rel);
     } catch (err: any) {
