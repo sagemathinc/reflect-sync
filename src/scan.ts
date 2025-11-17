@@ -8,6 +8,7 @@ import {
   stat as statAsync,
   lstat as lstatAsync,
 } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import { getDb } from "./db.js";
 import type { FilesystemCapabilities } from "./fs-capabilities.js";
 import { Command, Option } from "commander";
@@ -151,6 +152,15 @@ export function configureScanCommand(
       "--case-conflict-normalizes-unicode",
       "(internal) when marking conflicts, fold names as if the counterpart root normalized Unicode",
       false,
+    )
+    .option(
+      "--probe-only",
+      "stats-only probe that writes a tmp table of paths/mtimes for higher-level callers",
+      false,
+    )
+    .option(
+      "--probe-mtime-window <ms>",
+      "when probing, select only entries newer than now - window (ms) into tmp_recent",
     );
 }
 
@@ -173,8 +183,8 @@ function createProfiler(enabled: boolean): ScanProfiler {
     marks.push({
       label,
       t: Date.now() - t0,
-      rss: mem.rss/1e6,
-      heap: mem.heapUsed/1e6,
+      rss: mem.rss / 1e6,
+      heap: mem.heapUsed / 1e6,
     });
   };
   return {
@@ -189,7 +199,9 @@ function createProfiler(enabled: boolean): ScanProfiler {
 }
 
 function createGcConfig(): ScanGcConfig {
-  const enabled = process.env.REFLECT_SCAN_FORCE_GC === "1" && typeof global.gc === "function";
+  const enabled =
+    process.env.REFLECT_SCAN_FORCE_GC === "1" &&
+    typeof global.gc === "function";
   return { enabled };
 }
 
@@ -215,6 +227,8 @@ type ScanOptions = {
   filesystemCaps?: FilesystemCapabilities;
   markCaseConflicts?: boolean;
   caseConflictCaps?: FilesystemCapabilities;
+  probeOnly?: boolean;
+  probeMtimeWindowMs?: number;
 };
 
 type ScanProfiler = {
@@ -247,6 +261,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     filesystemCaps: providedCaps,
     markCaseConflicts = false,
     caseConflictCaps: caseConflictCapsOverride,
+    probeOnly = false,
+    probeMtimeWindowMs,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const profiler = createProfiler(process.env.REFLECT_SCAN_PROFILE === "1");
@@ -273,10 +289,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       ? caseConflictCapsOverride
       : filesystemCaps;
   const canonicalEnabled =
-    markCaseConflicts ||
-    canonicalCaps.caseInsensitive ||
-    canonicalCaps.normalizesUnicode;
-  const trackCanonicalConflicts = markCaseConflicts && canonicalEnabled;
+    !probeOnly &&
+    (markCaseConflicts ||
+      canonicalCaps.caseInsensitive ||
+      canonicalCaps.normalizesUnicode);
+  const trackCanonicalConflicts =
+    !probeOnly && markCaseConflicts && canonicalEnabled;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -353,7 +371,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     );
   }
 
-  const CPU_COUNT = Math.min(os.cpus().length, 8);
+  const CPU_COUNT = probeOnly ? 0 : Math.min(os.cpus().length, 8);
   const DB_BATCH_SIZE = 2_000;
   const DISPATCH_BATCH = 256; // files per worker message
   const HASH_PROGRESS_INTERVAL_MS = Number(
@@ -526,6 +544,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       canonical_key TEXT,
       link_target TEXT
     ) WITHOUT ROWID;
+
+    DROP TABLE IF EXISTS tmp_probe;
+    CREATE TEMP TABLE tmp_probe(
+      path TEXT PRIMARY KEY,
+      mtime REAL
+    ) WITHOUT ROWID;
   `);
   const insertTmpScan = db.prepare(
     `INSERT OR REPLACE INTO tmp_scan(path, kind, size, mtime, ctime, mode, uid, gid, mode_hash, case_conflict, canonical_key, link_target)
@@ -551,6 +575,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         insertTmpScan.run(row);
       }
     },
+  );
+
+  const insertTmpProbe = db.prepare(
+    `INSERT OR REPLACE INTO tmp_probe(path, mtime) VALUES (?, ?)`,
   );
 
   if (pruneMs) {
@@ -812,9 +840,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     | { path: string; error: string }
     | { path: string; skipped: true };
 
-  const workers = Array.from({ length: CPU_COUNT }, () =>
-    makeHashWorker(HASH_ALG),
-  );
+  const workers =
+    CPU_COUNT > 0
+      ? Array.from({ length: CPU_COUNT }, () => makeHashWorker(HASH_ALG))
+      : [];
 
   const freeWorkers: Worker[] = [...workers];
   const waiters: Array<() => void> = [];
@@ -1100,7 +1129,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           stats?: Stats;
         }>)
       : walk.walkStream(absRoot, {
-          stats: true,
+          stats: false, // it is much faster to directly call lstatSync
           followSymbolicLinks: false,
           concurrency: 128,
           // Do not descend into ignored or out-of-scope directories
@@ -1154,6 +1183,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       canonical_key: string | null;
       link_target: string | null;
     }[] = [];
+    const tmpProbeBuf: { path: string; mtime: number }[] = [];
     const hashJobs: Job[] = [];
 
     for await (const entry of stream as AsyncIterable<{
@@ -1164,10 +1194,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       const abs = entry.path; // absolute on filesystem
       const rpath = toRel(abs, absRoot);
       // Prefer the walker-provided lstat; only hit the filesystem if missing.
-      const st = entry.stats ?? (await lstatAsync(abs));
+      const st = entry.stats ?? lstatSync(abs);
       if (rootDevice !== undefined && st.dev !== rootDevice) {
         continue;
       }
+
+      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
+      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
+      if (probeOnly) {
+        tmpProbeBuf.push({ path: rpath, mtime });
+        if (tmpProbeBuf.length >= DB_BATCH_SIZE) {
+          for (const row of tmpProbeBuf)
+            insertTmpProbe.run(row.path, row.mtime);
+          tmpProbeBuf.length = 0;
+        }
+        continue;
+      }
+
+      const isDir = entry.dirent.isDirectory();
       const modeHashVal = (() => {
         let h = modeHash(st.mode);
         if (numericIds) {
@@ -1175,9 +1219,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         }
         return h;
       })();
-      const ctime = (st as any).ctimeMs ?? st.ctime.getTime();
-      const mtime = (st as any).mtimeMs ?? st.mtime.getTime();
-      const isDir = entry.dirent.isDirectory();
       let caseConflict = 0;
       const canonicalKey =
         canonicalTracker.tracking && canonicalTracker.enabled
@@ -1255,9 +1296,14 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         continue;
       }
 
+      tmpProbeBuf.push({ path: rpath, mtime });
       if (tmpScanBuf.length >= DB_BATCH_SIZE) {
         insertTmpScanBatch(tmpScanBuf);
         tmpScanBuf.length = 0;
+      }
+      if (tmpProbeBuf.length >= DB_BATCH_SIZE) {
+        for (const row of tmpProbeBuf) insertTmpProbe.run(row.path, row.mtime);
+        tmpProbeBuf.length = 0;
       }
     }
 
@@ -1266,12 +1312,26 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       insertTmpScanBatch(tmpScanBuf);
       tmpScanBuf.length = 0;
     }
+    if (tmpProbeBuf.length) {
+      for (const row of tmpProbeBuf) insertTmpProbe.run(row.path, row.mtime);
+      tmpProbeBuf.length = 0;
+    }
 
     clearInterval(periodicFlush);
     profiler.mark("walker-done");
     if (gcConfig.enabled && typeof global.gc === "function") {
       global.gc();
       profiler.mark("gc-after-walk");
+    }
+
+    if (probeOnly) {
+      if (probeMtimeWindowMs && Number.isFinite(probeMtimeWindowMs)) {
+        const cutoff = Date.now() - Number(probeMtimeWindowMs);
+        db.prepare(`DELETE FROM tmp_probe WHERE mtime < ?`).run(cutoff);
+      }
+      profiler.mark("probe-only-complete");
+      await Promise.all(workers.map((w) => w.terminate()));
+      return;
     }
 
     // ------------------------------
@@ -1974,6 +2034,8 @@ cliEntrypoint<
     restrictedPath: string[];
     caseConflictCaseInsensitive?: boolean;
     caseConflictNormalizesUnicode?: boolean;
+    probeOnly?: boolean;
+    probeMtimeWindow?: string;
   }
 >(
   import.meta.url,
@@ -2004,11 +2066,19 @@ cliEntrypoint<
             normalizesUnicode: !!caseConflictNormalizesUnicode,
           }
         : undefined;
+    const probeMtimeWindowMs =
+      options.probeMtimeWindow !== undefined &&
+      options.probeMtimeWindow !== null &&
+      options.probeMtimeWindow !== ""
+        ? Number(options.probeMtimeWindow)
+        : undefined;
     await runScan({
       ...rest,
       logicalClock: clock,
       scanTick: scanTickOverride,
       caseConflictCaps,
+      probeOnly: options.probeOnly,
+      probeMtimeWindowMs,
     });
   },
   {
