@@ -87,7 +87,6 @@ export async function estimateLinkClass(
     throw Error(`cannot connect to ${host}`);
   }
   const dt = Date.now() - t0;
-  console.log({ dt });
   if (dt < 750) return "fast";
   if (dt < TIMEOUT - 100) return "medium";
   return "slow";

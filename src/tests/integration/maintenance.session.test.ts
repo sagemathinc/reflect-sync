@@ -84,4 +84,3 @@ describe("sync maintenance options", () => {
     }
   });
 });
-

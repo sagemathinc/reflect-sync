@@ -321,7 +321,46 @@ const DEFAULT_SESSION_ECHO_LEVEL = parseLogLevel(
 const LOCAL_VERSION = pkg.version;
 
 // ---------- core (exported) ----------
-export async function runScheduler({
+export async function runScheduler(opts: SchedulerOptions): Promise<void> {
+  let sessionLogHandle: SessionLoggerHandle | null = null;
+  let logger: Logger | null = null;
+  const { logger: providedLogger, sessionDb, sessionId } = opts;
+
+  try {
+    if (providedLogger) {
+      logger = providedLogger.child("scheduler");
+    } else if (sessionDb && Number.isFinite(sessionId)) {
+      sessionLogHandle = createSessionLogger(sessionDb, sessionId!, {
+        scope: "scheduler",
+        echoLevel: DEFAULT_SESSION_ECHO_LEVEL,
+      });
+      logger = sessionLogHandle.logger;
+    } else {
+      logger = new ConsoleLogger(DEFAULT_CONSOLE_LEVEL).child("scheduler");
+    }
+
+    await runScheduler0({ ...opts, logger });
+  } catch (err) {
+    const msg = `Failed to start scheduler: ${err}`;
+    logger?.error(msg);
+    console.error(msg, opts.logger);
+    if (sessionDb && Number.isFinite(sessionId)) {
+      const sessionWriter = SessionWriter.open(sessionDb, sessionId!);
+      sessionWriter.error(msg);
+      sessionWriter.stop();
+    }
+    throw err;
+  } finally {
+    if (sessionLogHandle) {
+      try {
+        sessionLogHandle.close();
+      } catch {}
+      sessionLogHandle = null;
+    }
+  }
+}
+
+async function runScheduler0({
   alphaRoot,
   betaRoot,
   alphaDb,
@@ -345,7 +384,7 @@ export async function runScheduler({
   ignoreRules: schedulerIgnoreRules,
   sessionDb,
   sessionId,
-  logger: providedLogger,
+  logger,
   mergeStrategy = null,
 }: SchedulerOptions): Promise<void> {
   if (!alphaRoot || !betaRoot)
@@ -360,25 +399,11 @@ export async function runScheduler({
     );
   }
 
-  let sessionLogHandle: SessionLoggerHandle | null = null;
-  let logger: Logger;
-  if (providedLogger) {
-    logger = providedLogger.child("scheduler");
-  } else if (sessionDb && Number.isFinite(sessionId)) {
-    sessionLogHandle = createSessionLogger(sessionDb, sessionId!, {
-      scope: "scheduler",
-      echoLevel: DEFAULT_SESSION_ECHO_LEVEL,
-    });
-    logger = sessionLogHandle.logger;
-  } else {
-    logger = new ConsoleLogger(DEFAULT_CONSOLE_LEVEL).child("scheduler");
-  }
-
   const scopeCache = new Map<string, Logger>();
   const scoped = (scope: string) => {
     const existing = scopeCache.get(scope);
     if (existing) return existing;
-    const next = logger.child(scope);
+    const next = logger!.child(scope);
     scopeCache.set(scope, next);
     return next;
   };
@@ -1104,7 +1129,7 @@ export async function runScheduler({
       await maybeRestartSshControl(stderr);
     }
     if (!result.ok && !retried && (await maybeRestartSshControl(stderr))) {
-      logger.info("retrying remote scan after restarting ssh control master", {
+      logger?.info("retrying remote scan after restarting ssh control master", {
         host: params.host,
       });
       return await sshScanIntoMirror(params, true);
@@ -1582,7 +1607,7 @@ export async function runScheduler({
           ready.push(rel);
         } else {
           pending.push(rel);
-          logger.debug("deferring unstable path", {
+          logger?.debug("deferring unstable path", {
             side,
             path: rel,
             reason: res.reason ?? "unstable",
@@ -1678,7 +1703,7 @@ export async function runScheduler({
       const readyAlpha = alphaPartition.ready;
       const readyBeta = betaPartition.ready;
       if (!readyAlpha.length && !readyBeta.length) {
-        logger.debug("waiting for files to settle", {
+        logger?.debug("waiting for files to settle", {
           pendingAlpha: alphaPartition.pending.length,
           pendingBeta: betaPartition.pending.length,
         });
@@ -2636,12 +2661,6 @@ export async function runScheduler({
     try {
       db.close();
     } catch {}
-    if (sessionLogHandle) {
-      try {
-        sessionLogHandle.close();
-      } catch {}
-      sessionLogHandle = null;
-    }
 
     if (hbTimer) {
       clearInterval(hbTimer);

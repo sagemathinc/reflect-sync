@@ -43,12 +43,11 @@ async function runSshCommand(
   what: string | undefined,
 ): Promise<{ stdout: string; stderr: string }> {
   const finalArgs = withControlPath(args);
-  log?.logger?.debug("ssh exec", {
+  log?.logger?.debug(`ssh exec: ssh ${argsJoin(finalArgs)}`, {
     host,
-    command: argsJoin(finalArgs),
     label: what,
   });
-  if (log?.verbose) console.log("$ ssh", argsJoin(finalArgs));
+  //if (log?.verbose) console.log("$ ssh", argsJoin(finalArgs));
   let stdout = "",
     stderr = "";
   await new Promise<void>((resolve, reject) => {

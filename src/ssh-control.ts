@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "./logger.js";
+import { argsJoin } from "./remote.js";
 
 export type SshControlOptions = {
   host: string;
@@ -17,7 +18,8 @@ export type SshControlHandle = {
   pid: number | null;
 };
 
-async function runSsh(args: string[]): Promise<void> {
+async function runSsh(args: string[], logger?: Logger): Promise<void> {
+  logger?.debug(`ssh-control: ssh ${argsJoin(args)}`);
   await new Promise<void>((resolve, reject) => {
     const p = spawn("ssh", args, { stdio: "ignore" });
     p.once("error", reject);
@@ -30,7 +32,9 @@ async function runSsh(args: string[]): Promise<void> {
 
 async function runSshWithOutput(
   args: string[],
+  logger?: Logger,
 ): Promise<{ stdout: string; stderr: string }> {
+  logger?.debug(`ssh control: ssh ${argsJoin(args)}`);
   let stdout = "";
   let stderr = "";
   await new Promise<void>((resolve, reject) => {
@@ -93,14 +97,17 @@ export async function createSshControlMaster(
   const persistSeconds = Math.max(5, opts.persistSeconds ?? 60);
 
   try {
-    await runSsh([
-      ...baseArgs,
-      "-M",
-      "-o",
-      `ControlPersist=${persistSeconds}s`,
-      "-fNT",
-      host,
-    ]);
+    await runSsh(
+      [
+        ...baseArgs,
+        "-M",
+        "-o",
+        `ControlPersist=${persistSeconds}s`,
+        "-fNT",
+        host,
+      ],
+      opts.logger,
+    );
   } catch (err) {
     opts.logger?.warn?.("ssh control master unavailable", {
       error: err instanceof Error ? err.message : String(err),
@@ -112,11 +119,16 @@ export async function createSshControlMaster(
     return null;
   }
 
-  const pid = await getControlMasterPid(socketPath, host, opts.port);
+  const pid = await getControlMasterPid(
+    socketPath,
+    host,
+    opts.port,
+    opts.logger,
+  );
 
   const close = async () => {
     try {
-      await runSsh([...baseArgs, "-O", "exit", host]);
+      await runSsh([...baseArgs, "-O", "exit", host], opts.logger);
     } catch (err) {
       opts.logger?.debug?.("ssh control master exit failed", {
         error: err instanceof Error ? err.message : String(err),
@@ -135,11 +147,12 @@ async function getControlMasterPid(
   socketPath: string,
   host: string,
   port?: number | null,
+  logger?: Logger,
 ): Promise<number | null> {
   try {
     const args = buildBaseArgs(socketPath, port);
     args.push("-O", "check", host);
-    const { stdout, stderr } = await runSshWithOutput(args);
+    const { stdout, stderr } = await runSshWithOutput(args, logger);
     const text = `${stdout}\n${stderr}`;
     const match = text.match(/pid=(\d+)/i);
     return match ? Number(match[1]) : null;
