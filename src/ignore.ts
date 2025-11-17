@@ -1,4 +1,4 @@
-import ignore from "ignore";
+import fastIgnore from "fast-ignore";
 import path from "node:path";
 import os from "node:os";
 import { RSYNC_TEMP_DIR } from "./rsync.js";
@@ -12,10 +12,6 @@ export type Ignorer = {
 export function normalizeR(r: string): string {
   // rpath normalization; keep empty "" for root-safe callers
   return r.replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-function toDirPattern(pattern: string): string {
-  return pattern.endsWith("/") ? pattern : `${pattern}/`;
 }
 
 function cleanPattern(pattern: string): string | null {
@@ -70,14 +66,19 @@ export function collectIgnoreOption(
 }
 
 export function createIgnorer(patterns: string[] = []): Ignorer {
-  const ig = ignore();
   const cleaned = normalizeIgnorePatterns(patterns);
-  if (cleaned.length) {
-    ig.add(cleaned);
+  if (!cleaned.length) {
+    return {
+      ignoresFile: () => false,
+      ignoresDir: () => false,
+    };
   }
+  // fast-ignore takes a single string containing newline-separated rules
+  const matcher = fastIgnore(cleaned.join("\n"));
+  const check = (r: string) => matcher(normalizeR(r));
   return {
-    ignoresFile: (r) => ig.ignores(normalizeR(r)),
-    ignoresDir: (r) => ig.ignores(toDirPattern(normalizeR(r))),
+    ignoresFile: check,
+    ignoresDir: check,
   };
 }
 

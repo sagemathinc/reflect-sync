@@ -1140,6 +1140,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           },
           // Do not emit ignored or out-of-scope entries
           entryFilter: (e) => {
+            // [ ] TODO: since we don't have stats, we MUST
+            // descend then filter later.  Also add to the docs
+            // that we strongly recommend users add --ignore to
+            // ignore crossing fs boundaries as an optimization...
             const st = (e as { stats?: Stats }).stats;
             if (rootDevice !== undefined && st && st.dev !== rootDevice) {
               return false;

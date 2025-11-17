@@ -11,8 +11,9 @@ module.exports = {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
+  transformIgnorePatterns: ['/node_modules/(?!.*(fast-ignore|string-escape-regex|grammex))'],
   transform: {
-    '^.+\\.ts$': [
+    '^.+\\.[tj]s$': [
       'ts-jest',
       {
         useESM: true,
@@ -20,6 +21,7 @@ module.exports = {
           module: 'ESNext',
           target: 'ES2022',
           sourceMap: true,
+          allowJs: true,
         },
       },
     ],
