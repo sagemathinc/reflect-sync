@@ -152,13 +152,7 @@ export function configureScanCommand(
       "--case-conflict-normalizes-unicode",
       "(internal) when marking conflicts, fold names as if the counterpart root normalized Unicode",
       false,
-    )
-    .option(
-      "--probe-only",
-      "stats-only probe that writes a tmp table of paths/mtimes for higher-level callers",
-      false,
     );
-  // probe-mtime-window removed; probe uses full light table
 }
 
 function buildProgram(): Command {
@@ -224,7 +218,6 @@ type ScanOptions = {
   filesystemCaps?: FilesystemCapabilities;
   markCaseConflicts?: boolean;
   caseConflictCaps?: FilesystemCapabilities;
-  probeOnly?: boolean;
 };
 
 type ScanProfiler = {
@@ -257,7 +250,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     filesystemCaps: providedCaps,
     markCaseConflicts = false,
     caseConflictCaps: caseConflictCapsOverride,
-    probeOnly = false,
   } = opts;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const profiler = createProfiler(process.env.REFLECT_SCAN_PROFILE === "1");
@@ -284,12 +276,10 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       ? caseConflictCapsOverride
       : filesystemCaps;
   const canonicalEnabled =
-    !probeOnly &&
-    (markCaseConflicts ||
-      canonicalCaps.caseInsensitive ||
-      canonicalCaps.normalizesUnicode);
-  const trackCanonicalConflicts =
-    !probeOnly && markCaseConflicts && canonicalEnabled;
+    markCaseConflicts ||
+    canonicalCaps.caseInsensitive ||
+    canonicalCaps.normalizesUnicode;
+  const trackCanonicalConflicts = markCaseConflicts && canonicalEnabled;
   let rootDevice: number | undefined;
   try {
     const rootStat = await statAsync(absRoot);
@@ -366,7 +356,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     );
   }
 
-  const CPU_COUNT = probeOnly ? 0 : Math.min(os.cpus().length, 8);
+  const CPU_COUNT = Math.min(os.cpus().length, 8);
   const DB_BATCH_SIZE = 2_000;
   const DISPATCH_BATCH = 256; // files per worker message
   const HASH_PROGRESS_INTERVAL_MS = Number(
@@ -1294,10 +1284,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         })(tmpLightBuf);
         tmpLightBuf.length = 0;
       }
-
-      if (probeOnly) {
-        continue;
-      }
     }
 
     if (tmpLightBuf.length) {
@@ -1312,11 +1298,6 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     if (gcConfig.enabled && typeof global.gc === "function") {
       global.gc();
       profiler.mark("gc-after-walk");
-    }
-    if (probeOnly) {
-      profiler.mark("probe-only-complete");
-      await Promise.all(workers.map((w) => w.terminate()));
-      return;
     }
 
     // Build tmp_scan only for paths that differ from existing nodes.
@@ -2134,7 +2115,6 @@ cliEntrypoint<
     restrictedPath: string[];
     caseConflictCaseInsensitive?: boolean;
     caseConflictNormalizesUnicode?: boolean;
-    probeOnly?: boolean;
   }
 >(
   import.meta.url,
@@ -2170,7 +2150,6 @@ cliEntrypoint<
       logicalClock: clock,
       scanTick: scanTickOverride,
       caseConflictCaps,
-      probeOnly: options.probeOnly,
     });
   },
   {
