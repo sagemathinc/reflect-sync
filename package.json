@@ -23,7 +23,7 @@
     "bundle": "pnpm install && pnpm build && pnpm bundle:worker && pnpm bundle:main && chmod +x dist/bundle.mjs",
     "sea:blob": "node --experimental-sea-config sea.config.json",
     "sea:inject": "cp $(command -v node) dist/reflect-sync && pnpx postject dist/reflect-sync NODE_SEA_BLOB dist/reflect-sync.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 2>&1 | sed -E '/find string offset for section name/d'",
-    "sea": "pnpm bundle && pnpm sea:blob && pnpm sea:inject",
+    "sea": "pnpm bundle && pnpm sea:blob && pnpm sea:inject && xz -k dist/reflect-sync",
     "sea:deno": "deno compile --allow-all --output dist/reflect-sync dist/cli.js",
     "sea:deno:aarch64-linux": "deno compile --allow-all --output dist/reflect-sync-aarch64-linux --target aarch64-unknown-linux-gnu dist/cli.js",
     "sea:deno:x86_64-linux": "deno compile --allow-all --output dist/reflect-sync-x86_64-linux --target x86_64-unknown-linux-gnu dist/cli.js",

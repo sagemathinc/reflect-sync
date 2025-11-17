@@ -3,6 +3,7 @@
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import * as walk from "@nodelib/fs.walk";
+import fs from "node:fs";
 import {
   readlink,
   stat as statAsync,
@@ -98,6 +99,11 @@ export function configureScanCommand(
     .option(
       "--emit-all",
       "with --emit-delta, replay every node before live output",
+      false,
+    )
+    .option(
+      "--hash-all",
+      "force hashing of all files (ignore mtime/ctime/size heuristics)",
       false,
     )
     .addOption(
@@ -204,6 +210,7 @@ type ScanOptions = {
   hash: string;
   root: string;
   vacuum?: boolean;
+  forceHashAll?: boolean;
   pruneMs?: string;
   numericIds?: boolean;
   logger?: Logger;
@@ -237,6 +244,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     emitAll,
     hash,
     vacuum,
+    forceHashAll,
     pruneMs,
     numericIds,
     logger: providedLogger,
@@ -304,6 +312,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     includeAncestors([...restrictedPaths, ...stdinRestricted]),
   );
   const hasRestrictions = restrictedPathList.length > 0;
+  const forceHashAllFlag = forceHashAll ? 1 : 0;
 
   // Rows written to DB always use rpaths now.
   type Row = {
@@ -1312,7 +1321,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
          COALESCE(l.case_conflict, 0) AS case_conflict,
          l.canonical_key
        FROM tmp_light l
-       LEFT JOIN nodes n ON n.path = l.path
+      LEFT JOIN nodes n ON n.path = l.path
       WHERE
         (
           l.kind = 'd' AND (
@@ -1325,7 +1334,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         )
         OR (
           l.kind = 'f' AND (
-            n.path IS NULL OR n.kind <> 'f' OR n.deleted = 1
+            @forceHashAll = 1
+            OR n.path IS NULL OR n.kind <> 'f' OR n.deleted = 1
             OR n.hashed_ctime <> l.ctime
             OR n.size <> l.size
             OR n.mtime <> l.mtime
@@ -1348,7 +1358,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         )`,
     );
 
-    for (const row of candidatesStmt.iterate() as Iterable<{
+    for (const row of candidatesStmt.iterate({
+      forceHashAll: forceHashAllFlag,
+    }) as Iterable<{
       path: string;
       kind: NodeKind;
       size: number;
@@ -1573,9 +1585,11 @@ export async function runScan(opts: ScanOptions): Promise<void> {
          n.canonical_key AS prev_canonical_key,
          n.case_conflict AS prev_case_conflict
        FROM tmp_scan s
-       LEFT JOIN nodes n ON n.path = s.path AND n.kind = 'f'
+      LEFT JOIN nodes n ON n.path = s.path AND n.kind = 'f'
       WHERE s.kind = 'f'
         AND (
+          @forceHashAll = 1
+          OR
           n.hash IS NULL
           OR n.deleted = 1
           OR n.hashed_ctime <> s.ctime
@@ -1588,7 +1602,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         )`,
     );
 
-    for (const row of fileStmt.iterate() as Iterable<{
+    for (const row of fileStmt.iterate({
+      forceHashAll: forceHashAllFlag,
+    }) as Iterable<{
       path: string;
       size: number;
       mtime: number;
@@ -1646,6 +1662,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
       const resurrecting = prevFile?.deleted === 1;
       let needsHash =
+        forceHashAll ||
         resurrecting ||
         !prevFile ||
         prevFile.hashed_ctime !== row.ctime ||
@@ -2045,7 +2062,24 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     await Promise.all(workers.map((w) => w.terminate()));
 
     if (vacuum) {
+      let before: number | null = null;
+      let after: number | null = null;
+      try {
+        before = fs.statSync(DB_PATH).size;
+      } catch {}
       db.exec("vacuum");
+      try {
+        after = fs.statSync(DB_PATH).size;
+      } catch {}
+      if (before != null && after != null) {
+        logger.info("vacuum", {
+          beforeBytes: before,
+          afterBytes: after,
+          savingsBytes: Math.max(0, before - after),
+        });
+      } else {
+        logger.info("vacuum", { status: "done" });
+      }
     }
 
     if (!hasRestrictions) {

@@ -139,6 +139,8 @@ type CycleOptions = {
   restrictedPaths?: string[];
   restrictedPathsFromStdin?: boolean;
   label?: string;
+  vacuum?: boolean;
+  forceHashAll?: boolean;
 };
 
 // ---------- CLI ----------
@@ -915,6 +917,8 @@ export async function runScheduler({
       scanTick?: number;
       markCaseConflicts?: boolean;
       caseConflictCaps?: FilesystemCapabilities;
+      vacuum?: boolean;
+      forceHashAll?: boolean;
     },
     retried = false,
   ): Promise<{
@@ -955,6 +959,12 @@ export async function runScheduler({
       if (!lastRemoteScan.ok && lastRemoteScan.whenOk) {
         sshArgs.push("--emit-since-age");
         sshArgs.push(`${Date.now() - lastRemoteScan.whenOk}`);
+      }
+      if (params.forceHashAll) {
+        sshArgs.push("--hash-all");
+      }
+      if (params.vacuum) {
+        sshArgs.push("--vacuum");
       }
       const stdinPaths = params.restrictedPathsStdin
         ? (params.restrictedPaths ?? [])
@@ -1959,6 +1969,8 @@ export async function runScheduler({
       includeAncestors(options.restrictedPaths ?? []),
     );
     const hasRestrictions = restrictedPaths.length > 0;
+    const forceHashAll = options.forceHashAll ?? false;
+    const vacuumRequested = options.vacuum ?? false;
 
     running = true;
     const t0 = Date.now();
@@ -1990,6 +2002,8 @@ export async function runScheduler({
             scanTick,
             markCaseConflicts: markAlphaConflicts,
             caseConflictCaps: alphaCaseConflictCaps,
+            forceHashAll,
+            vacuum: vacuumRequested,
           });
         } catch (err) {
           invalidateRemoteRoot("alpha");
@@ -2003,7 +2017,8 @@ export async function runScheduler({
               db: alphaDb,
               emitDelta: false,
               hash,
-              vacuum: false,
+              vacuum: vacuumRequested,
+              forceHashAll,
               numericIds,
               logger: scanLogger,
               ignoreRules,
@@ -2070,6 +2085,8 @@ export async function runScheduler({
             scanTick,
             markCaseConflicts: markBetaConflicts,
             caseConflictCaps: betaCaseConflictCaps,
+            forceHashAll,
+            vacuum: vacuumRequested,
           });
         } catch (err) {
           invalidateRemoteRoot("beta");
@@ -2083,7 +2100,8 @@ export async function runScheduler({
               db: betaDb,
               emitDelta: false,
               hash,
-              vacuum: false,
+              vacuum: vacuumRequested,
+              forceHashAll,
               numericIds,
               logger: scanLogger,
               ignoreRules,
@@ -2386,16 +2404,19 @@ export async function runScheduler({
           executed = true;
           let attempt: number | undefined = undefined;
           let restrictedPaths: string[] | undefined = undefined;
+          let maintenance: { vacuum?: boolean; rehash?: boolean } | undefined;
           if (row.payload) {
             try {
               const parsed = JSON.parse(row.payload) as {
                 attempt?: number;
                 paths?: string[];
+                maintenance?: { vacuum?: boolean; rehash?: boolean };
               };
               if (typeof parsed.attempt === "number") {
                 attempt = parsed.attempt;
               }
               restrictedPaths = parsed.paths;
+              maintenance = parsed.maintenance;
             } catch {
               // ignore malformed payloads
             }
@@ -2415,9 +2436,14 @@ export async function runScheduler({
                   restrictedPaths,
                   restrictedPathsFromStdin: alphaIsRemote || betaIsRemote,
                   label: "hot",
+                  vacuum: maintenance?.vacuum,
+                  forceHashAll: maintenance?.rehash,
                 });
               } else {
-                status = await runCycle();
+                status = await runCycle({
+                  vacuum: maintenance?.vacuum,
+                  forceHashAll: maintenance?.rehash,
+                });
               }
               if (!status.skipped) {
                 break;

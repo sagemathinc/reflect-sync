@@ -123,9 +123,15 @@ function enqueueSyncCommand(
   sessionId: number,
   attempt: number,
   paths: string[] = [],
+  opts?: { maintenance?: { vacuum?: boolean; rehash?: boolean } },
 ): number {
   const ts = Date.now();
-  const payload = JSON.stringify({ requested_at: ts, attempt, paths });
+  const payload = JSON.stringify({
+    requested_at: ts,
+    attempt,
+    paths,
+    maintenance: opts?.maintenance,
+  });
   const info = db
     .prepare(
       `INSERT INTO session_commands(session_id, ts, cmd, payload, acked)
@@ -179,6 +185,7 @@ async function runSyncForSession(
   timeoutMs: number,
   progress: { enabled: boolean; json: boolean } | undefined,
   paths: string[],
+  maintenance?: { vacuum?: boolean; rehash?: boolean },
 ): Promise<number> {
   const sessionRow = resolveSessionRow(sessionDbPath, ref);
   if (!sessionRow) {
@@ -220,7 +227,9 @@ async function runSyncForSession(
     console.log(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
-    const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths);
+    const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths, {
+      maintenance,
+    });
     await touchCommandSignal(baseDbPath, signalLogger);
     await waitForCommandAck(db, sessionRow.id, cmdId, timeoutMs, progressState);
     if (progressState) {
@@ -328,6 +337,16 @@ export function registerSessionSync(sessionCmd: Command) {
       collectListOption,
       [] as string[],
     )
+    .option(
+      "--vacuum",
+      "vacuum session databases after sync completes successfully",
+      false,
+    )
+    .option(
+      "--rehash",
+      "force hashing of all files scanned during this sync (overrides mtime/size shortcuts)",
+      false,
+    )
     .option("--progress", "stream progress logs while syncing", false)
     .option("--json", "emit progress logs as JSON", false)
     .action(
@@ -340,6 +359,8 @@ export function registerSessionSync(sessionCmd: Command) {
           progress?: boolean;
           json?: boolean;
           path?: string[];
+          vacuum?: boolean;
+          rehash?: boolean;
         },
       ) => {
         const maxCycles = parsePositiveInt(opts.maxCycles, DEFAULT_MAX_CYCLES);
@@ -363,6 +384,7 @@ export function registerSessionSync(sessionCmd: Command) {
                 timeoutMs,
                 progressConfig,
                 opts.path ?? [],
+                { vacuum: !!opts.vacuum, rehash: !!opts.rehash },
               );
             } catch (err) {
               const message =

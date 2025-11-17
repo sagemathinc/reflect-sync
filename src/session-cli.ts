@@ -47,6 +47,8 @@ import { wait } from "./util.js";
 
 type StopResult = "stopped" | "failed" | "not-running";
 
+const DEFAULT_LOG_LINES = 2_500;
+
 const COLOR_OK =
   Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
 const CHECK_CHAR = "✓";
@@ -727,7 +729,10 @@ export function registerSessionCommands(program: Command) {
         }
         const id = row.id;
         const minLevel = parseLogLevelOption(opts.level);
-        const tail = clampPositive(opts.tail, opts.follow ? 100 : 10000);
+        const tail = clampPositive(
+          opts.tail,
+          opts.follow ? 100 : DEFAULT_LOG_LINES,
+        );
         const sinceTs =
           opts.since != null && Number.isFinite(Number(opts.since))
             ? Number(opts.since)
