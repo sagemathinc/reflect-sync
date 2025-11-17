@@ -1132,27 +1132,35 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           stats: false, // it is much faster to directly call lstatSync
           followSymbolicLinks: false,
           concurrency: 128,
-          // Do not descend into ignored or out-of-scope directories
-          deepFilter: (e) => {
-            if (!e.dirent.isDirectory()) return true;
-            const r = toRel(e.path, absRoot);
-            return !ig.ignoresDir(r);
-          },
-          // Do not emit ignored or out-of-scope entries
+          // We sometimes need an lstat in the filters (fs boundary check).
+          // Cache it on the entry so the main loop can reuse it.
           entryFilter: (e) => {
-            // [ ] TODO: since we don't have stats, we MUST
-            // descend then filter later.  Also add to the docs
-            // that we strongly recommend users add --ignore to
-            // ignore crossing fs boundaries as an optimization...
-            const st = (e as { stats?: Stats }).stats;
-            if (rootDevice !== undefined && st && st.dev !== rootDevice) {
-              return false;
+            const getStat = () => {
+              if ((e as { stats?: Stats }).stats)
+                return (e as { stats?: Stats }).stats!;
+              const st = lstatSync(e.path);
+              (e as { stats?: Stats }).stats = st;
+              return st;
+            };
+            if (rootDevice !== undefined) {
+              const st = getStat();
+              if (st.dev !== rootDevice) return false;
             }
             const r = toRel(e.path, absRoot);
             if (e.dirent.isDirectory()) {
               return !ig.ignoresDir(r);
             }
             return !ig.ignoresFile(r);
+          },
+          // Do not descend into ignored or out-of-scope directories
+          deepFilter: (e) => {
+            if (!e.dirent.isDirectory()) return true;
+            if (rootDevice !== undefined) {
+              const st = (e as { stats?: Stats }).stats ?? lstatSync(e.path);
+              if (st.dev !== rootDevice) return false;
+            }
+            const r = toRel(e.path, absRoot);
+            return !ig.ignoresDir(r);
           },
           errorFilter: () => true,
         });
