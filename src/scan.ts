@@ -547,7 +547,9 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       size INTEGER,
       mtime REAL,
       ctime REAL,
-      mode_hash TEXT
+      mode_hash TEXT,
+      case_conflict INTEGER,
+      canonical_key TEXT
     ) WITHOUT ROWID;
   `);
   const insertTmpScan = db.prepare(
@@ -577,8 +579,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   );
 
   const insertTmpLight = db.prepare(
-    `INSERT OR REPLACE INTO tmp_light(path, kind, size, mtime, ctime, mode_hash)
-     VALUES (@path, @kind, @size, @mtime, @ctime, @mode_hash)`,
+    `INSERT OR REPLACE INTO tmp_light(path, kind, size, mtime, ctime, mode_hash, case_conflict, canonical_key)
+     VALUES (@path, @kind, @size, @mtime, @ctime, @mode_hash, @case_conflict, @canonical_key)`,
   );
 
   if (pruneMs) {
@@ -1138,12 +1140,17 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             const getStat = () => {
               if ((e as { stats?: Stats }).stats)
                 return (e as { stats?: Stats }).stats!;
-              const st = lstatSync(e.path);
-              (e as { stats?: Stats }).stats = st;
-              return st;
+              try {
+                const st = lstatSync(e.path);
+                (e as { stats?: Stats }).stats = st;
+                return st;
+              } catch {
+                return null;
+              }
             };
             if (rootDevice !== undefined) {
               const st = getStat();
+              if (!st) return false;
               if (st.dev !== rootDevice) return false;
             }
             const r = toRel(e.path, absRoot);
@@ -1156,7 +1163,18 @@ export async function runScan(opts: ScanOptions): Promise<void> {
           deepFilter: (e) => {
             if (!e.dirent.isDirectory()) return true;
             if (rootDevice !== undefined) {
-              const st = (e as { stats?: Stats }).stats ?? lstatSync(e.path);
+              const st =
+                (e as { stats?: Stats }).stats ??
+                (() => {
+                  try {
+                    const s = lstatSync(e.path);
+                    (e as { stats?: Stats }).stats = s;
+                    return s;
+                  } catch {
+                    return null;
+                  }
+                })();
+              if (!st) return false;
               if (st.dev !== rootDevice) return false;
             }
             const r = toRel(e.path, absRoot);
@@ -1202,6 +1220,8 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       mtime: number;
       ctime: number;
       mode_hash: string;
+      case_conflict: number;
+      canonical_key: string | null;
     }[] = [];
     const hashJobs: Job[] = [];
 
@@ -1257,88 +1277,29 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         canonicalTracker.markConflictDir(rpath);
       }
 
+      tmpLightBuf.push({
+        path: rpath,
+        kind: isDir ? "d" : entry.dirent.isSymbolicLink() ? "l" : "f",
+        size: isDir ? 0 : st.size,
+        mtime,
+        ctime,
+        mode_hash: modeHashVal,
+        case_conflict: caseConflict,
+        canonical_key: canonicalKey,
+      });
+
+      if (tmpLightBuf.length >= DB_BATCH_SIZE) {
+        db.transaction((rows) => {
+          for (const row of rows) insertTmpLight.run(row);
+        })(tmpLightBuf);
+        tmpLightBuf.length = 0;
+      }
+
       if (probeOnly) {
-        tmpLightBuf.push({
-          path: rpath,
-          kind: isDir ? "d" : entry.dirent.isSymbolicLink() ? "l" : "f",
-          size: isDir ? 0 : st.size,
-          mtime,
-          ctime,
-          mode_hash: modeHashVal,
-        });
-        if (tmpLightBuf.length >= DB_BATCH_SIZE) {
-          db.transaction((rows) => {
-            for (const row of rows) insertTmpLight.run(row);
-          })(tmpLightBuf);
-          tmpLightBuf.length = 0;
-        }
         continue;
-      }
-
-      if (isDir) {
-        tmpScanBuf.push({
-          path: rpath,
-          kind: "d",
-          size: 0,
-          mtime,
-          ctime,
-          mode: st.mode,
-          uid: numericIds ? st.uid : null,
-          gid: numericIds ? st.gid : null,
-          mode_hash: modeHashVal,
-          case_conflict: caseConflict,
-          canonical_key: canonicalKey,
-          link_target: null,
-        });
-      } else if (entry.dirent.isFile()) {
-        tmpScanBuf.push({
-          path: rpath,
-          kind: "f",
-          size: st.size,
-          mtime,
-          ctime,
-          mode: st.mode,
-          uid: numericIds ? st.uid : null,
-          gid: numericIds ? st.gid : null,
-          mode_hash: modeHashVal,
-          case_conflict: caseConflict,
-          canonical_key: canonicalKey,
-          link_target: null,
-        });
-      } else if (entry.dirent.isSymbolicLink()) {
-        let target = "";
-        try {
-          target = await readlink(abs);
-        } catch {}
-        tmpScanBuf.push({
-          path: rpath,
-          kind: "l",
-          size: st.size,
-          mtime,
-          ctime,
-          mode: st.mode,
-          uid: numericIds ? st.uid : null,
-          gid: numericIds ? st.gid : null,
-          mode_hash: modeHashVal,
-          case_conflict: caseConflict,
-          canonical_key: canonicalKey,
-          link_target: target,
-        });
-      } else {
-        continue;
-      }
-
-      if (tmpScanBuf.length >= DB_BATCH_SIZE) {
-        insertTmpScanBatch(tmpScanBuf);
-        tmpScanBuf.length = 0;
       }
     }
 
-    // Flush remaining tmp_scan rows
-    if (tmpScanBuf.length) {
-      insertTmpScanBatch(tmpScanBuf);
-      tmpScanBuf.length = 0;
-    }
     if (tmpLightBuf.length) {
       db.transaction((rows) => {
         for (const row of rows) insertTmpLight.run(row);
@@ -1357,6 +1318,121 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       await Promise.all(workers.map((w) => w.terminate()));
       return;
     }
+
+    // Build tmp_scan only for paths that differ from existing nodes.
+    const candidatesStmt = db.prepare(
+      `SELECT
+         l.path,
+         l.kind,
+         l.size,
+         l.mtime,
+         l.ctime,
+         l.mode_hash,
+         COALESCE(l.case_conflict, 0) AS case_conflict,
+         l.canonical_key
+       FROM tmp_light l
+       LEFT JOIN nodes n ON n.path = l.path
+      WHERE
+        (
+          l.kind = 'd' AND (
+            n.path IS NULL OR n.kind <> 'd' OR n.deleted = 1
+            OR n.hash IS NULL OR n.hash <> l.mode_hash
+            OR COALESCE(n.case_conflict, 0) <> COALESCE(l.case_conflict, 0)
+            OR COALESCE(n.canonical_key, '') <> COALESCE(l.canonical_key, '')
+            OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+          )
+        )
+        OR (
+          l.kind = 'f' AND (
+            n.path IS NULL OR n.kind <> 'f' OR n.deleted = 1
+            OR n.hashed_ctime <> l.ctime
+            OR n.size <> l.size
+            OR n.mtime <> l.mtime
+            OR n.hash_pending = 1
+            OR n.hash IS NULL
+            OR COALESCE(n.case_conflict, 0) <> COALESCE(l.case_conflict, 0)
+            OR COALESCE(n.canonical_key, '') <> COALESCE(l.canonical_key, '')
+            OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+          )
+        )
+        OR (
+          l.kind = 'l' AND (
+            n.path IS NULL OR n.kind <> 'l' OR n.deleted = 1
+            OR n.ctime <> l.ctime
+            OR n.mtime <> l.mtime
+            OR COALESCE(n.case_conflict, 0) <> COALESCE(l.case_conflict, 0)
+            OR COALESCE(n.canonical_key, '') <> COALESCE(l.canonical_key, '')
+            OR COALESCE(n.copy_pending, 0) NOT IN (0, 2)
+          )
+        )`,
+    );
+
+    for (const row of candidatesStmt.iterate() as Iterable<{
+      path: string;
+      kind: NodeKind;
+      size: number;
+      mtime: number;
+      ctime: number;
+      mode_hash: string;
+      case_conflict: number;
+      canonical_key: string | null;
+    }>) {
+      const abs = path.join(absRoot, row.path);
+      let st: Stats;
+      try {
+        st = lstatSync(abs);
+      } catch {
+        // Vanished between passes; let deletion logic handle it.
+        continue;
+      }
+      const modeHashVal = (() => {
+        let h = modeHash(st.mode);
+        if (numericIds) {
+          h += `|${st.uid}:${st.gid}`;
+        }
+        return h;
+      })();
+      let link_target: string | null = null;
+      if (st.isSymbolicLink()) {
+        try {
+          link_target = await readlink(abs);
+        } catch {
+          link_target = null;
+        }
+      }
+      const kindGuess = st.isDirectory()
+        ? "d"
+        : st.isSymbolicLink()
+          ? "l"
+          : st.isFile()
+            ? "f"
+            : null;
+      if (!kindGuess) continue;
+      const kind: NodeKind = kindGuess;
+      tmpScanBuf.push({
+        path: row.path,
+        kind,
+        size: kind === "d" ? 0 : st.size,
+        mtime: (st as any).mtimeMs ?? st.mtime.getTime(),
+        ctime: (st as any).ctimeMs ?? st.ctime.getTime(),
+        mode: st.mode,
+        uid: numericIds ? st.uid : null,
+        gid: numericIds ? st.gid : null,
+        mode_hash: modeHashVal,
+        case_conflict: row.case_conflict ?? 0,
+        canonical_key: row.canonical_key ?? null,
+        link_target,
+      });
+      if (tmpScanBuf.length >= DB_BATCH_SIZE) {
+        insertTmpScanBatch(tmpScanBuf);
+        tmpScanBuf.length = 0;
+      }
+    }
+    if (tmpScanBuf.length) {
+      insertTmpScanBatch(tmpScanBuf);
+      tmpScanBuf.length = 0;
+    }
+    profiler.mark("candidates-processed");
 
     // ------------------------------
     // ------------------------------
@@ -1927,7 +2003,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     // Update last_seen for everything we observed this scan.
     db.prepare(
-      `UPDATE nodes SET last_seen = @scan WHERE path IN (SELECT path FROM tmp_scan)${restrictedClause}`,
+      `UPDATE nodes SET last_seen = @scan WHERE path IN (SELECT path FROM tmp_light)${restrictedClause}`,
     ).run({ scan: scan_id });
 
     // Compute deletions (anything not seen this pass and not already deleted)
@@ -1936,7 +2012,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         `SELECT path, kind, case_conflict, canonical_key
            FROM nodes
           WHERE deleted = 0${restrictedClause}
-            AND path NOT IN (SELECT path FROM tmp_scan)`,
+            AND path NOT IN (SELECT path FROM tmp_light)`,
       )
       .all() as {
       path: string;
@@ -1967,7 +2043,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
                 hash_pending = 0,
                 last_error = NULL
           WHERE deleted = 0${restrictedClause}
-            AND path NOT IN (SELECT path FROM tmp_scan)`,
+            AND path NOT IN (SELECT path FROM tmp_light)`,
       ).run({ ts: deleteTs, lower: fallbackLowerBoundBase });
 
       if (emitDelta) {
