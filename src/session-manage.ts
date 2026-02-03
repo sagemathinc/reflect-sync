@@ -220,7 +220,7 @@ export async function resetSession({
   logger?.info("session reset complete", { sessionId: id });
 }
 
-type Endpoint = { root: string; host?: string; port?: number };
+export type Endpoint = { root: string; host?: string; port?: number };
 
 // Minimal mutagen-like endpoint parsing.
 // - local: "~/work" or "/abs/path" -> {root: absolute path, host: undefined}

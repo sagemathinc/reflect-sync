@@ -1,6 +1,6 @@
 # ReflectSync
 
-ReflectSync is a fast, fully observant, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move.
+ReflectSync is a fast, fully observable, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move.  It can also be used as a library from nodejs.
 
 ## Why ReflectSync?
 
