@@ -1,0 +1,284 @@
+:root {
+  --bg: #f5f2e9;
+  --ink: #182421;
+  --muted: #455b55;
+  --line: #d6d0c2;
+  --paper: #fffcf5;
+  --teal: #0f766e;
+  --teal-dark: #0a4d47;
+  --orange: #d97706;
+  --shadow: 0 16px 40px rgba(27, 35, 33, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at 8% 12%, #dcece8 0%, transparent 36%),
+    radial-gradient(circle at 100% 0%, #fbe4c2 0%, transparent 32%), var(--bg);
+  line-height: 1.55;
+}
+
+.bg-shape {
+  position: fixed;
+  z-index: -1;
+  border-radius: 999px;
+  opacity: 0.36;
+  filter: blur(36px);
+}
+
+.bg-shape-a {
+  width: 32rem;
+  height: 32rem;
+  right: -10rem;
+  top: -10rem;
+  background: #8ed9ce;
+}
+
+.bg-shape-b {
+  width: 26rem;
+  height: 26rem;
+  left: -10rem;
+  bottom: -9rem;
+  background: #ffd19a;
+}
+
+.topbar {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.brand {
+  font-family: "Fraunces", "Iowan Old Style", serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.topnav {
+  display: flex;
+  gap: 1rem;
+}
+
+.topnav a {
+  color: var(--teal-dark);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.wrap {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 3rem;
+}
+
+.hero {
+  padding: 3rem 0 2rem;
+}
+
+.kicker {
+  margin: 0 0 0.75rem;
+  color: var(--teal-dark);
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3 {
+  margin-top: 0;
+  line-height: 1.14;
+}
+
+h1 {
+  font-family: "Fraunces", "Iowan Old Style", serif;
+  font-size: clamp(2rem, 5vw, 3.6rem);
+  margin-bottom: 1rem;
+  max-width: 18ch;
+}
+
+h2 {
+  font-family: "Fraunces", "Iowan Old Style", serif;
+  font-size: clamp(1.5rem, 3.2vw, 2.2rem);
+  margin-bottom: 0.9rem;
+}
+
+h3 {
+  font-size: 1.2rem;
+  margin-bottom: 0.65rem;
+}
+
+.lead {
+  font-size: 1.15rem;
+  max-width: 58ch;
+  color: var(--muted);
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin: 1.4rem 0 1.3rem;
+}
+
+.btn {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.72rem 1.1rem;
+  text-decoration: none;
+  font-weight: 800;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--teal) 0%, #16958a 100%);
+  color: #f9fffd;
+  box-shadow: var(--shadow);
+}
+
+.btn-ghost {
+  border: 1px solid #89aca4;
+  color: var(--teal-dark);
+  background: #e8f3f1;
+}
+
+.trust {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+  color: var(--muted);
+}
+
+.trust li::before {
+  content: "• ";
+  color: var(--orange);
+  font-weight: 800;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  margin: 1.25rem 0;
+  box-shadow: var(--shadow);
+}
+
+pre {
+  background: #152321;
+  color: #dff7f2;
+  border-radius: 0.8rem;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0;
+}
+
+code {
+  font-family: "JetBrains Mono", "Menlo", monospace;
+  font-size: 0.93em;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.card {
+  background: #fffaf1;
+  border: 1px solid var(--line);
+  border-radius: 0.95rem;
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 0.4rem;
+  vertical-align: top;
+}
+
+thead th {
+  border-top: none;
+  color: var(--teal-dark);
+}
+
+.cta {
+  margin: 2rem 0 0.6rem;
+}
+
+.foot {
+  padding: 1rem 1.25rem 2.2rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: rise 0.62s ease forwards;
+}
+
+.cards .reveal:nth-child(1) {
+  animation-delay: 0.1s;
+}
+
+.cards .reveal:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.cards .reveal:nth-child(3) {
+  animation-delay: 0.26s;
+}
+
+@keyframes rise {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .lead {
+    font-size: 1.03rem;
+  }
+
+  .panel {
+    padding: 1rem;
+  }
+}
