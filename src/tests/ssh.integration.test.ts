@@ -95,7 +95,10 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
 
     beforeAll(async () => {
       if (!(await canSshLocalhost())) {
-        throw Error("Skipping: sshd not reachable on localhost");
+        sshSetupError = new SshTestSetupError(
+          "sshd not reachable on localhost",
+        );
+        return;
       }
 
       // temp dirs
@@ -122,7 +125,9 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
 
     afterAll(async () => {
       if (keyCleanup) await keyCleanup();
-      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+      if (tmp) {
+        await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+      }
     });
 
     test("delta from remote scan shows up in local DB", async () => {

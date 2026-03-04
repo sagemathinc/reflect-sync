@@ -1890,6 +1890,9 @@ async function runScheduler0({
     side: "alpha" | "beta";
   }) {
     handleWatchErrors(watcher);
+    watcher.on("ready", () => {
+      log("info", "watch", `${side} local watch ready`);
+    });
     ["add", "change", "unlink", "addDir", "unlinkDir"].forEach((evt) => {
       watcher.on(evt as any, async (p: string, stats) => {
         if (

@@ -22,14 +22,37 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.pages-check.outputs.pages_enabled }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check Pages status
+        id: pages-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          api="https://api.github.com/repos/${{ github.repository }}/pages"
+          status="$(curl -sS -o /tmp/pages.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${api}")"
+          if [ "${status}" = "200" ]; then
+            echo "pages_enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "GitHub Pages is enabled for this repository."
+          else
+            echo "pages_enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::GitHub Pages is not enabled for this repository. Skipping deploy. Enable Pages with source set to 'GitHub Actions' in repository settings."
+          fi
+
       - name: Setup Pages
+        if: steps.pages-check.outputs.pages_enabled == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
+        if: steps.pages-check.outputs.pages_enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs
@@ -37,6 +60,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    if: needs.build.outputs.pages_enabled == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

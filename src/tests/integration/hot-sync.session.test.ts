@@ -2,7 +2,7 @@ import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 import { waitFor, hasEventLog } from "../util.js";
 
-jest.setTimeout(25_000);
+jest.setTimeout(45_000);
 
 describe("hot sync integration (local roots)", () => {
   let session: TestSession | undefined;
@@ -20,12 +20,19 @@ describe("hot sync integration (local roots)", () => {
       full: false,
     });
 
+    await waitFor(
+      () => hasEventLog(session!.baseDbPath, "watch", "alpha local watch ready"),
+      (ready) => ready === true,
+      15_000,
+      100,
+    );
+
     await session.alpha.writeFile("hot/alpha.txt", "alpha-hot");
 
     await waitFor(
       () => session!.beta.exists("hot/alpha.txt"),
       (exists) => exists === true,
-      7_000,
+      15_000,
       100,
     );
 
@@ -40,12 +47,19 @@ describe("hot sync integration (local roots)", () => {
       full: false,
     });
 
+    await waitFor(
+      () => hasEventLog(session!.baseDbPath, "watch", "beta local watch ready"),
+      (ready) => ready === true,
+      15_000,
+      100,
+    );
+
     await session.beta.writeFile("hot/beta.txt", "beta-hot");
 
     await waitFor(
       () => session!.alpha.exists("hot/beta.txt"),
       (exists) => exists === true,
-      7_000,
+      15_000,
       100,
     );
 

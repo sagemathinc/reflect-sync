@@ -11,7 +11,10 @@ module.exports = {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
-  transformIgnorePatterns: ['/node_modules/(?!.*(fast-ignore|string-escape-regex|grammex))'],
+  transformIgnorePatterns: [
+    '/node_modules/(?!.*(fast-ignore|string-escape-regex|grammex))',
+    '/test-setup\\.js$',
+  ],
   transform: {
     '^.+\\.[tj]s$': [
       'ts-jest',
