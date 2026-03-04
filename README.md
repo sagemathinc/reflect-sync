@@ -2,6 +2,8 @@
 
 ReflectSync is a fast, fully observable, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move.  It can also be used as a library from nodejs.
 
+Project site: https://sagemathinc.github.io/reflect-sync/
+
 ## Why ReflectSync?
 
 - **SQLite everywhere.** Alpha, beta, and base databases capture hashes, metadata, and logical timestamps so merges are deterministic and auditable.
@@ -432,4 +434,3 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 - Want **dev-loop speed** → pick **Mutagen**.
 - Want **one-way mirroring** → pick **lsyncd**.
 - Want **history + sharing** → pick **Nextcloud/Dropbox**.
-
