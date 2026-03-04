@@ -2,7 +2,16 @@ import { spawn } from "node:child_process";
 import { argsJoin } from "./remote.js";
 import { updateForwardSession, type ForwardRow } from "./session-db.js";
 
-function buildSshArgs(row: ForwardRow): string[] {
+function resolveRemoteTargetHost(host: string): string {
+  const trimmed = host.trim();
+  if (!trimmed) return "localhost";
+  // Backward compatibility: historical forwards stored 127.0.0.1 as the
+  // implicit remote destination. Preserve expected ssh "localhost" behavior.
+  if (trimmed === "127.0.0.1") return "localhost";
+  return trimmed;
+}
+
+export function buildSshArgs(row: ForwardRow): string[] {
   const args: string[] = ["-N"]; // no shell, just forward
   if (row.ssh_port) {
     args.push("-p", String(row.ssh_port));
@@ -12,7 +21,8 @@ function buildSshArgs(row: ForwardRow): string[] {
   }
   if (row.direction === "local_to_remote") {
     const bindHost = row.local_host || "127.0.0.1";
-    const binding = `${bindHost}:${row.local_port}:${row.remote_host}:${row.remote_port}`;
+    const targetHost = resolveRemoteTargetHost(row.remote_host);
+    const binding = `${bindHost}:${row.local_port}:${targetHost}:${row.remote_port}`;
     args.push("-L", binding);
   } else {
     // use 0.0.0.0 to align behavior with mutagen.  This remote ssh server

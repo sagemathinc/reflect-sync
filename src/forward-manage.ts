@@ -90,7 +90,9 @@ function parseEndpoint(spec: string): ParsedEndpoint {
     if (!treatAsLocal) {
       const sshHost = user ? `${user}@${hostPart}` : hostPart;
       return {
-        host: "127.0.0.1",
+        // Destination host for -L forwards should default to "localhost",
+        // matching common ssh behavior.
+        host: "localhost",
         port,
         isLocal: false,
         sshHost,
@@ -135,7 +137,7 @@ export async function createForward({
     sshPort = remote.sshPort ?? null;
     localHost = local.host;
     localPort = local.port;
-    remoteHost = "127.0.0.1";
+    remoteHost = remote.host || "localhost";
     remotePort = remote.port;
   } else {
     const remote = leftEp;

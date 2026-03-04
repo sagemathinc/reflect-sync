@@ -72,6 +72,7 @@ describe("reflect forward CLI", () => {
     expect(row).toBeDefined();
     expect(row.name).toBe("test-forward");
     expect(row.direction).toBe("local_to_remote");
+    expect(row.remote_host).toBe("localhost");
 
     const listProgram = buildProgram();
     await listProgram.parseAsync(
