@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { mkdtemp, rm, stat as fsStat, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createWriteStream, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { finished } from "node:stream/promises";
 import {
   isCompressing,
@@ -13,6 +14,7 @@ import {
 import { argsJoin } from "./remote.js";
 import { ConsoleLogger, type LogLevel, type Logger } from "./logger.js";
 import { maybeRestartSshControl } from "./ssh-control.js";
+import { resolveRsyncExecutable } from "./rsync-runtime.js";
 
 // if true, logs every file sent over rsync
 const REFLECT_RSYNC_VERY_VERBOSE = false;
@@ -23,11 +25,6 @@ const REFLECT_COPY_CONCURRENCY = Number(
   process.env.REFLECT_COPY_CONCURRENCY ?? 2,
 );
 const REFLECT_DIR_CHUNK = Number(process.env.REFLECT_DIR_CHUNK ?? 20_000);
-
-const DEFAULT_FIELD_DELIM = "\x1F"; // US
-const DEFAULT_RECORD_DELIM = "\x1E"; // RS
-const DELIM_FALLBACK_START = 0xe000;
-const DELIM_FALLBACK_END = 0xf8ff;
 
 export const RSYNC_TEMP_DIR =
   process.env.REFLECT_RSYNC_TEMP_DIR ?? ".reflect-rsync-tmp";
@@ -540,7 +537,18 @@ function numericIdsFlag(): string[] {
 }
 
 export function rsyncArgsBase(opts: RsyncRunOptions, from: string, to: string) {
-  const a = ["-a", "-I", "--relative", ...numericIdsFlag()];
+  // ReflectSync's data model contains regular files, directories, and
+  // symlinks.  Keep archive semantics for those types without asking rsync
+  // to manufacture device nodes or other special files that the scanner
+  // deliberately ignores.
+  const a = [
+    "-a",
+    "--no-devices",
+    "--no-specials",
+    "-I",
+    "--relative",
+    ...numericIdsFlag(),
+  ];
   if (opts.dryRun) a.unshift("-n");
   if (isLocal(from) && isLocal(to)) {
     // don't use the rsync delta algorithm
@@ -561,7 +569,6 @@ export function rsyncArgsDirs(opts: RsyncRunOptions) {
     "--times",
     "--group",
     "--owner",
-    "--devices",
     ...numericIdsFlag(),
   ];
   if (opts.dryRun) a.unshift("-n");
@@ -572,7 +579,15 @@ export function rsyncArgsDirs(opts: RsyncRunOptions) {
 // Metadata-only fixers (no content copy)
 export function rsyncArgsFixMeta(opts: RsyncRunOptions) {
   // -a includes -pgo (perms, owner, group); --no-times prevents touching mtimes
-  const a = ["-a", "--no-times", "--relative", "--from0", ...numericIdsFlag()];
+  const a = [
+    "-a",
+    "--no-devices",
+    "--no-specials",
+    "--no-times",
+    "--relative",
+    "--from0",
+    ...numericIdsFlag(),
+  ];
   if (opts.dryRun) a.unshift("-n");
   if (!isDebugEnabled(opts)) a.push("--quiet");
   return a;
@@ -580,6 +595,8 @@ export function rsyncArgsFixMeta(opts: RsyncRunOptions) {
 export function rsyncArgsFixMetaDirs(opts: RsyncRunOptions) {
   const a = [
     "-a",
+    "--no-devices",
+    "--no-specials",
     "-d",
     "--no-times",
     "--relative",
@@ -632,35 +649,23 @@ function containsDelimiterChar(
   return false;
 }
 
-function pickDelimiterChar(
-  paths: readonly string[] | undefined,
-  preferred: string,
-  avoid: Set<string>,
-): string {
-  if (!avoid.has(preferred) && !containsDelimiterChar(paths, preferred)) {
-    return preferred;
-  }
-  for (let code = DELIM_FALLBACK_START; code <= DELIM_FALLBACK_END; code++) {
-    const candidate = String.fromCharCode(code);
-    if (avoid.has(candidate)) continue;
-    if (!containsDelimiterChar(paths, candidate)) {
-      return candidate;
+function chooseDelimiters(paths?: readonly string[]) {
+  // rsync 3.5 escapes C0/C1 control bytes in log files to prevent log
+  // injection. Use printable, per-run sentinels instead of the traditional
+  // unit/record separators so transfer confirmation works on both old and new
+  // rsync releases. The candidate is also checked against every planned path.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const nonce = randomBytes(16).toString("hex");
+    const field = `|reflect-sync-${nonce}-field|`;
+    const record = `|reflect-sync-${nonce}-record|`;
+    if (
+      !containsDelimiterChar(paths, field) &&
+      !containsDelimiterChar(paths, record)
+    ) {
+      return { field, record };
     }
   }
-  throw new Error("unable to find safe delimiter for rsync transfer capture");
-}
-
-function chooseDelimiters(paths?: readonly string[]) {
-  const avoid = new Set<string>();
-  const field = pickDelimiterChar(paths, DEFAULT_FIELD_DELIM, avoid);
-  avoid.add(field);
-  const record = pickDelimiterChar(paths, DEFAULT_RECORD_DELIM, avoid);
-  if (record === field) {
-    avoid.add(record);
-    const next = pickDelimiterChar(paths, DEFAULT_RECORD_DELIM, avoid);
-    return { field, record: next };
-  }
-  return { field, record };
+  throw new Error("unable to find safe delimiters for rsync transfer capture");
 }
 
 function stripRecordPreamble(segment: string): string {
@@ -1045,7 +1050,7 @@ async function rsyncCopy(
         });
       }
     : undefined;
-  const res = await run("rsync", args, [0, 23, 24], {
+  const res = await run(resolveRsyncExecutable().path, args, [0, 23, 24], {
     ...runOpts,
     onProgress: progressHandler,
     tempDir: opts.tempDir,
@@ -1119,7 +1124,7 @@ export async function rsyncCopyDirs(
   const plannedSet = captureList
     ? new Set(captureList.map((p) => normalizeTransferPath(p)))
     : undefined;
-  const res = await run("rsync", args, [0, 23, 24], {
+  const res = await run(resolveRsyncExecutable().path, args, [0, 23, 24], {
     ...runOpts,
     onProgress: progressHandler,
     tempDir: opts.tempDir,
@@ -1173,7 +1178,7 @@ export async function rsyncFixMeta(
     to,
   ];
   applySshTransport(args, from, to, opts);
-  const res = await run("rsync", args, [0, 23, 24], opts);
+  const res = await run(resolveRsyncExecutable().path, args, [0, 23, 24], opts);
   assertRsyncOk(`${label} (meta)`, res, { from: fromRoot, to: toRoot });
   if (debug) {
     logger.debug(`>>> rsync ${label} (meta): done`, {
@@ -1219,7 +1224,7 @@ export async function rsyncFixMetaDirs(
   const captureSpec = opts.captureDirs
     ? { paths: opts.captureDirs }
     : undefined;
-  const res = await run("rsync", args, [0, 23, 24], {
+  const res = await run(resolveRsyncExecutable().path, args, [0, 23, 24], {
     ...opts,
     captureTransfers: captureSpec,
   });

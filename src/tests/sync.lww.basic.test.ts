@@ -5,7 +5,7 @@ import os from "node:os";
 import { Database, getDb, getBaseDb } from "../db";
 import { planThreeWayMerge } from "../three-way-merge.js";
 
-jest.setTimeout(10_000);
+vi.setConfig({ testTimeout: 10_000 });
 
 describe("LWW: basic conflicting edits", () => {
   let tmp: string;

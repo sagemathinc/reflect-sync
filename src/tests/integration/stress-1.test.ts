@@ -6,7 +6,7 @@ import type { TestSession } from "./env.js";
 const BATCH_SIZE = 2_000;
 const TOTAL_FILES = 6_000;
 
-jest.setTimeout(15_000);
+vi.setConfig({ testTimeout: 15_000 });
 
 describe("stress sync (local)", () => {
   let session: TestSession | undefined;

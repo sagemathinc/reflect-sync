@@ -11,11 +11,7 @@ import {
 import type { Logger } from "./logger.js";
 
 export type HotWatchEvent =
-  | "add"
-  | "change"
-  | "unlink"
-  | "addDir"
-  | "unlinkDir";
+  "add" | "change" | "unlink" | "addDir" | "unlinkDir";
 
 export const HOT_EVENTS: HotWatchEvent[] = [
   "add",

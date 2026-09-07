@@ -127,7 +127,7 @@ describe("reflex-sync: file/dir mode propagation + conflicts", () => {
   // resolution of time and that prefer isn't really
   // meaningful without a notion of epsilon.
   // Maybe just delete this.
-  test.skip("directory mode conflict: prefer side wins", async () => {
+  test.todo("directory mode conflict: prefer side wins", async () => {
     const r = await mkCase(tmp, "t-dir-mode-conflict");
     const aDir = join(r.aRoot, "cfg");
     const bDir = join(r.bRoot, "cfg");

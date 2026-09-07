@@ -75,10 +75,9 @@ export function createIgnorer(patterns: string[] = []): Ignorer {
   }
   // fast-ignore takes a single string containing newline-separated rules
   const matcher = fastIgnore(cleaned.join("\n"));
-  const check = (r: string) => matcher(normalizeR(r));
   return {
-    ignoresFile: check,
-    ignoresDir: check,
+    ignoresFile: (r) => matcher(normalizeR(r)),
+    ignoresDir: (r) => matcher(normalizeR(r), { isDirectory: true }),
   };
 }
 

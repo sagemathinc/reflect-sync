@@ -1,7 +1,7 @@
 import { createTestSession } from "./env.js";
 import type { TestSession } from "./env.js";
 
-jest.setTimeout(10_000);
+vi.setConfig({ testTimeout: 10_000 });
 
 describe("integration test harness", () => {
   let session: TestSession | undefined;

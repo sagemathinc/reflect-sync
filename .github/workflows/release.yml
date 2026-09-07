@@ -1,0 +1,295 @@
+name: Release rehearsal
+
+on:
+  pull_request:
+    paths:
+      - src/**
+      - scripts/**
+      - runtime/rsync/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .node-version
+      - sea.config.json
+      - rollup.config.mjs
+      - rollup.worker.mjs
+      - CHANGELOG.md
+      - RELEASING.md
+      - .github/workflows/sea.yml
+      - .github/workflows/rsync-runtime.yml
+      - .github/workflows/release.yml
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z tag to validate; required for a draft
+        required: false
+        type: string
+      attest:
+        description: Generate GitHub/Sigstore attestations for this rehearsal
+        required: true
+        default: false
+        type: boolean
+      create_draft:
+        description: Create or repair a draft prerelease for release_tag
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 26.7.0
+  PNPM_VERSION: 11.25.0
+
+jobs:
+  validate:
+    name: Validate release inputs and quality gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      created: ${{ steps.release.outputs.created }}
+      create_draft: ${{ steps.release.outputs.create_draft }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          fetch-depth: 0
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate version, changelog, tag, and commit
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+          CREATE_DRAFT: ${{ github.ref_type == 'tag' || inputs.create_draft }}
+        run: >-
+          node scripts/validate-release.mjs
+          --tag "${RELEASE_TAG}"
+          --create-draft "${CREATE_DRAFT}"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Configure localhost SSH
+        run: sh .github/scripts/setup-local-sshd.sh
+      - name: Run repository quality gates
+        run: pnpm sanity && pnpm test:ssh && pnpm test:package && pnpm test:release
+      - name: Audit frozen dependency graph
+        run: pnpm audit && pnpm audit --prod
+
+  build:
+    name: Native build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Linux runtime build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential musl-tools file
+      - name: Build and smoke-test Node SEA
+        env:
+          REFLECT_BUILD_GIT_COMMIT: ${{ needs.validate.outputs.commit }}
+          REFLECT_BUILD_SOURCE_DIRTY: "0"
+        run: pnpm sea && pnpm test:sea && pnpm package:sea && pnpm test:sea-package
+      - name: Build and test managed rsync
+        run: sh scripts/build-rsync-runtime.sh "dist/rsync-runtime/${{ matrix.target }}"
+      - name: Package and smoke-test managed rsync
+        run: >-
+          node scripts/package-rsync-runtime.mjs "dist/rsync-runtime/${{ matrix.target }}"
+          && node scripts/test-rsync-runtime-package.mjs
+      - name: Upload target candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reflect-release-${{ matrix.target }}
+          path: |
+            dist/release/reflect-sync-${{ matrix.target }}.*
+            dist/release/reflect-sync-rsync-*-${{ matrix.target }}.*
+            dist/sea/build-info-${{ matrix.target }}.json
+            dist/rsync-runtime/${{ matrix.target }}/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload one canonical corresponding-source candidate
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reflect-release-source
+          path: |
+            dist/release/reflect-sync-rsync-*-sources.tar.gz
+            dist/release/reflect-sync-rsync-*-sources.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: Assemble and verify exact release candidate
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Download every native candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: reflect-release-*
+          path: dist/incoming
+      - name: Assemble canonical release metadata and assets
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_CREATED: ${{ needs.validate.outputs.created }}
+        run: |
+          args=(
+            --input dist/incoming
+            --output dist/release
+            --commit "${RELEASE_COMMIT}"
+            --created "${RELEASE_CREATED}"
+            --attestation-subjects dist/release-metadata/attestation-subjects.txt
+          )
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            args+=(--tag "${RELEASE_TAG}")
+          fi
+          node scripts/assemble-release.mjs "${args[@]}"
+      - name: Verify consolidated checksums, manifest, and SBOM
+        run: node scripts/verify-release.mjs dist/release
+      - name: Smoke-test exact assembled Linux x64 archives
+        run: pnpm test:sea-package && pnpm test:rsync-runtime-package
+      - name: Upload exact assembled candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reflect-sync-${{ needs.validate.outputs.version }}-release-candidate
+          path: |
+            dist/release/*
+            dist/release-metadata/attestation-subjects.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  attest:
+    name: Attest release archives and SBOM
+    needs: [validate, assemble]
+    if: >-
+      github.ref_type == 'tag' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.attest || inputs.create_draft))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact assembled candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: reflect-sync-${{ needs.validate.outputs.version }}-release-candidate
+          path: dist
+      - name: Generate SLSA build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/release-metadata/attestation-subjects.txt
+      - name: Generate SPDX SBOM attestations
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/release-metadata/attestation-subjects.txt
+          sbom-path: dist/release/reflect-sync-${{ needs.validate.outputs.version }}.spdx.json
+      - name: Verify online provenance and SBOM attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          while read -r _digest name; do
+            gh attestation verify "dist/release/${name}" --repo "${GH_REPO}"
+            gh attestation verify "dist/release/${name}" \
+              --repo "${GH_REPO}" \
+              --predicate-type https://spdx.dev/Document/v2.3
+          done < dist/release-metadata/attestation-subjects.txt
+
+  draft:
+    name: Create or repair draft prerelease
+    needs: [validate, assemble, attest]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.assemble.result == 'success' &&
+      needs.attest.result == 'success' &&
+      needs.validate.outputs.create_draft == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Download exact attested candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: reflect-sync-${{ needs.validate.outputs.version }}-release-candidate
+          path: dist
+      - name: Rehearse draft release and verify downloaded assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          node scripts/rehearse-draft-release.mjs
+          --tag "${{ needs.validate.outputs.tag }}"
+          --assets dist/release

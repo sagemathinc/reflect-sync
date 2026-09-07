@@ -2,7 +2,7 @@ import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 import { waitFor, hasEventLog } from "../util.js";
 
-jest.setTimeout(45_000);
+vi.setConfig({ testTimeout: 45_000 });
 
 describe("hot sync integration (local roots)", () => {
   let session: TestSession | undefined;
@@ -21,7 +21,8 @@ describe("hot sync integration (local roots)", () => {
     });
 
     await waitFor(
-      () => hasEventLog(session!.baseDbPath, "watch", "alpha local watch ready"),
+      () =>
+        hasEventLog(session!.baseDbPath, "watch", "alpha local watch ready"),
       (ready) => ready === true,
       15_000,
       100,
@@ -71,42 +72,47 @@ describe("hot sync integration (local roots)", () => {
 
 const describeIfSsh = SSH_AVAILABLE ? describe : describe.skip;
 
-describeIfSsh("hot sync integration (remote beta)", () => {
-  let session: TestSession | undefined;
+describeIfSsh(
+  SSH_AVAILABLE
+    ? "hot sync integration (remote beta)"
+    : "hot sync integration (remote beta) [skipped: localhost SSH unavailable]",
+  () => {
+    let session: TestSession | undefined;
 
-  afterEach(async () => {
-    if (session) {
-      await session.dispose();
-      session = undefined;
-    }
-  });
-
-  it("mirrors beta→alpha via remote watch", async () => {
-    session = await createTestSession({
-      hot: true,
-      full: false,
-      beta: { remote: true },
+    afterEach(async () => {
+      if (session) {
+        await session.dispose();
+        session = undefined;
+      }
     });
 
-    await waitFor(
-      () =>
-        hasEventLog(session!.baseDbPath, "watch", "beta remote watch ready"),
-      (ready) => ready === true,
-      15_000,
-      200,
-    );
+    it("mirrors beta→alpha via remote watch", async () => {
+      session = await createTestSession({
+        hot: true,
+        full: false,
+        beta: { remote: true },
+      });
 
-    await session.beta.writeFile("remote-hot.txt", "beta-remote-hot");
+      await waitFor(
+        () =>
+          hasEventLog(session!.baseDbPath, "watch", "beta remote watch ready"),
+        (ready) => ready === true,
+        15_000,
+        200,
+      );
 
-    await waitFor(
-      () => session!.alpha.exists("remote-hot.txt"),
-      (exists) => exists === true,
-      10_000,
-      100,
-    );
+      await session.beta.writeFile("remote-hot.txt", "beta-remote-hot");
 
-    await expect(
-      session.alpha.readFile("remote-hot.txt", "utf8"),
-    ).resolves.toBe("beta-remote-hot");
-  });
-});
+      await waitFor(
+        () => session!.alpha.exists("remote-hot.txt"),
+        (exists) => exists === true,
+        10_000,
+        100,
+      );
+
+      await expect(
+        session.alpha.readFile("remote-hot.txt", "utf8"),
+      ).resolves.toBe("beta-remote-hot");
+    });
+  },
+);

@@ -4,7 +4,7 @@ import { Database } from "../../db.js";
 import { stringDigest, defaultHashAlg, modeHash } from "../../hash.js";
 import { createTestSession } from "./env.js";
 
-jest.setTimeout(20000);
+vi.setConfig({ testTimeout: 20_000 });
 
 describe("sync maintenance options", () => {
   it("vacuum flag triggers vacuum log entry", async () => {

@@ -80,9 +80,10 @@ describe("scan deletes", () => {
       expect(row.change_end).not.toBeNull();
       expect(row.change_start).not.toBeNull();
       expect(row.confirmed_at).toBe(row.updated);
-      if (row.change_start !== null && row.change_end !== null) {
-        expect(row.change_start).toBeLessThanOrEqual(row.change_end);
+      if (row.change_start === null || row.change_end === null) {
+        throw new Error("deletion change interval was not recorded");
       }
+      expect(row.change_start).toBeLessThanOrEqual(row.change_end);
     } finally {
       db.close();
     }

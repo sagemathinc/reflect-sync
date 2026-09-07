@@ -85,8 +85,10 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
         10,
       );
 
-      await expect(linkExists(join(betaRootRemote, "x.link")));
-      await expect(dirExists(join(betaRootRemote, "x")));
+      await expect(linkExists(join(betaRootRemote, "x.link"))).resolves.toBe(
+        true,
+      );
+      await expect(dirExists(join(betaRootRemote, "x"))).resolves.toBe(true);
 
       // prefer is alpha, so don't immediately do the rename:
       await wait(5000);
@@ -108,8 +110,10 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
       const expectedListing = new Set(betaListing);
       expect(expectedListing).toEqual(alphaListing);
 
-      await expect(linkExists(join(alphaRoot, "x.link")));
-      await expect(linkExists(join(betaRootRemote, "x.link")));
+      await expect(linkExists(join(alphaRoot, "x.link"))).resolves.toBe(true);
+      await expect(linkExists(join(betaRootRemote, "x.link"))).resolves.toBe(
+        true,
+      );
     } finally {
       await stopScheduler(child);
     }

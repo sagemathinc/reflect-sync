@@ -19,6 +19,7 @@ import { configureScanCommand } from "./scan.js";
 import { configureSchedulerCommand } from "./scheduler.js";
 import { configureWatchCommand } from "./watch.js";
 import { detectFilesystemCapabilities } from "./fs-capabilities.js";
+import { registerDoctorCommand } from "./doctor.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -35,8 +36,7 @@ if (!process.env.REFLECT_ENTRY) {
 
 function resolveLogLevel(command: Command): LogLevel {
   const raw = (command.optsWithGlobals() as any)?.logLevel as
-    | string
-    | undefined;
+    string | undefined;
   return parseLogLevel(raw, "info");
 }
 
@@ -81,6 +81,7 @@ program
 registerSessionCommands(program);
 registerForwardCommands(program);
 registerInstallCommand(program);
+registerDoctorCommand(program);
 
 const ADVANCED_COMMANDS = new Set([
   "scan",
@@ -147,9 +148,8 @@ program
 configureSchedulerCommand(program.command("scheduler")).action(
   async (opts, command) => {
     // Import and run in-process so we can manage lifecycle cleanly
-    const { runScheduler, cliOptsToSchedulerOptions } = await import(
-      "./scheduler.js"
-    );
+    const { runScheduler, cliOptsToSchedulerOptions } =
+      await import("./scheduler.js");
     const params = mergeOptsWithLogger(command, opts);
     await runScheduler(cliOptsToSchedulerOptions(params));
   },

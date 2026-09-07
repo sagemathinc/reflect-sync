@@ -2,7 +2,7 @@
 import resolve from "@rollup/plugin-node-resolve";
 import commonjs from "@rollup/plugin-commonjs";
 import json from "@rollup/plugin-json";
-import terser from '@rollup/plugin-terser';
+import terser from "@rollup/plugin-terser";
 import fs from "node:fs";
 
 let workerSrc = "";
@@ -70,6 +70,16 @@ const plugins = () => [
   terser({ compress: true, mangle: true }),
 ];
 
+const onwarn = (warning) => {
+  const knownChokidarTypeOnlyWarning =
+    warning.code === "UNUSED_EXTERNAL_IMPORT" &&
+    warning.exporter === "node:fs" &&
+    warning.names?.length === 1 &&
+    warning.names[0] === "Stats";
+  if (knownChokidarTypeOnlyWarning) return;
+  throw new Error(`[rollup:${warning.code ?? "warning"}] ${warning.message}`);
+};
+
 const makeConfig = (format, file) => ({
   input: "dist/cli.js",
   output: {
@@ -80,6 +90,7 @@ const makeConfig = (format, file) => ({
     banner,
   },
   external,
+  onwarn,
   plugins: plugins(),
   treeshake: true,
 });

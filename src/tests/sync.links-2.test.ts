@@ -11,7 +11,7 @@ import os from "node:os";
 import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
 
 describe("reflex-sync: more symlink edge case tests", () => {
-  jest.setTimeout(15000);
+  vi.setConfig({ testTimeout: 15_000 });
   let tmp: string;
 
   beforeAll(async () => {
@@ -115,8 +115,8 @@ describe("reflex-sync: more symlink edge case tests", () => {
     await fsp.symlink(join(r.aRoot, "x"), join(r.aRoot, "x.link"));
     await syncPrefer(r, "alpha");
 
-    await expect(linkExists(join(r.bRoot, "x.link")));
-    await expect(dirExists(join(r.bRoot, "x")));
+    await expect(linkExists(join(r.bRoot, "x.link"))).resolves.toBe(true);
+    await expect(dirExists(join(r.bRoot, "x"))).resolves.toBe(true);
 
     // move the directory
     await fsp.rename(join(r.bRoot, "x"), join(r.bRoot, "x2"));
@@ -132,7 +132,7 @@ describe("reflex-sync: more symlink edge case tests", () => {
       "x.link",
       "x2",
     ]);
-    await expect(linkExists(join(r.aRoot, "x.link")));
-    await expect(linkExists(join(r.bRoot, "x.link")));
+    await expect(linkExists(join(r.aRoot, "x.link"))).resolves.toBe(true);
+    await expect(linkExists(join(r.bRoot, "x.link"))).resolves.toBe(true);
   });
 });

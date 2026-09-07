@@ -2,9 +2,7 @@ name: Deploy Site
 
 on:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
     paths:
       - docs/**
       - .github/workflows/pages.yml
@@ -12,8 +10,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -21,12 +17,14 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       pages_enabled: ${{ steps.pages-check.outputs.pages_enabled }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check Pages status
         id: pages-check
@@ -41,30 +39,32 @@ jobs:
             "${api}")"
           if [ "${status}" = "200" ]; then
             echo "pages_enabled=true" >> "${GITHUB_OUTPUT}"
-            echo "GitHub Pages is enabled for this repository."
           else
             echo "pages_enabled=false" >> "${GITHUB_OUTPUT}"
-            echo "::warning::GitHub Pages is not enabled for this repository. Skipping deploy. Enable Pages with source set to 'GitHub Actions' in repository settings."
+            echo "::warning::GitHub Pages is not enabled; skipping deploy."
           fi
 
       - name: Setup Pages
         if: steps.pages-check.outputs.pages_enabled == 'true'
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload artifact
         if: steps.pages-check.outputs.pages_enabled == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     if: needs.build.outputs.pages_enabled == 'true'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

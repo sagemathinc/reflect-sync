@@ -102,10 +102,12 @@ async function chooseCompressionAuto(
   }
   const link = await estimateLinkClass(host, port);
   if (link == "local") return "none";
-  if (link === "fast") return "lz4";
-  if (link == "medium") return "zstd";
-  if (link == "slow") return "zstd:10";
-  return "zstd";
+  // The managed portable runtime deliberately has no external zstd/LZ4
+  // dependency. zlib is available in every supported managed build.
+  if (link === "fast") return "zlib:1";
+  if (link == "medium") return "zlib:3";
+  if (link == "slow") return "zlib:6";
+  return "zlib";
 }
 
 export async function resolveCompression(

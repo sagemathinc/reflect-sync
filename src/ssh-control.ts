@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "./logger.js";
-import { argsJoin } from "./remote.js";
+import { argsJoin } from "./shell-args.js";
 
 export type SshControlOptions = {
   host: string;

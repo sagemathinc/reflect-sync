@@ -1,6 +1,9 @@
 {
   "main": "dist/bundle.cjs",
-  "output": "dist/reflect-sync.blob",
+  "mainFormat": "commonjs",
+  "output": "dist/sea/reflect-sync",
   "execArgv": ["--no-warnings"],
-  "disableExperimentalSEAWarning": true
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": false,
+  "useSnapshot": false
 }

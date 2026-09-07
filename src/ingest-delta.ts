@@ -52,11 +52,11 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
     db: dbPath,
     logger: providedLogger,
     logLevel = "info",
-    input = process.stdin,
     abortSignal,
     logicalClock,
     batchTick,
   } = opts;
+  const input: NodeJS.ReadableStream = opts.input ?? process.stdin;
   const logger = providedLogger ?? new ConsoleLogger(logLevel);
   const clock = logicalClock;
   let standaloneClock = Date.now();
@@ -273,8 +273,7 @@ export async function runIngestDelta(opts: IngestDeltaOptions): Promise<void> {
         throw Error(`invalid data -- ${JSON.stringify(r)}`);
       }
       const existing = selectMetaStmt.get(r.path) as
-        | ExistingMetaRow
-        | undefined;
+        ExistingMetaRow | undefined;
       let copyPendingState = existing?.copy_pending ?? 0;
       if (isDelete) {
         copyPendingState = 0;

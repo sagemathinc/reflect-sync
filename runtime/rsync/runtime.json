@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "upstreamVersion": "3.5.0",
+  "packagingRevision": 1,
+  "runtimeVersion": "3.5.0-reflect.1",
+  "sourceUrl": "https://download.samba.org/pub/rsync/src/rsync-3.5.0.tar.gz",
+  "sourceSha256": "c7ffd1ef653e99540f661e47cb00b7f9cad1ee6b972399b16f93d672656e0d33",
+  "configureFlags": [
+    "--with-included-popt",
+    "--with-included-zlib",
+    "--disable-openssl",
+    "--disable-xxhash",
+    "--disable-zstd",
+    "--disable-lz4",
+    "--disable-iconv",
+    "--disable-acl-support",
+    "--disable-xattr-support",
+    "--disable-roll-simd",
+    "--disable-md5-asm",
+    "--disable-md2man"
+  ],
+  "compression": ["zlib", "zlibx", "none"],
+  "upstreamTestExclusions": {
+    "linux": [
+      {
+        "name": "misc-coverage",
+        "reason": "Exercises optional malloc statistics, which the portable release build does not enable."
+      },
+      {
+        "name": "preallocate",
+        "reason": "Tests sparse preallocation behavior that depends on the CI backing filesystem and is not used by ReflectSync."
+      },
+      {
+        "name": "devices",
+        "reason": "Tests device-node transfer under root or fakeroot; ReflectSync intentionally supports only regular files, directories, and symlinks."
+      },
+      {
+        "name": "rrsync-backup-dir-inband-pivot",
+        "reason": "Covers the separately shipped rrsync wrapper, which is not included in this runtime artifact."
+      },
+      {
+        "name": "rrsync-pull-delivers-content",
+        "reason": "Covers the separately shipped rrsync wrapper, which is not included in this runtime artifact."
+      }
+    ],
+    "darwin": [
+      {
+        "name": "chmod-setid",
+        "reason": "Exercises privileged set-ID bits on a non-executable regular file; macOS clears the setgid bit in this case, and ReflectSync does not claim privileged set-ID semantics."
+      }
+    ]
+  },
+  "targets": ["linux-x64", "linux-arm64", "darwin-arm64"]
+}

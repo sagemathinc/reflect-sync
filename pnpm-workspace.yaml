@@ -1,8 +1,20 @@
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
 
+# These exact type/security releases are intentionally adopted before the
+# workspace's 24-hour supply-chain quarantine expires; remove each exception
+# after 24h.
+minimumReleaseAgeExclude:
+  - "@types/node@26.4.1"
+  - "@humanfs/node@0.16.8"
+
+# Temporary transitive security floors. Remove each entry once all direct
+# parents resolve a patched version without an override.
 overrides:
-  js-yaml@<4.1.1: '>=4.1.1'
+  "@humanfs/node@<0.16.8": 0.16.8
+  flatted@<3.4.2: 3.4.2
+  "picomatch@>=4.0.0 <5": 4.0.7
+  "serialize-javascript@>=5.0.0 <7.0.5": 7.0.5
 
 packages:
   - .

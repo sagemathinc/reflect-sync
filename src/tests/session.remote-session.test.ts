@@ -2,9 +2,9 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-jest.mock("../remote.js", () => ({
-  ensureRemoteParentDir: jest.fn(async () => {}),
-  sshDeleteDirectory: jest.fn(async () => {}),
+vi.mock("../remote.js", () => ({
+  ensureRemoteParentDir: vi.fn(async () => {}),
+  sshDeleteDirectory: vi.fn(async () => {}),
 }));
 
 import { defaultHashAlg } from "../hash.js";
@@ -28,7 +28,7 @@ describe("newSession remote ports", () => {
   afterEach(async () => {
     if (previousHome === undefined) delete process.env.REFLECT_HOME;
     else process.env.REFLECT_HOME = previousHome;
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 

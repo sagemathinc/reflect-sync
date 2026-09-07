@@ -163,6 +163,7 @@ describe("scheduler (local watchers + hot-sync)", () => {
         4500,
         50,
       );
+      expect(await fsp.readFile(bFile, "utf8")).toBe("hi\n");
     } finally {
       await stopScheduler(child);
     }

@@ -2,76 +2,80 @@ import { Database } from "../../db.js";
 import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 
-jest.setTimeout(25_000);
+vi.setConfig({ testTimeout: 25_000 });
 if (!process.env.REFLECT_LOG_LEVEL) {
   process.env.REFLECT_LOG_LEVEL = "info";
 }
 
 const describeIfSsh = SSH_AVAILABLE ? describe : describe.skip;
 
-describeIfSsh("ssh control master resilience", () => {
-  let session: TestSession | undefined;
+describeIfSsh(
+  SSH_AVAILABLE
+    ? "ssh control master resilience"
+    : "ssh control master resilience [skipped: localhost SSH unavailable]",
+  () => {
+    let session: TestSession | undefined;
 
-  afterEach(async () => {
-    if (session) {
-      await session.dispose();
-      session = undefined;
-    }
-  });
-
-  // TODO: flaky so we are skipping this for now
-  it("recovers when the ssh control master is killed", async () => {
-    session = await createTestSession({
-      hot: false,
-      full: false,
-      beta: { remote: true },
+    afterEach(async () => {
+      if (session) {
+        await session.dispose();
+        session = undefined;
+      }
     });
 
-    const firstReady = await waitForControlMasterEvent(session.baseDbPath);
-    expect(firstReady.pid).toBeGreaterThan(0);
-    if (!firstReady.pid) {
-      throw new Error("missing control master pid");
-    }
+    it("recovers when the ssh control master is killed", async () => {
+      session = await createTestSession({
+        hot: false,
+        full: false,
+        beta: { remote: true },
+      });
 
-    try {
-      process.kill(firstReady.pid, "SIGKILL");
-    } catch (err) {
-      throw new Error(
-        `failed to kill control master ${firstReady.pid}: ${String(err)}`,
+      const firstReady = await waitForControlMasterEvent(session.baseDbPath);
+      expect(firstReady.pid).toBeGreaterThan(0);
+      if (!firstReady.pid) {
+        throw new Error("missing control master pid");
+      }
+
+      try {
+        process.kill(firstReady.pid, "SIGKILL");
+      } catch (err) {
+        throw new Error(
+          `failed to kill control master ${firstReady.pid}: ${String(err)}`,
+        );
+      }
+
+      await session.beta.writeFile(
+        "control-channel.txt",
+        "beta after master restart",
+        "utf8",
       );
-    }
+      await session.sync();
 
-    await session.beta.writeFile(
-      "control-channel.txt",
-      "beta after master restart",
-      "utf8",
-    );
-    await session.sync();
+      const restarted = await waitForControlMasterEvent(
+        session.baseDbPath,
+        firstReady.id,
+      );
+      expect(restarted.id).toBeGreaterThan(firstReady.id);
+      expect(restarted.pid).toBeGreaterThan(0);
+      expect(restarted.pid).not.toEqual(firstReady.pid);
 
-    const restarted = await waitForControlMasterEvent(
-      session.baseDbPath,
-      firstReady.id,
-    );
-    expect(restarted.id).toBeGreaterThan(firstReady.id);
-    expect(restarted.pid).toBeGreaterThan(0);
-    expect(restarted.pid).not.toEqual(firstReady.pid);
+      await expect(
+        session.alpha.readFile("control-channel.txt", "utf8"),
+      ).resolves.toBe("beta after master restart");
 
-    await expect(
-      session.alpha.readFile("control-channel.txt", "utf8"),
-    ).resolves.toBe("beta after master restart");
+      await session.beta.writeFile(
+        "control-channel.txt",
+        "beta after master restart - second write",
+        "utf8",
+      );
+      await session.sync();
 
-    await session.beta.writeFile(
-      "control-channel.txt",
-      "beta after master restart - second write",
-      "utf8",
-    );
-    await session.sync();
-
-    await expect(
-      session.alpha.readFile("control-channel.txt", "utf8"),
-    ).resolves.toBe("beta after master restart - second write");
-  });
-});
+      await expect(
+        session.alpha.readFile("control-channel.txt", "utf8"),
+      ).resolves.toBe("beta after master restart - second write");
+    });
+  },
+);
 
 type ControlMasterEvent = { id: number; pid: number | null };
 

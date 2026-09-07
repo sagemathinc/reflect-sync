@@ -13,7 +13,7 @@ import { linkExists, isRegularFile, readlinkTarget } from "./links-util";
 import { join, dirname } from "node:path";
 
 describe("reflex-sync: symlink semantics", () => {
-  jest.setTimeout(15000);
+  vi.setConfig({ testTimeout: 15_000 });
   let tmp: string;
 
   beforeAll(async () => {

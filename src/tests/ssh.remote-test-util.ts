@@ -25,6 +25,12 @@ export const SSH_ENABLED =
     }
   })() === true;
 
+if (process.env.REFLECT_REQUIRE_SSH === "1" && !SSH_ENABLED) {
+  throw new Error(
+    "REFLECT_REQUIRE_SSH=1 but non-interactive SSH to localhost is unavailable",
+  );
+}
+
 export const describeIfSsh: typeof describe = SSH_ENABLED
   ? describe
   : describe.skip;

@@ -3,7 +3,7 @@
     "declaration": true,
     "lib": ["es2022"],
     "esModuleInterop": true,
-    "moduleResolution": "node",
+    "moduleResolution": "NodeNext",
     "noImplicitThis": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -12,10 +12,11 @@
     "sourceMap": true,
     "strictNullChecks": true,
     "target": "esnext",
-    "module": "esnext",
+    "module": "NodeNext",
     "rootDir": "src",
     "outDir": "dist"
   },
+  "include": ["src/**/*.ts"],
   "exclude": [
     "node_modules",
     "dist",

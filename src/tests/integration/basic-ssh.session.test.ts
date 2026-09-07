@@ -1,94 +1,99 @@
 import { createTestSession, SSH_AVAILABLE } from "./env.js";
 import type { TestSession } from "./env.js";
 
-jest.setTimeout(10_000);
+vi.setConfig({ testTimeout: 10_000 });
 
 const describeIfSsh = SSH_AVAILABLE ? describe : describe.skip;
 
-describeIfSsh("integration harness over ssh", () => {
-  let session: TestSession | undefined;
+describeIfSsh(
+  SSH_AVAILABLE
+    ? "integration harness over ssh"
+    : "integration harness over ssh [skipped: localhost SSH unavailable]",
+  () => {
+    let session: TestSession | undefined;
 
-  afterEach(async () => {
-    if (session) {
-      await session.dispose();
-      session = undefined;
-    }
-  });
-
-  it("mirrors remote beta changes back to alpha", async () => {
-    session = await createTestSession({
-      hot: false,
-      full: false,
-      beta: { remote: true },
+    afterEach(async () => {
+      if (session) {
+        await session.dispose();
+        session = undefined;
+      }
     });
 
-    await session.beta.writeFile("remote-only.txt", "beta");
-    await session.sync();
+    it("mirrors remote beta changes back to alpha", async () => {
+      session = await createTestSession({
+        hot: false,
+        full: false,
+        beta: { remote: true },
+      });
 
-    await expect(
-      session.alpha.readFile("remote-only.txt", "utf8"),
-    ).resolves.toBe("beta");
-  });
+      await session.beta.writeFile("remote-only.txt", "beta");
+      await session.sync();
 
-  it.only("LOCAL: create a file with nextjs style filename, sync, delete, sync", async () => {
-    session = await createTestSession({
-      hot: false,
-      full: false,
+      await expect(
+        session.alpha.readFile("remote-only.txt", "utf8"),
+      ).resolves.toBe("beta");
     });
 
-    // store/[[...page]].tsx
-    await session.alpha.mkdir("store");
-    await session.alpha.writeFile("store/[[...page]].tsx", "<html/>");
-    await session.sync();
+    it("LOCAL: create a file with nextjs style filename, sync, delete, sync", async () => {
+      session = await createTestSession({
+        hot: false,
+        full: false,
+      });
 
-    await expect(
-      session.beta.readFile("store/[[...page]].tsx", "utf8"),
-    ).resolves.toBe("<html/>");
+      // store/[[...page]].tsx
+      await session.alpha.mkdir("store");
+      await session.alpha.writeFile("store/[[...page]].tsx", "<html/>");
+      await session.sync();
 
-    await session.alpha.rm("store", { recursive: true });
-    await session.sync();
-    expect(await session.beta.exists("store")).toBe(false);
-  });
+      await expect(
+        session.beta.readFile("store/[[...page]].tsx", "utf8"),
+      ).resolves.toBe("<html/>");
 
-  it("create a file with simple filename, sync, delete, sync", async () => {
-    session = await createTestSession({
-      hot: false,
-      full: false,
-      beta: { remote: true },
+      await session.alpha.rm("store", { recursive: true });
+      await session.sync();
+      expect(await session.beta.exists("store")).toBe(false);
     });
 
-    // store/a.tsx
-    await session.alpha.mkdir("store");
-    await session.alpha.writeFile("store/a.txt", "<html/>");
-    await session.sync();
+    it("create a file with simple filename, sync, delete, sync", async () => {
+      session = await createTestSession({
+        hot: false,
+        full: false,
+        beta: { remote: true },
+      });
 
-    await expect(session.beta.readFile("store/a.txt", "utf8")).resolves.toBe(
-      "<html/>",
-    );
+      // store/a.tsx
+      await session.alpha.mkdir("store");
+      await session.alpha.writeFile("store/a.txt", "<html/>");
+      await session.sync();
 
-    await session.alpha.rm("store", { recursive: true });
-    await session.sync();
-    expect(await session.beta.exists("store")).toBe(false);
-  });
+      await expect(session.beta.readFile("store/a.txt", "utf8")).resolves.toBe(
+        "<html/>",
+      );
 
-  it("REMOTE: create a file with nextjs style filename, sync, delete, sync", async () => {
-    session = await createTestSession({
-      hot: false,
-      full: false,
-      beta: { remote: true },
+      await session.alpha.rm("store", { recursive: true });
+      await session.sync();
+      expect(await session.beta.exists("store")).toBe(false);
     });
 
-    // ..\\/[[...page]].tsx
-    await session.alpha.mkdir("..\\");
-    await session.alpha.writeFile("..\\/[[...page]].tsx", "<html/>");
-    await session.sync();
+    it("REMOTE: create a file with nextjs style filename, sync, delete, sync", async () => {
+      session = await createTestSession({
+        hot: false,
+        full: false,
+        beta: { remote: true },
+      });
 
-    await expect(
-      session.beta.readFile("..\\/[[...page]].tsx", "utf8"),
-    ).resolves.toBe("<html/>");
+      // ..\\/[[...page]].tsx
+      await session.alpha.mkdir("..\\");
+      await session.alpha.writeFile("..\\/[[...page]].tsx", "<html/>");
+      await session.sync();
 
-    await session.alpha.rm("..\\", { recursive: true });
-    await session.sync();
-    expect(await session.beta.exists("..\\")).toBe(false);
-  });
-});
+      await expect(
+        session.beta.readFile("..\\/[[...page]].tsx", "utf8"),
+      ).resolves.toBe("<html/>");
+
+      await session.alpha.rm("..\\", { recursive: true });
+      await session.sync();
+      expect(await session.beta.exists("..\\")).toBe(false);
+    });
+  },
+);

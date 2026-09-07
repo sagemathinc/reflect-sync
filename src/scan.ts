@@ -388,8 +388,7 @@ export async function runScan(opts: ScanOptions): Promise<void> {
   const readMetaNumber = (key: string): number | null => {
     try {
       const row = metaSelectStmt.get(key) as
-        | { value: string | number | null }
-        | undefined;
+        { value: string | number | null } | undefined;
       if (!row || row.value == null) return null;
       const num = Number(row.value);
       return Number.isFinite(num) ? num : null;

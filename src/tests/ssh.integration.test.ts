@@ -17,14 +17,8 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import { Database } from "../db";
-import { spawn } from "node:child_process";
-import {
-  canSshLocalhost,
-  withTempSshKey,
-  spawnSshLocal,
-  shQuote,
-  SshTestSetupError,
-} from "./ssh-util";
+import { spawn, spawnSync } from "node:child_process";
+import { withTempSshKey, spawnSshLocal, shQuote } from "./ssh-util";
 
 const dist = (...p: string[]) =>
   path.resolve(__dirname, "..", "..", "dist", ...p);
@@ -83,24 +77,31 @@ async function runScanOverSshIntoIngest(opts: {
   });
 }
 
-const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
+const sshRequested = process.env.REFLECT_SKIP_SSH_TEST === undefined;
+const sshAvailable =
+  sshRequested &&
+  spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "localhost", "true"],
+    { stdio: "ignore" },
+  ).status === 0;
 
-(sshEnabled ? describe : describe.skip)(
-  "SSH: remote scan -> local ingest",
+if (process.env.REFLECT_REQUIRE_SSH === "1" && !sshAvailable) {
+  throw new Error(
+    "REFLECT_REQUIRE_SSH=1 but non-interactive SSH to localhost is unavailable",
+  );
+}
+
+(sshAvailable ? describe : describe.skip)(
+  sshAvailable
+    ? "SSH: remote scan -> local ingest"
+    : "SSH: remote scan -> local ingest [skipped: localhost SSH unavailable]",
   () => {
     let tmp: string, aRoot: string, aDbLocal: string, aDbRemote: string;
     let keyCleanup: (() => Promise<void>) | null = null;
     let keyPath: string;
-    let sshSetupError: Error | null = null;
 
     beforeAll(async () => {
-      if (!(await canSshLocalhost())) {
-        sshSetupError = new SshTestSetupError(
-          "sshd not reachable on localhost",
-        );
-        return;
-      }
-
       // temp dirs
       tmp = await fs.mkdtemp(path.join(os.tmpdir(), "rfsync-ssh-test-"));
       aRoot = path.join(tmp, "alpha");
@@ -110,17 +111,9 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
       aDbLocal = path.join(tmp, "alpha.local.db");
       aDbRemote = path.join(tmp, "alpha.remote.db");
 
-      try {
-        const { keyPath: kp, cleanup } = await withTempSshKey();
-        keyPath = kp;
-        keyCleanup = cleanup;
-      } catch (err) {
-        if (err instanceof SshTestSetupError) {
-          sshSetupError = err;
-          return;
-        }
-        throw err;
-      }
+      const { keyPath: kp, cleanup } = await withTempSshKey();
+      keyPath = kp;
+      keyCleanup = cleanup;
     });
 
     afterAll(async () => {
@@ -131,11 +124,6 @@ const sshEnabled = process.env.REFLECT_SKIP_SSH_TEST === undefined;
     });
 
     test("delta from remote scan shows up in local DB", async () => {
-      if (sshSetupError) {
-        console.warn(`skipping ssh integration test: ${sshSetupError.message}`);
-        return;
-      }
-
       // create a file remotely-visible (same FS, but path is “remote root”)
       const f = path.join(aRoot, "hello.txt");
       await fs.writeFile(f, "hello ssh\n");

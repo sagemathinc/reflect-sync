@@ -7,33 +7,11 @@ import crypto from "node:crypto";
 import { CLI_NAME } from "./constants.js";
 import { defaultHashAlg } from "./hash.js";
 import { serializeIgnoreRules } from "./ignore.js";
+import { getReflectSyncHome } from "./app-paths.js";
+
+export { getReflectSyncHome } from "./app-paths.js";
 
 // Paths & Home
-
-export function getReflectSyncHome(): string {
-  const explicit = process.env.REFLECT_HOME?.trim();
-  if (explicit) {
-    return ensureDir(expandHome(explicit));
-  }
-
-  // XDG first
-  const xdg = process.env.XDG_DATA_HOME;
-  if (xdg && xdg.trim()) {
-    return ensureDir(join(expandHome(xdg), CLI_NAME));
-  }
-
-  // Platform defaults
-  const home = os.homedir();
-  if (process.platform === "darwin") {
-    return ensureDir(join(home, "Library", "Application Support", CLI_NAME));
-  }
-  if (process.platform === "win32") {
-    const appData = process.env.APPDATA || join(home, "AppData", "Roaming");
-    return ensureDir(join(appData, CLI_NAME));
-  }
-  // Linux/other
-  return ensureDir(join(home, ".local", "share", CLI_NAME));
-}
 
 // A persistent local identifier for this CLI_NAME "origin"/installation.
 export function getOrCreateEngineId(home = getReflectSyncHome()): string {
@@ -75,16 +53,6 @@ export function deriveSessionPaths(id: number, home = getReflectSyncHome()) {
 
 function ensureDir(p: string): string {
   fs.mkdirSync(p, { recursive: true });
-  return p;
-}
-
-function expandHome(p: string): string {
-  if (!p) {
-    return p;
-  }
-  if (p.startsWith("~")) {
-    return join(os.homedir(), p.slice(1));
-  }
   return p;
 }
 
@@ -724,8 +692,7 @@ export function loadSessionById(
   const db = open(sessionDbPath);
   try {
     const row = db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) as
-      | SessionRow
-      | undefined;
+      SessionRow | undefined;
     return row;
   } finally {
     db.close();
