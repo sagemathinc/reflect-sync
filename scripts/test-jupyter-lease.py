@@ -11,6 +11,7 @@ from jupyter_client import BlockingKernelClient
 from jupyter_client.connect import write_connection_file
 
 cli = str(pathlib.Path(__file__).resolve().parent.parent / "dist/cli.js")
+failure = sys.argv[2] if len(sys.argv) > 2 else "launcher"
 with tempfile.TemporaryDirectory() as directory:
     connection = str(pathlib.Path(directory) / "connection.json")
     write_connection_file(connection, key=b"synthetic-test-key")
@@ -41,13 +42,27 @@ with tempfile.TemporaryDirectory() as directory:
             client.wait_for_ready(timeout=60)
             log.seek(0)
             session = next(line.split()[-1] for line in log if line.startswith("Reflect kernel session "))
-            os.killpg(launcher.pid, signal.SIGKILL)
-            launcher.wait(timeout=5)
+            if failure == "supervisor":
+                state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session]))
+                pid = int(state["supervisorPid"])
+                assert pid > 1
+                targets = json.loads(subprocess.check_output(["node", cli, "jupyter", "targets"]))
+                host = next(t["host"] for t in targets if t["name"] == sys.argv[1])
+                subprocess.check_call(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host, "kill -KILL %s" % pid])
+            elif failure == "kernel":
+                client.execute("import os; os._exit(7)")
+            else:
+                os.killpg(launcher.pid, signal.SIGKILL)
+                launcher.wait(timeout=5)
             deadline = time.monotonic() + 30
             while True:
                 state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session]))
-                if state["status"] == "stopped":
-                    assert state["reason"] == "lease expired", state
+                if state["status"] in ("stopped", "failed"):
+                    if failure == "launcher":
+                        assert state["reason"] == "lease expired", state
+                    else:
+                        assert state["status"] == "failed", state
+                        launcher.wait(timeout=30)
                     print(json.dumps(state))
                     break
                 assert time.monotonic() < deadline, state

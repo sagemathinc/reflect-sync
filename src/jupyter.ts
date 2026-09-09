@@ -1,12 +1,20 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, rename, readdir } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  rename,
+  readdir,
+  rm,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { argsJoin } from "./shell-args.js";
 import { JUPYTER_SUPERVISOR } from "./jupyter-supervisor.js";
 import { downloadJupyterUv } from "./jupyter-bootstrap.js";
+import { withJupyterTargetLock } from "./jupyter-lock.js";
 
 export const CHANNEL_PORTS = [
   "shell_port",
@@ -25,6 +33,13 @@ export interface JupyterTarget {
   host: string;
   python: string;
   environment: string;
+  disabled?: boolean;
+}
+interface SessionSummary {
+  session: string;
+  target: string;
+  host: string;
+  stopped?: boolean;
 }
 interface RemoteState {
   status: string;
@@ -238,7 +253,22 @@ export async function prepareJupyter(
     [
       "sh",
       "-c",
-      'if ! command -v python3 >/dev/null; then "$1" venv --python 3.12.11 "$HOME/.local/share/reflect/jupyter/runtime" >&2; fi',
+      String.raw`
+set -eu
+umask 077
+command -v python3 >/dev/null && exit 0
+root="$HOME/.local/share/reflect/jupyter"
+mkdir -p "$root"
+exec 9>"$root/runtime.lock"
+flock -w 170 9
+[ -x "$root/runtime/bin/python" ] && exit 0
+version=$(mktemp -d "$root/runtime.XXXXXXXX")
+trap 'rm -rf "$version"' EXIT HUP INT TERM
+"$1" venv --python 3.12.11 "$version" >&2
+"$version/bin/python" -c 'import json, fcntl, ssl' >&2
+ln -s "$version" "$root/runtime"
+trap - EXIT HUP INT TERM
+`,
       "reflect-python",
       uv,
     ],
@@ -272,14 +302,19 @@ export async function listJupyterTargets(): Promise<unknown[]> {
   return result;
 }
 
-export async function listJupyterSessions(): Promise<unknown[]> {
+export async function listJupyterSessions(): Promise<SessionSummary[]> {
   const dir = join(home(), "sessions");
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const result: unknown[] = [];
+  const result: SessionSummary[] = [];
   for (const file of (await readdir(dir)).filter((x) => x.endsWith(".json"))) {
     const id = file.slice(0, -5);
     const record = JSON.parse(await readFile(join(dir, file), "utf8"));
-    result.push({ session: id, target: record.targetName, host: record.host });
+    result.push({
+      session: id,
+      target: record.targetName,
+      host: record.host,
+      stopped: record.stopped,
+    });
   }
   return result;
 }
@@ -305,30 +340,98 @@ export async function registerJupyterTarget(
     operation: "validate",
     python: target.python,
   });
-  await savePrivate(join(home(), "targets", `${name}.json`), target);
-  const dataHome =
-    process.env.JUPYTER_DATA_DIR ||
-    join(
-      process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
-      "jupyter",
-    );
-  const spec = join(dataHome, "kernels", `reflect-${name}`, "kernel.json");
-  await savePrivate(spec, {
-    argv: [
-      ...launcherArgv,
-      "jupyter",
-      "launch",
-      "--target",
-      name,
-      "--connection-file",
-      "{connection_file}",
-    ],
-    display_name: `Python - ${name}`,
-    language: "python",
-    interrupt_mode: "signal",
-    metadata: { reflect: { remote: true, protocol: 1 } },
+  return await withJupyterTargetLock(home(), name, async () => {
+    const targetPath = join(home(), "targets", `${name}.json`);
+    try {
+      if (JSON.parse(await readFile(targetPath, "utf8")).disabled) {
+        throw Error(
+          "Target removal is incomplete; retry remove before registering again",
+        );
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await savePrivate(targetPath, target);
+    const dataHome =
+      process.env.JUPYTER_DATA_DIR ||
+      join(
+        process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+        "jupyter",
+      );
+    const spec = join(dataHome, "kernels", `reflect-${name}`, "kernel.json");
+    await savePrivate(spec, {
+      argv: [
+        ...launcherArgv,
+        "jupyter",
+        "launch",
+        "--target",
+        name,
+        "--connection-file",
+        "{connection_file}",
+      ],
+      display_name: `Python - ${name}`,
+      language: "python",
+      interrupt_mode: "signal",
+      metadata: { reflect: { remote: true, protocol: 1 } },
+    });
+    return spec;
   });
-  return spec;
+}
+
+async function stopRemote(
+  host: string,
+  script: string,
+  session: string,
+): Promise<void> {
+  await rpc(host, script, { operation: "stop", session });
+  const deadline = Date.now() + 15000;
+  while (true) {
+    const state = await rpc(host, script, { operation: "status", session });
+    if (
+      ["stopped", "failed"].includes(state.status) ||
+      state.reason === "VM rebooted"
+    )
+      return;
+    if (state.status === "lost" || Date.now() > deadline)
+      throw Error(
+        "Remote termination is unconfirmed; retry after the lease expires",
+      );
+    await delay(200);
+  }
+}
+
+export async function removeJupyterTarget(name: string): Promise<void> {
+  validateTargetName(name);
+  await withJupyterTargetLock(home(), name, async () => {
+    const path = join(home(), "targets", `${name}.json`);
+    const target = JSON.parse(await readFile(path, "utf8"));
+    await savePrivate(path, { ...target, disabled: true });
+    for (const session of await listJupyterSessions()) {
+      if (session.target !== name || session.stopped) continue;
+      const record = JSON.parse(
+        await readFile(
+          join(home(), "sessions", `${session.session}.json`),
+          "utf8",
+        ),
+      );
+      await stopRemote(record.host, record.script, session.session);
+      await savePrivate(join(home(), "sessions", `${session.session}.json`), {
+        ...record,
+        stopped: true,
+      });
+    }
+    const dataHome =
+      process.env.JUPYTER_DATA_DIR ||
+      join(
+        process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+        "jupyter",
+      );
+    await rm(join(dataHome, "kernels", `reflect-${name}`), {
+      recursive: true,
+      force: true,
+    });
+    await rm(path);
+  });
 }
 
 export async function jupyterSessionCommand(
@@ -339,6 +442,13 @@ export async function jupyterSessionCommand(
   const record = JSON.parse(
     await readFile(join(home(), "sessions", `${id}.json`), "utf8"),
   );
+  if (operation === "stop") {
+    await stopRemote(record.host, record.script, id);
+    await savePrivate(join(home(), "sessions", `${id}.json`), {
+      ...record,
+      stopped: true,
+    });
+  }
   const state = await rpc(record.host, record.script, {
     operation,
     session: id,
@@ -365,6 +475,7 @@ export async function launchJupyter(
   const target: JupyterTarget = JSON.parse(
     await readFile(join(home(), "targets", `${targetName}.json`), "utf8"),
   );
+  if (target.disabled) throw Error("Remote kernel target is being removed");
   const session = randomUUID();
   let script: string | undefined;
   let tunnel: ChildProcess | undefined;
@@ -385,26 +496,35 @@ export async function launchJupyter(
   try {
     script = await helper(target.host);
     if (stopping) return;
-    await savePrivate(join(home(), "sessions", `${session}.json`), {
-      host: target.host,
-      script,
-      targetName,
-      launcherPid: process.pid,
+    const scriptPath = script;
+    await withJupyterTargetLock(home(), targetName, async () => {
+      const currentTarget = JSON.parse(
+        await readFile(join(home(), "targets", `${targetName}.json`), "utf8"),
+      );
+      if (JSON.stringify(currentTarget) !== JSON.stringify(target))
+        throw Error("Target changed during launch; select it again");
+      if (stopping) return;
+      await savePrivate(join(home(), "sessions", `${session}.json`), {
+        host: target.host,
+        script,
+        targetName,
+        launcherPid: process.pid,
+      });
+      const request = {
+        operation: "start",
+        session,
+        connection,
+        python: target.python,
+        leaseSeconds,
+      };
+      // An ambiguous SSH response must not create a second remote kernel.
+      started = true;
+      try {
+        await rpc(target.host, scriptPath, request);
+      } catch {
+        if (!stopping) await rpc(target.host, scriptPath, request);
+      }
     });
-    const request = {
-      operation: "start",
-      session,
-      connection,
-      python: target.python,
-      leaseSeconds,
-    };
-    // An ambiguous SSH response must not create a second remote kernel.
-    started = true;
-    try {
-      await rpc(target.host, script, request);
-    } catch {
-      if (!stopping) await rpc(target.host, script, request);
-    }
     process.stderr.write(`Reflect kernel session ${session}\n`);
     const deadline = Date.now() + 40000;
     while (!stopping) {
@@ -470,6 +590,10 @@ export async function launchJupyter(
         child.on("exit", () => {
           tunnelFailures = Date.now() - opened < 2000 ? tunnelFailures + 1 : 0;
           if (tunnel === child) tunnel = undefined;
+          if (!stopping)
+            process.stderr.write(
+              "Reflect: kernel tunnel disconnected; in-flight output may be lost. Reconnecting without replay.\n",
+            );
         });
       }
       await delay(state.status === "starting" ? 200 : 1000);
@@ -478,22 +602,17 @@ export async function launchJupyter(
     tunnel?.kill("SIGTERM");
     if (script && started) {
       try {
-        await rpc(target.host, script, { operation: "stop", session });
-        const deadline = Date.now() + 10000;
-        while (true) {
-          const state = await rpc(target.host, script, {
-            operation: "status",
-            session,
-          });
-          if (["stopped", "failed", "lost"].includes(state.status)) break;
-          if (Date.now() > deadline)
-            throw Error("Remote stop confirmation timed out");
-          await delay(200);
-        }
+        await stopRemote(target.host, script, session);
+        const path = join(home(), "sessions", `${session}.json`);
+        const record = JSON.parse(await readFile(path, "utf8"));
+        await savePrivate(path, { ...record, stopped: true });
       } catch {
         process.stderr.write(
           "Reflect: remote stop not confirmed; lease expiry will clean up the kernel.\n",
         );
+        // Do not let a standard client restart while the previous lease may
+        // still be alive. No renewals are performed during this grace period.
+        await delay((leaseSeconds + 2) * 1000);
       }
     }
     process.off("SIGTERM", onStop);

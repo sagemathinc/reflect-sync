@@ -6,6 +6,7 @@ import {
   listJupyterEnvironments,
   listJupyterTargets,
   listJupyterSessions,
+  removeJupyterTarget,
   prepareJupyter,
   registerJupyterTarget,
 } from "./jupyter.js";
@@ -20,6 +21,13 @@ export function registerJupyterCommands(program: Command): void {
   jupyter.command("sessions").action(async () => {
     process.stdout.write(JSON.stringify(await listJupyterSessions()) + "\n");
   });
+  jupyter
+    .command("remove")
+    .requiredOption("--target <name>")
+    .action(async (opts) => {
+      await removeJupyterTarget(opts.target);
+      process.stdout.write(JSON.stringify({ removed: opts.target }) + "\n");
+    });
   jupyter
     .command("setup")
     .requiredOption("--target <name>")

@@ -28,6 +28,9 @@ importers:
       fast-ignore:
         specifier: ^2.0.0
         version: 2.0.0
+      proper-lockfile:
+        specifier: 4.1.2
+        version: 4.1.2
     devDependencies:
       "@commander-js/extra-typings":
         specifier: ^15.0.0
@@ -47,6 +50,9 @@ importers:
       "@types/node":
         specifier: ^26.4.1
         version: 26.4.1
+      "@types/proper-lockfile":
+        specifier: 4.1.4
+        version: 4.1.4
       "@typescript-eslint/eslint-plugin":
         specifier: ^8.69.0
         version: 8.69.0(@typescript-eslint/parser@8.69.0(eslint@10.10.0(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@10.10.0(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
@@ -967,10 +973,22 @@ packages:
         integrity: sha512-k97ENvZWtvA6yqz5/FS6a7duDgOPEeOQOc2iKS/nY6mX6qJUKtLnWzQS+Xj6tXweyj6ZcTAK2Qecetnvi9nCLA==,
       }
 
+  "@types/proper-lockfile@4.1.4":
+    resolution:
+      {
+        integrity: sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ==,
+      }
+
   "@types/resolve@1.20.2":
     resolution:
       {
         integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==,
+      }
+
+  "@types/retry@0.12.5":
+    resolution:
+      {
+        integrity: sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw==,
       }
 
   "@typescript-eslint/eslint-plugin@8.69.0":
@@ -1468,6 +1486,12 @@ packages:
       }
     engines: { node: ">=10.13.0" }
 
+  graceful-fs@4.2.11:
+    resolution:
+      {
+        integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==,
+      }
+
   grammex@3.1.13:
     resolution:
       {
@@ -1837,6 +1861,12 @@ packages:
         integrity: sha512-dKp+C4iXWK4vVYZmYSd0KBH5F/h1HoZRsbJ82AVKRO3PEo8L4lBS/vLwhVtpwwuYcoIsVY+1JYKR268yn480uQ==,
       }
 
+  proper-lockfile@4.1.2:
+    resolution:
+      {
+        integrity: sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA==,
+      }
+
   punycode@2.3.1:
     resolution:
       {
@@ -1871,6 +1901,13 @@ packages:
       }
     engines: { node: ">= 0.4" }
     hasBin: true
+
+  retry@0.12.0:
+    resolution:
+      {
+        integrity: sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==,
+      }
+    engines: { node: ">= 4" }
 
   reusify@1.1.0:
     resolution:
@@ -1934,6 +1971,12 @@ packages:
     resolution:
       {
         integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==,
+      }
+
+  signal-exit@3.0.7:
+    resolution:
+      {
+        integrity: sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==,
       }
 
   smob@1.5.0:
@@ -2572,7 +2615,13 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
+  "@types/proper-lockfile@4.1.4":
+    dependencies:
+      "@types/retry": 0.12.5
+
   "@types/resolve@1.20.2": {}
+
+  "@types/retry@0.12.5": {}
 
   "@typescript-eslint/eslint-plugin@8.69.0(@typescript-eslint/parser@8.69.0(eslint@10.10.0(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@10.10.0(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)":
     dependencies:
@@ -2935,6 +2984,8 @@ snapshots:
     dependencies:
       is-glob: 4.0.3
 
+  graceful-fs@4.2.11: {}
+
   grammex@3.1.13: {}
 
   has-flag@4.0.0:
@@ -3099,6 +3150,12 @@ snapshots:
 
   printable-characters@1.0.42: {}
 
+  proper-lockfile@4.1.2:
+    dependencies:
+      graceful-fs: 4.2.11
+      retry: 0.12.0
+      signal-exit: 3.0.7
+
   punycode@2.3.1: {}
 
   qified@0.10.1:
@@ -3114,6 +3171,8 @@ snapshots:
       is-core-module: 2.16.1
       path-parse: 1.0.7
       supports-preserve-symlinks-flag: 1.0.0
+
+  retry@0.12.0: {}
 
   reusify@1.1.0: {}
 
@@ -3185,6 +3244,8 @@ snapshots:
   shebang-regex@3.0.0: {}
 
   siginfo@2.0.0: {}
+
+  signal-exit@3.0.7: {}
 
   smob@1.5.0: {}
 

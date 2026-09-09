@@ -1,7 +1,7 @@
 // Shipped with Reflect and installed by content hash. Only Python's standard
 // library is needed by the supervisor; the selected interpreter runs the kernel.
 export const JUPYTER_SUPERVISOR = String.raw`
-import fcntl, hashlib, json, os, pathlib, re, signal, subprocess, sys, time, uuid
+import fcntl, hashlib, json, os, pathlib, re, selectors, shutil, signal, subprocess, sys, time, uuid
 
 os.umask(0o077)
 ROOT = pathlib.Path.home() / ".local/share/reflect/jupyter"
@@ -34,8 +34,49 @@ def status(directory):
         return {"status": "lost", "reason": "VM rebooted"}
     # A hung/dead supervisor must not appear ready forever.
     if state["status"] in ("starting", "ready") and time.time() - state["updated"] > 10:
+        guard = directory / "guard.json"
+        if guard.exists():
+            identity = read(guard)
+            try:
+                current = pathlib.Path("/proc/%s/stat" % identity["pid"]).read_text().rsplit(")", 1)[1].split()
+                gone = current[0] == "Z" or current[19] != identity["start"]
+            except FileNotFoundError:
+                gone = True
+            if gone:
+                (directory / "request.json").unlink(missing_ok=True)
+                (directory / "kernel.json").unlink(missing_ok=True)
+                return {"status": "failed", "reason": "Supervisor exited; kernel process group stopped"}
         return {"status": "lost", "reason": "Supervisor heartbeat expired"}
     return state
+
+def guard_kernel(directory):
+    # This process is the group leader until every owned process is killed.
+    # A lifetime pipe and independent lease check also cover supervisor death.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    identity = pathlib.Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()
+    write(directory / "guard.json", {"pid": os.getpid(), "start": identity[19]})
+    request = read(directory / "request.json")
+    selector = selectors.DefaultSelector()
+    selector.register(sys.stdin, selectors.EVENT_READ)
+    try:
+        def child_signals():
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        process = subprocess.Popen([request["python"], "-m", "ipykernel_launcher", "-f", str(directory / "kernel.json")],
+            stdin=subprocess.DEVNULL, preexec_fn=child_signals)
+        while True:
+            code = process.poll()
+            if code is not None:
+                write(directory / "kernel-exit.json", {"code": code})
+                return
+            if selector.select(timeout=0.2) or time.time() > read(directory / "lease.json")["until"]:
+                return
+    except Exception as error:
+        write(directory / "kernel-exit.json", {"code": 1, "reason": str(error)})
+    finally:
+        # Killing this group also kills us; the supervisor observes termination.
+        os.killpg(os.getpid(), signal.SIGKILL)
 
 def supervise(directory):
     request = read(directory / "request.json")
@@ -55,12 +96,20 @@ def supervise(directory):
     signal.signal(signal.SIGINT, stopping)
     try:
         with open(directory / "kernel.log", "ab") as log:
-            process = subprocess.Popen([request["python"], "-m", "ipykernel_launcher", "-f", str(file)],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+            process = subprocess.Popen([sys.executable, __file__, "guard", str(directory)],
+                stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True)
         started = time.monotonic()
         while True:
             if process.poll() is not None:
-                state = {"status": "stopped" if process.returncode == 0 else "failed", "exitCode": process.returncode}
+                result = directory / "kernel-exit.json"
+                details = read(result) if result.exists() else {}
+                code = details.get("code", process.returncode)
+                expired = time.time() > read(directory / "lease.json")["until"]
+                state = {"status": "stopped" if code == 0 or expired else "failed", "exitCode": code}
+                if expired:
+                    state["reason"] = "lease expired"
+                elif details.get("reason"):
+                    state["reason"] = details["reason"]
                 break
             with locked(directory / "lock"):
                 lease = read(directory / "lease.json")
@@ -81,7 +130,7 @@ def supervise(directory):
                     pass
                 if time.monotonic() - started > 30:
                     raise RuntimeError("Kernel did not bind its ports within 30 seconds")
-            state.update(boot=BOOT, updated=time.time())
+            state.update(boot=BOOT, updated=time.time(), supervisorPid=os.getpid())
             write(directory / "state.json", state)
             time.sleep(0.2)
     except Exception as error:
@@ -96,6 +145,7 @@ def supervise(directory):
             except ProcessLookupError:
                 pass
             process.wait()
+            process.stdin.close()
         state.update(boot=BOOT, updated=time.time())
         write(directory / "state.json", state)
         file.unlink(missing_ok=True)
@@ -142,23 +192,37 @@ finally:
             versions = ROOT / "environment-versions"
             versions.mkdir(exist_ok=True, mode=0o700)
             version = versions / (environment.name + "-" + str(uuid.uuid4()))
-            subprocess.run([uv, "venv", "--python", sys.executable, str(version)], check=True, stdout=sys.stderr)
-            python = version / "bin/python"
-            subprocess.run([uv, "pip", "install", "--python", str(python), "ipykernel==6.30.1", "ipywidgets==8.1.7"], check=True, stdout=sys.stderr)
-            if recipe == "pytorch-cu128":
-                subprocess.run(["nvidia-smi"], check=True, timeout=20, stdout=sys.stderr)
-                subprocess.run([uv, "pip", "install", "--python", str(python), "numpy==2.2.6"], check=True, stdout=sys.stderr)
-                subprocess.run([uv, "pip", "install", "--python", str(python), "torch==2.8.0", "--index-url", "https://download.pytorch.org/whl/cu128"], check=True, stdout=sys.stderr)
-                subprocess.run([str(python), "-c", "import torch; assert torch.cuda.is_available(); x=torch.ones((32,32),device='cuda'); assert (x@x).sum().item()==32768; torch.cuda.synchronize()"], check=True, timeout=60, stdout=sys.stderr)
-            main({"operation": "validate", "python": str(python)})
-            write(version / "reflect-ready.json", {"recipe": recipe})
-            environment.symlink_to(version, target_is_directory=True)
+            try:
+                subprocess.run([uv, "venv", "--python", sys.executable, str(version)], check=True, stdout=sys.stderr)
+                python = version / "bin/python"
+                subprocess.run([uv, "pip", "install", "--python", str(python), "ipykernel==6.30.1", "ipywidgets==8.1.7"], check=True, stdout=sys.stderr)
+                if recipe == "pytorch-cu128":
+                    subprocess.run(["nvidia-smi"], check=True, timeout=20, stdout=sys.stderr)
+                    subprocess.run([uv, "pip", "install", "--python", str(python), "numpy==2.2.6"], check=True, stdout=sys.stderr)
+                    subprocess.run([uv, "pip", "install", "--python", str(python), "torch==2.8.0", "--index-url", "https://download.pytorch.org/whl/cu128"], check=True, stdout=sys.stderr)
+                    subprocess.run([str(python), "-c", "import torch; assert torch.cuda.is_available(); x=torch.ones((32,32),device='cuda'); assert (x@x).sum().item()==32768; torch.cuda.synchronize()"], check=True, timeout=60, stdout=sys.stderr)
+                main({"operation": "validate", "python": str(python)})
+                write(version / "reflect-ready.json", {"recipe": recipe})
+                environment.symlink_to(version, target_is_directory=True)
+            except BaseException:
+                shutil.rmtree(version, ignore_errors=True)
+                raise
             python = environment / "bin/python"
         return {"python": str(python), "environment": environment.name}
     if operation == "kernels":
         root = ROOT / "environments"
         return [{"environment": x.name, "python": str(x / "bin/python")} for x in root.glob("*") if (x / "bin/python").exists()]
     directory = ROOT / "sessions" / name(request["session"])
+    if operation == "stop":
+        directory.parent.mkdir(exist_ok=True, mode=0o700)
+        # Serialize cancellation with admission, including an uncertain start
+        # whose SSH command has not reached the supervisor yet.
+        with locked(directory.parent / (directory.name + ".lock")):
+            if not directory.exists():
+                directory.mkdir(mode=0o700)
+                (directory / "request.sha256").write_text("cancelled-before-start")
+                write(directory / "state.json", {"status": "stopped", "boot": BOOT, "updated": time.time()})
+                return status(directory)
     if operation == "start":
         directory.parent.mkdir(exist_ok=True, mode=0o700)
         # Retries of this launch must reuse its existing supervisor.
@@ -197,6 +261,8 @@ finally:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "supervise":
         supervise(pathlib.Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "guard":
+        guard_kernel(pathlib.Path(sys.argv[2]))
     else:
         try:
             print(json.dumps(main(json.load(sys.stdin))))

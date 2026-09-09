@@ -65,6 +65,8 @@ parse Jupyter messages, so comms and binary buffers use the same wire protocol.
 
 - SIGINT interrupts the remote kernel process group without killing SSH.
 - SIGTERM requests remote termination and waits for confirmation.
+- A lifetime-pipe guardian kills the owned process group if its supervisor dies;
+  it also checks the lease independently.
 - Protocol shutdown is handled by the kernel, whose exit terminates the launcher.
 - SIGKILL cannot be intercepted. The kernel lease expires after 60 seconds by
   default, even if other Reflect processes remain alive. For forced client-manager
@@ -74,6 +76,14 @@ parse Jupyter messages, so comms and binary buffers use the same wire protocol.
   In-flight work/output may be lost or uncertain; it is never automatically replayed.
 - A VM reboot loses kernel memory and requires an explicit new kernel.
 - Stopping a kernel does not stop or change billing for its VM.
+
+Remove a target with `reflect jupyter remove --target gpu`. This disables new
+launches and confirms that its recorded sessions are stopped before deleting the
+kernelspec/configuration. It does not delete remote environments or stop the VM.
+If SSH is unavailable, removal stays disabled and reports an error; retry once
+connectivity returns. Admission and removal use a cross-process target lock.
+On unconfirmed SIGTERM cleanup, the launcher waits out its lease before exiting;
+clients that force SIGKILL can still start a replacement before lease expiry.
 
 Session IDs appear on launcher stderr. Diagnostics do not print connection keys.
 Use `reflect jupyter status ID`, `interrupt ID`, and `stop ID` from the same local
@@ -90,6 +100,11 @@ create synthetic kernels, cleaning up their own sessions:
 python3 scripts/test-jupyter-client.py reflect-gpu
 python3 scripts/test-jupyter-multikernel.py reflect-gpu
 python3 scripts/test-jupyter-lease.py gpu
+python3 scripts/test-jupyter-lease.py gpu supervisor
+python3 scripts/test-jupyter-lease.py gpu kernel
+python3 scripts/test-jupyter-removal.py gpu
+python3 scripts/test-jupyter-startup-failures.py gpu
+python3 scripts/test-jupyter-gpu.py reflect-gpu
 ```
 
 These cover execution, completions, inspection, stdin, errors/rich output,
