@@ -12,7 +12,11 @@
       "default": "./dist/index.js"
     },
     "./bundle": "./dist/bundle.mjs",
-    "./cli": "./dist/cli.js"
+    "./cli": "./dist/cli.js",
+    "./jupyter": {
+      "types": "./dist/jupyter.d.ts",
+      "import": "./dist/jupyter.js"
+    }
   },
   "bin": {
     "reflect": "bin/reflect-sync.mjs",

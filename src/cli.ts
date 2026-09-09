@@ -5,6 +5,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
 import { registerForwardCommands } from "./forward-cli.js";
+import { registerJupyterCommands } from "./jupyter-cli.js";
 import { CLI_NAME } from "./constants.js";
 import { getSessionDbPath } from "./session-db.js";
 import {
@@ -80,6 +81,7 @@ program
 
 registerSessionCommands(program);
 registerForwardCommands(program);
+registerJupyterCommands(program);
 registerInstallCommand(program);
 registerDoctorCommand(program);
 
