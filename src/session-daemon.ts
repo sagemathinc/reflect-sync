@@ -17,10 +17,16 @@ import {
   updateForwardSession,
   type ForwardRow,
   loadForwardById,
+  loadSessionById,
 } from "./session-db.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
+import { inheritedOption } from "./cli-options.js";
+import { withResourceLock } from "./resource-lock.js";
+import {
+  isProcessAlive as isPidAlive,
+  stopProcess,
+} from "./process-lifecycle.js";
 import { launchForwardProcess } from "./forward-runner.js";
-import { stopPid } from "./session-manage.js";
 import {
   ConsoleLogger,
   LOG_LEVELS,
@@ -62,16 +68,6 @@ function removePidSync() {
   } catch {}
 }
 
-function isPidAlive(pid: number | null | undefined): boolean {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function resolveSessionDb(
   opts: { sessionDb?: string },
   command: Command,
@@ -82,52 +78,56 @@ function resolveSessionDb(
     return path;
   };
   if (opts.sessionDb) return ensure(opts.sessionDb);
-  const globals = command.optsWithGlobals() as { sessionDb?: string };
-  if (globals.sessionDb) return ensure(globals.sessionDb);
-  return ensure(getSessionDbPath());
+  return ensure(inheritedOption(command, "sessionDb", getSessionDbPath()));
 }
 
 async function superviseSessions(sessionDb: string, logger: Logger) {
   const rows = selectSessions(sessionDb, []);
-  for (const row of rows as SessionRow[]) {
-    const shouldRun = row.desired_state === "running";
-    const alive = isPidAlive(row.scheduler_pid);
+  for (const selected of rows as SessionRow[]) {
+    await withResourceLock(sessionDb, "sync", selected.id, async () => {
+      const row = loadSessionById(sessionDb, selected.id);
+      if (!row) return;
+      const shouldRun = row.desired_state === "running";
+      const alive = isPidAlive(row.scheduler_pid);
 
-    if (shouldRun) {
-      if (!alive) {
+      if (shouldRun) {
+        if (!alive) {
+          if (row.scheduler_pid) {
+            updateSession(sessionDb, row.id, { scheduler_pid: null });
+          }
+          const pid = spawnSchedulerForSession(sessionDb, row, logger);
+          if (pid) {
+            updateSession(sessionDb, row.id, { scheduler_pid: pid });
+            setActualState(sessionDb, row.id, "running");
+            recordHeartbeat(sessionDb, row.id, "running", pid);
+            if (logger.isLevelEnabled("debug")) {
+              logger.debug("launched scheduler", { session: row.id, pid });
+            }
+          } else {
+            setActualState(sessionDb, row.id, "error");
+            logger.warn("failed to launch scheduler", { session: row.id });
+          }
+        } else if (row.actual_state !== "running") {
+          setActualState(sessionDb, row.id, "running");
+        }
+      } else {
+        if (alive) {
+          await stopProcess(row.scheduler_pid);
+        }
         if (row.scheduler_pid) {
           updateSession(sessionDb, row.id, { scheduler_pid: null });
         }
-        const pid = spawnSchedulerForSession(sessionDb, row, logger);
-        if (pid) {
-          updateSession(sessionDb, row.id, { scheduler_pid: pid });
-          setActualState(sessionDb, row.id, "running");
-          recordHeartbeat(sessionDb, row.id, "running", pid);
-          if (logger.isLevelEnabled("debug")) {
-            logger.debug("launched scheduler", { session: row.id, pid });
-          }
-        } else {
-          setActualState(sessionDb, row.id, "error");
-          logger.warn("failed to launch scheduler", { session: row.id });
-        }
-      } else if (row.actual_state !== "running") {
-        setActualState(sessionDb, row.id, "running");
-      }
-    } else {
-      if (alive) {
-        const stopped = stopPid(row.scheduler_pid!);
-        if (!stopped) {
-          logger.warn("failed to stop scheduler", { session: row.id });
+        const targetState: ActualState = "stopped";
+        if (row.actual_state !== targetState) {
+          setActualState(sessionDb, row.id, targetState);
         }
       }
-      if (row.scheduler_pid) {
-        updateSession(sessionDb, row.id, { scheduler_pid: null });
-      }
-      const targetState: ActualState = "stopped";
-      if (row.actual_state !== targetState) {
-        setActualState(sessionDb, row.id, targetState);
-      }
-    }
+    }).catch((err) =>
+      logger.warn("sync supervision failed", {
+        id: selected.id,
+        error: String(err),
+      }),
+    );
   }
 }
 
@@ -137,37 +137,46 @@ function isForwardAlive(row: ForwardRow): boolean {
 
 async function superviseForwards(sessionDb: string, logger: Logger) {
   const forwards = selectForwardSessions(sessionDb);
-  for (const row of forwards as ForwardRow[]) {
-    const shouldRun = row.desired_state === "running";
-    const alive = isForwardAlive(row);
+  for (const selected of forwards as ForwardRow[]) {
+    await withResourceLock(sessionDb, "forward", selected.id, async () => {
+      const row = loadForwardById(sessionDb, selected.id);
+      if (!row) return;
+      const shouldRun = row.desired_state === "running";
+      const alive = isForwardAlive(row);
 
-    if (shouldRun) {
-      if (!alive) {
+      if (shouldRun) {
+        if (!alive) {
+          if (row.monitor_pid) {
+            updateForwardSession(sessionDb, row.id, { monitor_pid: null });
+          }
+          const forwardRow = loadForwardById(sessionDb, row.id);
+          if (!forwardRow) return;
+          const pid = await launchForwardProcess(sessionDb, forwardRow);
+          if (pid) {
+            logger.debug?.("launched forward ssh", { id: row.id, pid });
+          } else {
+            logger.warn("failed to launch forward ssh", { id: row.id });
+          }
+        } else if (row.actual_state !== "running") {
+          updateForwardSession(sessionDb, row.id, { actual_state: "running" });
+        }
+      } else {
+        if (alive && row.monitor_pid) {
+          await stopProcess(row.monitor_pid);
+        }
         if (row.monitor_pid) {
           updateForwardSession(sessionDb, row.id, { monitor_pid: null });
         }
-        const forwardRow = loadForwardById(sessionDb, row.id);
-        if (!forwardRow) continue;
-        const pid = await launchForwardProcess(sessionDb, forwardRow);
-        if (pid) {
-          logger.debug?.("launched forward ssh", { id: row.id, pid });
-        } else {
-          logger.warn("failed to launch forward ssh", { id: row.id });
+        if (row.actual_state !== "stopped") {
+          updateForwardSession(sessionDb, row.id, { actual_state: "stopped" });
         }
-      } else if (row.actual_state !== "running") {
-        updateForwardSession(sessionDb, row.id, { actual_state: "running" });
       }
-    } else {
-      if (alive && row.monitor_pid) {
-        stopPid(row.monitor_pid);
-      }
-      if (row.monitor_pid) {
-        updateForwardSession(sessionDb, row.id, { monitor_pid: null });
-      }
-      if (row.actual_state !== "stopped") {
-        updateForwardSession(sessionDb, row.id, { actual_state: "stopped" });
-      }
-    }
+    }).catch((err) =>
+      logger.warn("forward supervision failed", {
+        id: selected.id,
+        error: String(err),
+      }),
+    );
   }
 }
 
@@ -380,11 +389,7 @@ function defaultExecArgs(sessionDb: string): string[] {
 
 export function registerSessionDaemon(program: Command) {
   const addSessionDbOption = (cmd: Command) =>
-    cmd.option(
-      "--session-db <file>",
-      "override path to sessions.db",
-      getSessionDbPath(),
-    );
+    cmd.option("--session-db <file>", "override path to sessions.db");
 
   const daemon = program
     .command("daemon")

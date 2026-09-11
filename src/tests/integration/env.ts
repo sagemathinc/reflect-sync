@@ -179,7 +179,13 @@ export class TestSession {
   }
 
   async sync(options: TestSessionSyncOptions = {}): Promise<void> {
-    const args = ["sync", String(this.id), "--session-db", this.sessionDb];
+    const args = [
+      "sync",
+      "flush",
+      String(this.id),
+      "--session-db",
+      this.sessionDb,
+    ];
     if (options.maxCycles !== undefined) {
       args.push("--max-cycles", String(options.maxCycles));
     }

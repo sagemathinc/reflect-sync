@@ -995,7 +995,7 @@ async function runScheduler0({
       addSshControlArgs(sshArgs);
       sshArgs.push(
         params.host,
-        `${remoteCommand} scan`,
+        `${remoteCommand} sync scan`,
         "--root",
         params.root,
         "--emit-delta",
@@ -1205,7 +1205,7 @@ async function runScheduler0({
     if (port != null) {
       sshArgs.push("-p", String(port));
     }
-    sshArgs.push(host, `${remoteCommand} watch`, "--root", root);
+    sshArgs.push(host, `${remoteCommand} sync watch`, "--root", root);
     sshArgs.push("--hash", hash);
     if (numericIds) {
       sshArgs.push("--numeric-ids");

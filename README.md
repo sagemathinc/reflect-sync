@@ -1,8 +1,12 @@
 # ReflectSync
 
-ReflectSync is a fast, fully observable, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move.  It can also be used as a library from nodejs.
+ReflectSync is a fast, fully observable, bidirectional file synchronizer built on rsync and SQLite. It targets large development trees, remote SSH roots, and long-running sessions (days to months) where you want to understand exactly why bytes move. It can also be used as a library from nodejs.
 
 Project site: https://sagemathinc.github.io/reflect-sync/
+
+The CLI has three resource domains: `reflect sync`, `reflect forward`, and
+`reflect jupyter`. See the [CLI contract](docs/cli-contract.md) for lifecycle,
+identifiers, JSON output, and the intentional 0.17.0 command changes.
 
 ## Why ReflectSync?
 
@@ -10,7 +14,7 @@ Project site: https://sagemathinc.github.io/reflect-sync/
 - **Modern rsync pipeline.** Each session owns a persistent SSH ControlMaster, rsync batches are chunked, and remote scans stream NDJSON over stdin/stdout instead of temporary files.
 - **Watchers + restricted scans.** Hot paths flow through debounced watchers; forced scans read NUL-separated path lists from stdin.
 - **Filesystem-aware.** Every root is probed for case sensitivity, Unicode normalization, reflink support, and privilege level. Sessions record canonical winners for conflicts so macOS/Windows volumes cannot clobber distinct case variants that originated on Linux.
-- **Transparency-first.** Structured logs, copy_pending enforcement, and `reflect query …` let you inspect exactly what happened. Nothing is hidden inside opaque daemons.
+- **Transparency-first.** Structured logs, copy_pending enforcement, and `reflect sync query …` let you inspect exactly what happened. Nothing is hidden inside opaque daemons.
 
 > Requires **Node.js 22+** and a recent rsync.
 
@@ -20,33 +24,33 @@ Project site: https://sagemathinc.github.io/reflect-sync/
 pnpm install -g reflect-sync
 
 # create a session between two paths (local or ssh-style)
-reflect create ~/alpha ~/beta
+reflect sync create ~/alpha ~/beta
 
 # run a sync cycle until copy_pending clears
-reflect sync 1
+reflect sync flush 1
 
 # follow structured progress logs
-reflect logs 1 --follow --message progress
+reflect sync logs 1 --follow --message progress
 
 # inspect current state
-reflect status 1
-reflect query recent 1
+reflect sync status 1
+reflect sync query recent 1
 ```
 
 Remote endpoints use the familiar `user@host:/absolute/path` syntax (or `host:2222:/path` for custom ports). Reflect opens one SSH ControlMaster per session and refuses to run if the remote `reflect-sync` binary reports a different version, preventing protocol drift.
 
 ## Architecture at a glance
 
-1. **Scheduler** – coordinates scans, watchers, merge planning, and rsync batches. It can run once via `reflect sync <id>` or stay resident under `reflect daemon`.
+1. **Scheduler** – coordinates scans, watchers, merge planning, and rsync batches. It can run once via `reflect sync flush <id>` or stay resident under `reflect daemon`.
 2. **Scans & watchers** – `scan.ts` crawls filesystems (locally or over SSH) while `hotwatch.ts` listens for inotify/FSEvents. Updates flow into alpha/beta/base SQLite DBs.
 3. **Merge planner** – `three-way-merge.ts` compares alpha/beta/base rows, respects merge strategies (default `last-write-wins`), and emits rsync batches while honoring `copy_pending` and canonical conflict winners.
 4. **Transport** – `rsync.ts` and `ssh-control.ts` keep SSH sockets alive, capture transfer logs (mode/user/group), and retry if the ControlMaster dies.
 
-Because state lives in SQLite, you can reproduce or audit any run with normal SQL tooling. The CLI (`reflect query recent`, `reflect query size`, …) provides common summaries without learning the schema.
+Because state lives in SQLite, you can reproduce or audit any run with normal SQL tooling. The CLI (`reflect sync query recent`, `reflect sync query size`, …) provides common summaries without learning the schema.
 
 ## Trust & observability
 
-- **Structured logging everywhere.** Scans, merges, rsync batches, and assertions emit JSON logs consumable via `reflect logs … --json`.
+- **Structured logging everywhere.** Scans, merges, rsync batches, and assertions emit JSON logs consumable via `reflect sync logs … --json`.
 - **Environment probing.** Sessions fail fast if filesystem capability probes (case sensitivity, Unicode normalization, reflinks) or privilege checks fail—we never guess.
 - **Version enforcement.** Remote sessions run `reflect --version` over SSH and compare it to the local version before syncing.
 - **Explicit merge semantics.** The default `last-write-wins` strategy is documented, and logs call out why each path was copied, skipped, or flagged as a conflict.
@@ -56,16 +60,15 @@ Because state lives in SQLite, you can reproduce or audit any run with normal SQ
 
 Open source under the MIT License.
 
-
 ## Details
 
 All the planned major functionality is now implemented and there is a test suite.
 
 ### Some differences compared to Mutagen:
 
-Reflect-sync is inspired by Mutagen, but is also completely new, with a different implementation stack and CLI options.  In particular:
+Reflect-sync is inspired by Mutagen, but is also completely new, with a different implementation stack and CLI options. In particular:
 
-- the command line options are different: it's  not a drop in replacement
+- the command line options are different: it's not a drop in replacement
 - conflicts are resolved using **last write wins** using logical clock intervals. There is no manual conflict resolution mode.
 - we use Sha\-256 by default, but also support "sha1", "sha512", "blake2b512", "blake2s256", "sha3-256", and "sha3-512".
 - only tested on macos and linux \(currently\)
@@ -77,9 +80,9 @@ See [Design Details](./DESIGN.md).
 
 ### Consistency guarantees & tradeoffs
 
-Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re\-sampling the destination signature \(hash \+ metadata\). This gives a practical guarantee: 
+Reflect’s realtime path treats each rsync as a small transaction: before we copy a path from one side to the other we acquire a watcher lock on the destination, rsync the path, and only release the lock after re\-sampling the destination signature \(hash \+ metadata\). This gives a practical guarantee:
 
-> **if a subtree is only modified on one side, Reflect will never push older bytes back over it.** 
+> **if a subtree is only modified on one side, Reflect will never push older bytes back over it.**
 
 In other words, corruption can only occur if both sides are actively editing the same path \(a true conflict\). The default merge strategy is **`last-write-wins`**, which compares our logical observation time \(`updated`\) on each side. This means a freshly\-deleted or recreated file always beats an old mtime\-preserved copy even if the filesystem timestamp didn’t change. If you truly want to compare raw mtimes, you can opt into the legacy `lww-mtime` strategy.
 
@@ -147,11 +150,11 @@ The package exposes the `reflect-sync` CLI (and aliases `reflect`) via its `bin`
 
 ```bash
 reflect --help
-reflect create /path/to/alpha /path/to/beta
-reflect list
-reflect status 1
-reflect logs 1
-reflect create /path/to/alpha /path/to/beta --ignore=node_modules --ignore="*.log"
+reflect sync create /path/to/alpha /path/to/beta
+reflect sync list
+reflect sync status 1
+reflect sync logs 1
+reflect sync create /path/to/alpha /path/to/beta --ignore=node_modules --ignore="*.log"
 ```
 
 - The scheduler runs a scan on each side, computes a 3-way plan, runs rsync, and repeats on an adaptive interval.
@@ -163,17 +166,17 @@ reflect create /path/to/alpha /path/to/beta --ignore=node_modules --ignore="*.lo
 Two ways to do it:
 
 ```bash
-reflect create user@alpha.example.com:/tmp/alpha /tmp/beta
+reflect sync create user@alpha.example.com:/tmp/alpha /tmp/beta
 # or specify a non-default SSH port
-reflect create /tmp/beta alpha.example.com:2222:/srv/alpha
+reflect sync create /tmp/beta alpha.example.com:2222:/srv/alpha
 ```
 
 or
 
 ```bash
-reflect create /tmp/beta user@alpha.example.com:/tmp/alpha
+reflect sync create /tmp/beta user@alpha.example.com:/tmp/alpha
 # default port 22 can also be written with a double colon
-reflect create /tmp/beta alpha.example.com::/srv/alpha
+reflect sync create /tmp/beta alpha.example.com::/srv/alpha
 ```
 
 The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON deltas, and ingest them locally.
@@ -184,9 +187,9 @@ The scheduler will SSH to `alpha-host`, run a remote scan that streams NDJSON de
 
 ### Copy-on-write reflink copies (optional)
 
-Reflect never attempts reflink copies automatically. If **both roots are local and on the same filesystem**, pass `--enable-reflink` to `reflect create` (or `reflect edit … --enable-reflink`) to force `cp --reflink=always --parents …` for alpha↔beta copies. The scheduler CLI also accepts `--enable-reflink` when you launch it manually. Remote sessions must leave the flag unset; the CLI errors if either side is remote.
+Reflect never attempts reflink copies automatically. If **both roots are local and on the same filesystem**, pass `--enable-reflink` to `reflect sync create` (or `reflect sync edit … --enable-reflink`) to force `cp --reflink=always --parents …` for alpha↔beta copies. The scheduler CLI also accepts `--enable-reflink` when you launch it manually. Remote sessions must leave the flag unset; the CLI errors if either side is remote.
 
-With the flag enabled Reflect fails fast if the filesystem refuses a reflink copy—there is no silent fallback to rsync—so only opt in when you know the workload supports CoW clones (e.g., btrfs, XFS with reflinks). `reflect list` and `reflect status` annotate sessions with `reflink` so you can confirm the setting later.
+With the flag enabled Reflect fails fast if the filesystem refuses a reflink copy—there is no silent fallback to rsync—so only opt in when you know the workload supports CoW clones (e.g., btrfs, XFS with reflinks). `reflect sync list` and `reflect sync status` annotate sessions with `reflink` so you can confirm the setting later.
 
 ### Running as a daemon
 
@@ -204,14 +207,14 @@ Use `reflect daemon install` to install a user service (systemd on Linux, Launch
 ### Common CLI commands
 
 ```bash
-reflect create <alpha> <beta>         # start a new session
-reflect list                          # list sessions
-reflect status <id-or-name>                   # show heartbeat / merge status
-reflect logs <id-or-name> [--follow]          # stream recent structured logs
-reflect logs <id-or-name> --message progress  # tail only progress events (scan/hash/rsync/etc.)
-reflect stop <id-or-name...>                  # stop one or more sessions
-reflect start <id-or-name...>                 # start (and auto-start scheduler if needed)
-reflect terminate <id-or-name...>             # stop and remove session state
+reflect sync create <alpha> <beta>         # start a new session
+reflect sync list                          # list sessions
+reflect sync status <id-or-name>                   # show heartbeat / merge status
+reflect sync logs <id-or-name> [--follow]          # stream recent structured logs
+reflect sync logs <id-or-name> --message progress  # tail only progress events (scan/hash/rsync/etc.)
+reflect sync stop <id-or-name...>                  # stop one or more sessions
+reflect sync start <id-or-name...>                 # start (and auto-start scheduler if needed)
+reflect sync remove --stop <id-or-name...>             # stop and remove session state
 reflect daemon logs [--follow]                # inspect supervisor logs persisted in sessions.db
 reflect daemon start                          # ensure the background supervisor is running
 reflect daemon stop                           # stop the supervisor (removes the PID file)
@@ -224,11 +227,11 @@ All commands honor `--session-db <path>` if you want to keep session metadata ou
 The sync databases already track file metadata, so you can pull summaries without re-scanning the filesystem:
 
 ```bash
-reflect query size 3                      # total logical bytes on alpha side
-reflect query size --side=beta 3          # beta side
-reflect query size --path=work 3          # only files under “work/”
-reflect query recent --max=20 3           # 20 most recently touched files
-reflect query recent --path=logs --json 3 # JSON output for scripting
+reflect sync query size 3                      # total logical bytes on alpha side
+reflect sync query size --side=beta 3          # beta side
+reflect sync query size --path=work 3          # only files under “work/”
+reflect sync query recent --max=20 3           # 20 most recently touched files
+reflect sync query recent --path=logs --json 3 # JSON output for scripting
 ```
 
 Paths must live inside the session root (after ignore rules); for remote sessions the command resolves `~/` via SSH just like the scheduler.
@@ -248,12 +251,12 @@ Each forward row stores its `ssh` invocation. The daemon \(`reflect daemon start
 
 ### Monitoring changes in real time
 
-The `reflect monitor` command streams change events (hot watcher hits and scan-driven deltas) for any session. It’s useful for dashboards and editors:
+The `reflect sync monitor` command streams change events (hot watcher hits and scan-driven deltas) for any session. It’s useful for dashboards and editors:
 
 ```bash
-reflect monitor 7                     # human-readable stream for both sides
-reflect monitor 7 --json --alpha-only # machine-friendly JSON for alpha only
-reflect monitor project-a --since=60000  # replay the last minute of activity, then keep streaming
+reflect sync monitor 7                     # human-readable stream for both sides
+reflect sync monitor 7 --json --alpha-only # machine-friendly JSON for alpha only
+reflect sync monitor project-a --since=60000  # replay the last minute of activity, then keep streaming
 ```
 
 Each event includes the side, path, source (`hotwatch`, `scan`, `remote-watch`), timestamps, and hashes when available. Use `--beta-only`, `--poll-interval`, or `--hot-interval` to tune the feed.
@@ -270,7 +273,7 @@ The monitor command allows you to watch a potentially huge nested directory with
   - shallow root watchers \+ bounded deep “hot” watchers \(recently touched subtrees\),
   - **restricted cycles** run the same scan/merge pipeline on the hot set immediately,
   - periodically run a full scan \+ merge; interval adapts to prior cycle time and recent rsync errors.
-  - **Progress logging:** hashing and rsync stages emit logs tagged with `message="progress"` plus scopes in the metadata. Use `reflect logs <id> --message progress -f` to observe in real time.
+  - **Progress logging:** hashing and rsync stages emit logs tagged with `message="progress"` plus scopes in the metadata. Use `reflect sync logs <id> --message progress -f` to observe in real time.
 
 ---
 
@@ -322,7 +325,7 @@ TypeScript compiler outputs to `dist/.`
 ## Notes
 
 - Executables are provided via `bin` and linked to the compiled files in `dist/`. If you’re hacking locally in this repo, either run `node dist/cli.js …` or `pnpm link --global .` to get `reflect` on your PATH.
-- For SSH use, ensure the remote has Node 22\+ and `reflect` on PATH \(installed or included in your SEA image\). Then `reflect scan … --emit-delta | reflect ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
+- For SSH use, ensure the remote has Node 22\+ and `reflect` on PATH \(installed or included in your SEA image\). Then `reflect sync scan … --emit-delta | reflect sync ingest …` is all you need. Also, make sure you have ssh keys setup for passwordless login.
 
 ---
 
@@ -408,7 +411,7 @@ The MIT license is maximally permissive: embed, modify, and redistribute with mi
 
 | Scenario                                                                | Recommended                  | Why                                                                                  | Notes                                                                            |
 | ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ReflectSync**              | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod                   |
+| **Two endpoints; predictable outcome; no conflict copies wanted**       | **ReflectSync**              | Deterministic **LWW** with explicit tie-preference; symlink-aware; transparent plans | Great for laptop↔server, container bind-mounts, staging↔prod                     |
 | **One-way near-real-time mirroring** (e.g., deploy artifacts → webroot) | **lsyncd**                   | Event→batch→rsync is simple and robust                                               | If you still want ReflectSync, just run one side as authoritative (prefer-alpha) |
 | **Dev loop; tons of small files; low latency**                          | **Mutagen**                  | Purpose-built for fast dev sync; very low overhead on edits                          | License differs; protocol/agent required                                         |
 | **Many devices; peer-to-peer mesh; zero central server**                | **Syncthing**                | Discovery, relay, NAT traversal, continuous                                          | Creates conflict copies on diverge (safer for multi-writer)                      |

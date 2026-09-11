@@ -45,7 +45,7 @@ describe("reflect forward CLI", () => {
     program.exitOverride();
     program.option("--session-db <file>", "path to sessions db");
     program.option("--log-level <level>", "", "info");
-    registerSessionCommands(program);
+    registerSessionCommands(program.command("sync"));
     registerForwardCommands(program);
     return program;
   }
@@ -88,7 +88,8 @@ describe("reflect forward CLI", () => {
         "--session-db",
         sessionDbPath,
         "forward",
-        "terminate",
+        "remove",
+        "--stop",
         "1",
       ],
       { from: "node" },
@@ -140,7 +141,8 @@ describe("reflect forward CLI", () => {
         "--session-db",
         sessionDbPath,
         "forward",
-        "terminate",
+        "remove",
+        "--stop",
         "1",
         "named-forward",
       ],

@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Fast bidirectional file synchronization using rsync and sqlite",
   "type": "module",
   "main": "dist/index.js",
@@ -12,7 +12,11 @@
       "default": "./dist/index.js"
     },
     "./bundle": "./dist/bundle.mjs",
-    "./cli": "./dist/cli.js"
+    "./cli": "./dist/cli.js",
+    "./jupyter": {
+      "types": "./dist/jupyter.d.ts",
+      "import": "./dist/jupyter.js"
+    }
   },
   "bin": {
     "reflect": "bin/reflect-sync.mjs",
@@ -62,6 +66,8 @@
     "runtime/rsync/runtime.json",
     "runtime/rsync/README.md",
     "README.md",
+    "docs/cli-contract.md",
+    "docs/jupyter.md",
     "CHANGELOG.md",
     "RELEASING.md",
     "LICENSE.txt"
@@ -82,7 +88,9 @@
     "ascii-table3": "^1.0.3",
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
-    "fast-ignore": "^2.0.0"
+    "fast-ignore": "^2.0.0",
+    "proper-lockfile": "4.1.2",
+    "ssh-config": "5.2.1"
   },
   "devDependencies": {
     "@commander-js/extra-typings": "^15.0.0",
@@ -91,6 +99,7 @@
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-terser": "^1.0.0",
     "@types/node": "^26.4.1",
+    "@types/proper-lockfile": "4.1.4",
     "@typescript-eslint/eslint-plugin": "^8.69.0",
     "@typescript-eslint/parser": "^8.69.0",
     "@vitest/eslint-plugin": "^1.6.27",
