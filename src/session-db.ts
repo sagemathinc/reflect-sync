@@ -1,7 +1,7 @@
 // session-db.ts
 import { Database } from "./db.js";
 import fs from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { CLI_NAME } from "./constants.js";
@@ -203,6 +203,7 @@ export interface ForwardRow {
 // DB init
 
 export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
+  fs.mkdirSync(dirname(sessionDbPath), { recursive: true });
   const db = new Database(sessionDbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
@@ -226,8 +227,8 @@ export function ensureSessionDb(sessionDbPath = getSessionDbPath()): Database {
         beta_port        INTEGER,
         alpha_remote_db  TEXT,
         beta_remote_db   TEXT,
-        remote_scan_cmd  TEXT DEFAULT '${CLI_NAME} scan',
-        remote_watch_cmd TEXT DEFAULT '${CLI_NAME} watch',
+        remote_scan_cmd  TEXT DEFAULT '${CLI_NAME} sync scan',
+        remote_watch_cmd TEXT DEFAULT '${CLI_NAME} sync watch',
 
         base_db          TEXT,
         alpha_db         TEXT,
@@ -432,8 +433,8 @@ export function createSession(
       input.beta_port ?? null,
       input.alpha_remote_db ?? null,
       input.beta_remote_db ?? null,
-      input.remote_scan_cmd ?? `${CLI_NAME} scan`,
-      input.remote_watch_cmd ?? `${CLI_NAME} watch`,
+      input.remote_scan_cmd ?? `${CLI_NAME} sync scan`,
+      input.remote_watch_cmd ?? `${CLI_NAME} sync watch`,
       input.hash_alg ?? defaultHashAlg(),
       input.compress ?? null,
       input.ignore ? serializeIgnoreRules(input.ignore) : null,

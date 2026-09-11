@@ -11,11 +11,11 @@ import {
   setDesiredState,
   setActualState,
   recordHeartbeat,
+  updateSession,
   deriveSessionPaths,
   type SessionRow,
 } from "./session-db.js";
 import {
-  stopPid,
   terminateSession,
   newSession,
   resetSession,
@@ -29,10 +29,7 @@ import { fetchSessionLogs } from "./session-logs.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { fmtLocalPath } from "./session-status.js";
 import { spawnSchedulerForSession } from "./session-runner.js";
-import {
-  registerSessionDaemon,
-  ensureDaemonRunning,
-} from "./session-daemon.js";
+import { ensureDaemonRunning } from "./session-daemon.js";
 import { collectIgnoreOption, deserializeIgnoreRules } from "./ignore.js";
 import { queryRecent, querySize } from "./session-query.js";
 import { diffSession } from "./session-diff.js";
@@ -44,8 +41,10 @@ import { nodeKindToEntry } from "./nodes-util.js";
 import { parseLogLevelOption, renderLogRows } from "./cli-log-output.js";
 import { collectListOption, dedupeRestrictedList } from "./restrict.js";
 import { wait } from "./util.js";
-
-type StopResult = "stopped" | "failed" | "not-running";
+import { batch, output } from "./cli-output.js";
+import { isProcessAlive, stopProcess } from "./process-lifecycle.js";
+import { inheritedOption } from "./cli-options.js";
+import { withResourceLock } from "./resource-lock.js";
 
 const DEFAULT_LOG_LINES = 2_500;
 
@@ -60,28 +59,24 @@ function fmtCleanMarker(ts?: number | null, useColor = COLOR_OK): string {
   return `${marker} ${fmtAgo(ts)}`;
 }
 
-function stopSessionRow(sessionDb: string, row: SessionRow): StopResult {
-  let status: StopResult;
-  if (row.scheduler_pid) {
-    const ok = stopPid(row.scheduler_pid);
-    status = ok ? "stopped" : "failed";
-  } else {
-    status = "not-running";
-  }
+async function stopSessionRow(
+  sessionDb: string,
+  row: SessionRow,
+): Promise<void> {
   setDesiredState(sessionDb, row.id, "stopped");
+  await stopProcess(row.scheduler_pid);
+  updateSession(sessionDb, row.id, { scheduler_pid: null });
   setActualState(sessionDb, row.id, "stopped");
-  return status;
 }
 
-function startSessionRow(sessionDb: string, row: SessionRow): number | null {
-  const pid = spawnSchedulerForSession(sessionDb, row);
+function startSessionRow(sessionDb: string, row: SessionRow): number {
   setDesiredState(sessionDb, row.id, "running");
+  if (isProcessAlive(row.scheduler_pid)) return row.scheduler_pid!;
+  const pid = spawnSchedulerForSession(sessionDb, row);
   setActualState(sessionDb, row.id, pid ? "running" : "error");
-  if (pid) {
-    recordHeartbeat(sessionDb, row.id, "running", pid);
-    return pid;
-  }
-  return null;
+  if (!pid) throw Error("Unable to start scheduler");
+  recordHeartbeat(sessionDb, row.id, "running", pid);
+  return pid;
 }
 
 // Collect `-l/--label k=v` repeatables
@@ -117,31 +112,25 @@ export function registerSessionCommands(program: Command) {
   };
 
   const addSessionDbOption = (cmd: Command) =>
-    cmd.option(
-      "--session-db <file>",
-      "override path to sessions.db",
-      getSessionDbPath(),
-    );
+    cmd.option("--session-db <file>", "override path to sessions.db");
 
   const resolveSessionDb = (
     opts: { sessionDb?: string },
     command: Command,
   ): string => {
     if (opts.sessionDb) return ensureDbPath(opts.sessionDb);
-    const globals = command.optsWithGlobals() as { sessionDb?: string };
-    if (globals.sessionDb) return ensureDbPath(globals.sessionDb);
-    return ensureDbPath(getSessionDbPath());
+    return ensureDbPath(
+      inheritedOption(command, "sessionDb", getSessionDbPath()),
+    );
   };
 
   const getLogLevel = () =>
-    parseLogLevel(
-      program.getOptionValue("logLevel") as string | undefined,
-      "info",
-    );
+    parseLogLevel(inheritedOption(program, "logLevel", "info"), "info");
 
   addSessionDbOption(
     program
       .command("create")
+      .option("--json", "emit JSON instead of human text")
       .description(
         "Create a new sync session (mutagen-like endpoints; remote specs accept host[:port]:/path)",
       )
@@ -205,6 +194,8 @@ export function registerSessionCommands(program: Command) {
           command: Command,
         ) => {
           const sessionDb = resolveSessionDb(opts, command);
+          if (opts.name && /^\\d+$/.test(opts.name))
+            throw Error("Names must not be numeric-only");
           if (typeof opts.disableHotSync !== "boolean") {
             if (typeof opts.enableHotSync === "boolean" && opts.enableHotSync) {
               opts.disableHotSync = false;
@@ -228,19 +219,17 @@ export function registerSessionCommands(program: Command) {
               sessionDb,
               cliLogger.child("daemon"),
             );
-            console.log(
-              `created session ${id}${opts.name ? ` (${opts.name})` : ""}`,
+            if (!opts.stopped) setDesiredState(sessionDb, id, "running");
+            output(
+              {
+                id,
+                name: opts.name ?? null,
+                desired_state: opts.stopped ? "stopped" : "running",
+                daemon_pid: daemonPid,
+              },
+              opts.json,
+              "Sync Created",
             );
-            if (!opts.stopped) {
-              setDesiredState(sessionDb, id, "running");
-              console.log(
-                daemonPid
-                  ? `queued session ${id} for daemon start (daemon pid ${daemonPid})`
-                  : `queued session ${id} for daemon start`,
-              );
-            } else {
-              console.log(`session ${id} left stopped`);
-            }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             console.error(`failed to create session: ${message}`);
@@ -507,7 +496,7 @@ export function registerSessionCommands(program: Command) {
           opts.max !== undefined && opts.max !== null ? Number(opts.max) : 50;
         if (!Number.isInteger(limitRaw) || limitRaw <= 0) {
           console.error(
-            "reflect query recent: --max must be a positive integer",
+            "reflect sync query recent: --max must be a positive integer",
           );
           process.exitCode = 1;
           return;
@@ -889,202 +878,69 @@ export function registerSessionCommands(program: Command) {
       }),
   );
 
-  addSessionDbOption(
-    program
-      .command("stop")
-      .description("Stop one or more sync sessions")
-      .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action(
-        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
-          const sessionDb = resolveSessionDb(opts, command);
-          for (const ref of refs) {
-            let row: SessionRow;
-            try {
+  for (const operation of [
+    "start",
+    "stop",
+    "restart",
+    "reset",
+    "remove",
+  ] as const) {
+    const cmd = addSessionDbOption(
+      program
+        .command(operation)
+        .description(`${operation} sync configurations`)
+        .argument("<id-or-name...>", "session IDs or names")
+        .option("--json", "emit JSON instead of human text"),
+    );
+    if (operation === "remove")
+      cmd.option("--stop", "stop active work before removal");
+    cmd.action(async (refs: string[], opts, command: Command) => {
+      const sessionDb = resolveSessionDb(opts, command);
+      await batch(refs, opts.json, async (ref) => {
+        const selected = requireSessionRow(sessionDb, ref);
+        return await withResourceLock(
+          sessionDb,
+          "sync",
+          selected.id,
+          async () => {
+            let row = requireSessionRow(sessionDb, String(selected.id));
+            if (operation === "remove") {
+              if (
+                !opts.stop &&
+                (row.desired_state === "running" ||
+                  isProcessAlive(row.scheduler_pid))
+              )
+                throw Error("Session is active; stop it first or use --stop");
+              await stopSessionRow(sessionDb, row);
+              // The removal helper must not signal the previous (potentially reused) PID.
               row = requireSessionRow(sessionDb, ref);
-            } catch (err) {
-              console.error((err as Error).message);
-              continue;
+              await terminateSession({
+                sessionDb,
+                id: row.id,
+                logger: new ConsoleLogger(getLogLevel()),
+              });
+              if (loadSessionById(sessionDb, row.id))
+                throw Error("Removal incomplete; session retained");
+              return { id: row.id, removed: true };
             }
-            const status = stopSessionRow(sessionDb, row);
-            const label = row.name ?? row.id;
-            let message: string;
-            if (status === "stopped") {
-              message = `stopped session ${label} (pid ${row.scheduler_pid})`;
-            } else if (status === "failed") {
-              message = `failed to stop session ${label} (pid ${row.scheduler_pid})`;
-            } else {
-              message = `session ${label} was not running`;
-            }
-            console.log(message);
-          }
-        },
-      ),
-  );
-
-  addSessionDbOption(
-    program
-      .command("start")
-      .description("Start one or more sync sessions")
-      .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action(
-        (refs: string[], opts: { sessionDb?: string }, command: Command) => {
-          const sessionDb = resolveSessionDb(opts, command);
-          for (const ref of refs) {
-            let row: SessionRow;
-            try {
+            if (operation !== "start") await stopSessionRow(sessionDb, row);
+            if (operation === "reset")
+              await resetSession({ sessionDb, id: row.id });
+            if (operation !== "stop") {
               row = requireSessionRow(sessionDb, ref);
-            } catch (err) {
-              console.error((err as Error).message);
-              continue;
-            }
-            const pid = startSessionRow(sessionDb, row);
-            console.log(
-              pid
-                ? `started session ${row.name ?? row.id} (pid ${pid})`
-                : `failed to start session ${row.name ?? row.id}`,
-            );
-          }
-        },
-      ),
-  );
-
-  addSessionDbOption(
-    program
-      .command("restart")
-      .description("Restart one or more sync sessions")
-      .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action(
-        async (
-          refs: string[],
-          opts: { sessionDb?: string },
-          command: Command,
-        ) => {
-          const sessionDb = resolveSessionDb(opts, command);
-          for (const ref of refs) {
-            let row: SessionRow;
-            try {
-              row = requireSessionRow(sessionDb, ref);
-            } catch (err) {
-              console.error((err as Error).message);
-              continue;
-            }
-            const label = row.name ?? String(row.id);
-            const status = stopSessionRow(sessionDb, row);
-            if (status === "stopped") {
-              console.log(
-                `stopped session ${label} (pid ${row.scheduler_pid})`,
-              );
-            } else if (status === "failed") {
-              console.log(
-                `failed to stop session ${label} (pid ${row.scheduler_pid}); attempting restart`,
-              );
-            } else {
-              console.log(`session ${label} was not running`);
-            }
-
-            let latestRow: SessionRow;
-            try {
-              latestRow = requireSessionRow(sessionDb, String(row.id));
-            } catch (err) {
-              console.error(
-                `unable to reload session ${label} for restart: ${(err as Error).message}`,
-              );
-              continue;
-            }
-
-            const pid = startSessionRow(sessionDb, latestRow);
-            console.log(
-              pid
-                ? `restarted session ${label} (pid ${pid})`
-                : `failed to restart session ${label}`,
-            );
-          }
-        },
-      ),
-  );
-
-  addSessionDbOption(
-    program
-      .command("reset")
-      .description("Reset sync for one or more sessions")
-      .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action(
-        async (
-          refs: string[],
-          opts: { sessionDb?: string },
-          command: Command,
-        ) => {
-          const sessionDb = resolveSessionDb(opts, command);
-          const cliLogger = new ConsoleLogger(getLogLevel());
-          let hadError = false;
-          for (const ref of refs) {
-            let row: SessionRow;
-            try {
-              row = requireSessionRow(sessionDb, ref);
-            } catch (err) {
-              console.error((err as Error).message);
-              hadError = true;
-              continue;
-            }
-            const label = row.name ?? String(row.id);
-            try {
-              await resetSession({ sessionDb, id: row.id, logger: cliLogger });
               const pid = startSessionRow(sessionDb, row);
-              console.log(
-                pid
-                  ? `started session ${row.name ?? row.id} (pid ${pid})`
-                  : `failed to start session ${row.name ?? row.id}`,
-              );
-            } catch (err) {
-              hadError = true;
-              const msg = err instanceof Error ? err.message : String(err);
-              console.error(`failed to reset session ${label}: ${msg}`);
+              ensureDaemonRunning(sessionDb, new ConsoleLogger(getLogLevel()));
+              return { id: row.id, state: "running", pid };
             }
-          }
-          if (hadError) {
-            process.exitCode = 1;
-          }
-        },
-      ),
-  );
-
-  addSessionDbOption(
-    program
-      .command("terminate")
-      .description("Stop and remove all session state")
-      .option("--force", "terminate even if can't delete remote db")
-      .argument("<id-or-name...>", "session id(s) or name(s)")
-      .action(
-        async (
-          refs: string[],
-          options: { force?: boolean; sessionDb?: string },
-          command: Command,
-        ) => {
-          const sessionDb = resolveSessionDb(options, command);
-          const cliLogger = new ConsoleLogger(getLogLevel());
-          for (const ref of refs) {
-            let row: SessionRow;
-            try {
-              row = requireSessionRow(sessionDb, ref);
-            } catch (err) {
-              console.error((err as Error).message);
-              continue;
-            }
-            await terminateSession({
-              id: row.id,
-              logger: cliLogger,
-              force: options.force,
-              sessionDb,
-            });
-            console.log(`terminated session ${row.name ?? row.id}`);
-          }
-        },
-      ),
-  );
+            return { id: row.id, state: "stopped" };
+          },
+        );
+      });
+    });
+  }
 
   registerSessionSync(program);
   registerSessionStatus(program);
-  registerSessionDaemon(program);
 }
 
 type WatchCommandOptions = {

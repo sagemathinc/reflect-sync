@@ -16,6 +16,7 @@ vi.mock("../jupyter.js", () => ({
   listJupyterTargets: vi.fn(),
   listJupyterSessions: vi.fn(),
   removeJupyterTarget: vi.fn(),
+  removeJupyterSession: vi.fn(),
   prepareJupyter: vi.fn(),
   registerJupyterTarget: vi.fn(),
   probeJupyter: vi.fn(),
@@ -31,8 +32,14 @@ beforeEach(() => {
     return true;
   });
   vi.mocked(listJupyterSessions).mockResolvedValue([
-    { session: "session-one", target: "gpu", host: "student@gpu" },
-    { session: "session-two", target: "sagejs", host: "cpu", stopped: true },
+    { id: 1, session: "session-one", target: "gpu", host: "student@gpu" },
+    {
+      id: 2,
+      session: "session-two",
+      target: "sagejs",
+      host: "cpu",
+      stopped: true,
+    },
   ]);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -45,21 +52,19 @@ async function run(...args: string[]) {
 it("lists sessions as a table, without asserting unchecked sessions are running", async () => {
   await run("list");
   expect(stdout).toContain("Jupyter Sessions");
-  expect(stdout).toContain("session-one");
+  expect(stdout).toContain("ID");
+  expect(stdout).not.toContain("session-one");
   expect(stdout).toContain("student@gpu");
   expect(stdout).toContain("unverified");
   expect(stdout).toContain("stopped");
   expect(stdout).not.toContain("running");
 });
 
-it.each(["list", "sessions"])(
-  "supports explicit JSON for %s",
-  async (command) => {
-    await run(command, "--json");
-    expect(JSON.parse(stdout)).toEqual(await listJupyterSessions());
-    expect(stdout).toContain("\n  {");
-  },
-);
+it.each(["list"])("supports explicit JSON for %s", async (command) => {
+  await run(command, "--json");
+  expect(JSON.parse(stdout)).toEqual(await listJupyterSessions());
+  expect(stdout).toContain("\n  {");
+});
 
 it("handles empty session lists in both modes", async () => {
   vi.mocked(listJupyterSessions).mockResolvedValue([]);
@@ -73,11 +78,11 @@ it("handles empty session lists in both modes", async () => {
 it("prints target tables and preserves the machine payload", async () => {
   const targets = [{ name: "sagejs", host: "cpu", environment: "existing" }];
   vi.mocked(listJupyterTargets).mockResolvedValue(targets);
-  await run("targets");
+  await run("target", "list");
   expect(stdout).toContain("Jupyter Targets");
   expect(stdout).toContain("sagejs");
   stdout = "";
-  await run("targets", "--json");
+  await run("target", "list", "--json");
   expect(JSON.parse(stdout)).toEqual(targets);
 });
 
@@ -92,11 +97,11 @@ it("passes explicit first-use trust to discovery and emits clean JSON", async ()
     search_paths: [],
   };
   vi.mocked(probeJupyter).mockResolvedValue(result);
-  await run("probe", "--host", "gpu", "--trust-new-host", "--json");
+  await run("discover", "--host", "gpu", "--trust-new-host", "--json");
   expect(probeJupyter).toHaveBeenLastCalledWith("gpu", undefined, true);
   expect(JSON.parse(stdout)).toEqual(result);
   stdout = "";
-  await run("probe", "--host", "gpu");
+  await run("discover", "--host", "gpu");
   expect(probeJupyter).toHaveBeenLastCalledWith("gpu", undefined, undefined);
   expect(stdout).toContain("Remote Discovery");
 });

@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { AsciiTable3, AlignmentEnum } from "ascii-table3";
+import { table, output, batch } from "./cli-output.js";
 import {
   defaultLauncherArgv,
   jupyterSessionCommand,
@@ -8,6 +8,7 @@ import {
   listJupyterTargets,
   listJupyterSessions,
   removeJupyterTarget,
+  removeJupyterSession,
   prepareJupyter,
   registerJupyterTarget,
   probeJupyter,
@@ -16,37 +17,16 @@ import {
 } from "./jupyter.js";
 import { jupyterSshAliases } from "./jupyter-ssh.js";
 
-function table(title: string, headings: string[], rows: string[][]): string {
-  if (!rows.length) return `No ${title.toLowerCase()}.`;
-  const result = new AsciiTable3(title)
-    .setHeading(...headings)
-    .setStyle("unicode-round");
-  headings.forEach((_, index) => result.setAlign(index, AlignmentEnum.LEFT));
-  for (const row of rows) result.addRow(...row);
-  return result.toString();
-}
-
-function fields(value: unknown, prefix = ""): string[][] {
-  if (value !== null && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, item]) =>
-      fields(item, prefix ? `${prefix}.${key}` : key),
-    );
-  }
-  return [[prefix, value == null ? "-" : String(value)]];
-}
-
-function output(value: unknown, json: boolean, title: string): void {
-  process.stdout.write(
-    (json
-      ? JSON.stringify(value, null, 2)
-      : table(title, ["Field", "Value"], fields(value))) + "\n",
-  );
-}
-
 export function registerJupyterCommands(program: Command): void {
   const jupyter = program
     .command("jupyter")
     .description("Manage standard Jupyter kernels running over SSH");
+  const targets = jupyter
+    .command("target")
+    .description("Manage reusable kernel registrations");
+  const environments = jupyter
+    .command("environment")
+    .description("Manage remote Python environments");
   jupyter
     .command("ssh-targets")
     .option("--json", "emit JSON instead of a table")
@@ -66,7 +46,7 @@ export function registerJupyterCommands(program: Command): void {
       }
     });
   jupyter
-    .command("probe")
+    .command("discover")
     .requiredOption("--host <host>")
     .option("--json", "emit JSON instead of a table")
     .option(
@@ -109,8 +89,8 @@ export function registerJupyterCommands(program: Command): void {
           process.stderr.write(warning + "\n");
       }
     });
-  jupyter
-    .command("targets")
+  targets
+    .command("list")
     .option("--json", "emit JSON instead of a table")
     .action(async (opts) => {
       const result = await listJupyterTargets();
@@ -131,13 +111,22 @@ export function registerJupyterCommands(program: Command): void {
     });
   jupyter
     .command("list")
-    .alias("sessions")
+    .argument("[id...]", "local IDs or remote UUIDs")
     .description(
       "List recorded kernel sessions (use status to check remote state)",
     )
     .option("--json", "emit JSON instead of a table")
-    .action(async (opts) => {
-      const result = await listJupyterSessions();
+    .action(async (refs: string[], opts) => {
+      const all = await listJupyterSessions();
+      for (const ref of refs)
+        if (!all.some((row) => String(row.id) === ref || row.session === ref))
+          throw Error("Jupyter session not found: " + ref);
+      const result = refs.length
+        ? all.filter(
+            (row) =>
+              refs.includes(String(row.id)) || refs.includes(row.session),
+          )
+        : all;
       if (opts.json) output(result, true, "Jupyter Sessions");
       else
         process.stdout.write(
@@ -145,7 +134,7 @@ export function registerJupyterCommands(program: Command): void {
             "Jupyter Sessions",
             ["ID", "Target", "Host", "State"],
             result.map((session) => [
-              session.session,
+              String(session.id),
               session.target,
               session.host,
               session.stopped ? "stopped" : "unverified",
@@ -153,25 +142,27 @@ export function registerJupyterCommands(program: Command): void {
           ) + "\n",
         );
     });
-  jupyter
+  targets
     .command("remove")
     .option("--json", "emit JSON instead of a table")
-    .requiredOption("--target <name>")
-    .action(async (opts) => {
-      await removeJupyterTarget(opts.target);
-      output({ removed: opts.target }, opts.json, "Removed Jupyter Target");
+    .argument("<name>", "target name")
+    .option("--stop", "stop active kernels before removing registration")
+    .action(async (name: string, opts) => {
+      await removeJupyterTarget(name, opts.stop);
+      output({ removed: name }, opts.json, "Removed Jupyter Target");
     });
-  jupyter
-    .command("setup")
+  targets
+    .command("add")
     .option("--json", "emit JSON instead of a table")
-    .requiredOption("--target <name>")
+    .argument("<name>", "target name")
     .requiredOption("--host <host>")
     .option("--environment <name>", "managed environment", "teaching")
     .option("--python <path>", "existing remote interpreter (no installation)")
     .option("--kernel <path>", "existing remote kernel.json (any language)")
     .option("--uv <path>", "local bootstrap executable override")
     .option("--recipe <recipe>", "python or pytorch-cu128", "python")
-    .action(async (opts) => {
+    .action(async (name: string, opts) => {
+      opts.target = name;
       if (opts.python && opts.kernel)
         throw Error("Choose a Python interpreter or a kernelspec, not both");
       await assertJupyterNameAvailable(opts.target);
@@ -205,7 +196,7 @@ export function registerJupyterCommands(program: Command): void {
         "Jupyter Kernel Ready",
       );
     });
-  jupyter
+  environments
     .command("prepare")
     .option("--json", "emit JSON instead of a table")
     .requiredOption("--host <host>", "SSH destination or alias")
@@ -222,8 +213,8 @@ export function registerJupyterCommands(program: Command): void {
         "Jupyter Environment Ready",
       );
     });
-  jupyter
-    .command("kernels")
+  environments
+    .command("list")
     .option("--json", "emit JSON instead of a table")
     .requiredOption("--host <host>")
     .action(async (opts) => {
@@ -231,30 +222,6 @@ export function registerJupyterCommands(program: Command): void {
         await listJupyterEnvironments(opts.host),
         opts.json,
         "Managed Jupyter Environments",
-      );
-    });
-  jupyter
-    .command("register")
-    .option("--json", "emit JSON instead of a table")
-    .requiredOption("--target <name>")
-    .requiredOption("--host <host>")
-    .requiredOption("--environment <name>")
-    .requiredOption("--python <path>", "absolute remote Python interpreter")
-    .action(async (opts) => {
-      output(
-        {
-          path: await registerJupyterTarget(
-            opts.target,
-            {
-              host: opts.host,
-              environment: opts.environment,
-              python: opts.python,
-            },
-            defaultLauncherArgv(),
-          ),
-        },
-        opts.json,
-        "Registered Jupyter Target",
       );
     });
   jupyter
@@ -286,4 +253,15 @@ export function registerJupyterCommands(program: Command): void {
         );
       });
   }
+  jupyter
+    .command("remove")
+    .argument("<id...>", "local IDs or remote UUIDs")
+    .option("--stop", "stop active kernels before removing their records")
+    .option("--json", "emit JSON instead of human text")
+    .action(async (refs: string[], opts) => {
+      await batch(refs, opts.json, async (ref) => {
+        await removeJupyterSession(ref, opts.stop);
+        return { removed: ref };
+      });
+    });
 }

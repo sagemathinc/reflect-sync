@@ -10,7 +10,7 @@ import tempfile
 from jupyter_client.connect import write_connection_file
 
 cli = ["node", str(pathlib.Path(__file__).resolve().parents[1] / "dist/cli.js"), "jupyter"]
-target = next(t for t in json.loads(subprocess.check_output(cli + ["targets", "--json"])) if t["name"] == sys.argv[1])
+target = next(t for t in json.loads(subprocess.check_output(cli + ["target", "list", "--json"])) if t["name"] == sys.argv[1])
 for failure in ("occupied-port", "missing-interpreter"):
     with tempfile.TemporaryDirectory() as root, socket.socket() as occupied:
         home = pathlib.Path(root)

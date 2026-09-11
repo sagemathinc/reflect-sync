@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory() as directory:
                 state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session, "--json"]))
                 pid = int(state["supervisorPid"])
                 assert pid > 1
-                targets = json.loads(subprocess.check_output(["node", cli, "jupyter", "targets", "--json"]))
+                targets = json.loads(subprocess.check_output(["node", cli, "jupyter", "target", "list", "--json"]))
                 host = next(t["host"] for t in targets if t["name"] == sys.argv[1])
                 subprocess.check_call(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host, "kill -KILL %s" % pid])
             elif failure == "kernel":

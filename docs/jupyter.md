@@ -12,7 +12,7 @@ and jump hosts. A changing VM IP should be addressed through its stable DNS name
 Reflect never disables host-key checking or forwards your SSH agent.
 
 For explicit first-use trust without an interactive terminal, run
-`reflect jupyter probe --host my-vm --trust-new-host`. This records the first
+`reflect jupyter discover --host my-vm --trust-new-host`. This records the first
 observed key using OpenSSH's `accept-new` policy; it does not independently
 verify the server's identity. Changed known keys are rejected. Subsequent
 discovery and kernel commands continue to require a known matching key.
@@ -21,9 +21,9 @@ discovery and kernel commands continue to require a known matching key.
 
 ```sh
 reflect jupyter ssh-targets
-reflect jupyter probe --host my-vm
-reflect jupyter probe --host my-vm --search-path /opt/env/share/jupyter/kernels
-reflect jupyter setup --host my-vm --target bash \
+reflect jupyter discover --host my-vm
+reflect jupyter discover --host my-vm --search-path /opt/env/share/jupyter/kernels
+reflect jupyter target add bash --host my-vm \
   --kernel /opt/env/share/jupyter/kernels/bash/kernel.json
 ```
 
@@ -51,7 +51,7 @@ when a supported NVIDIA GPU/driver has been positively identified.
 ## Python Recipes
 
 ```sh
-reflect jupyter setup --host my-vm --target gpu --environment teaching
+reflect jupyter target add gpu --host my-vm --environment teaching
 jupyter console --kernel reflect-gpu
 ```
 
@@ -67,7 +67,7 @@ remote architecture may be supplied with `--uv /absolute/path`.
 To retain an existing framework/CUDA environment without modifying it:
 
 ```sh
-reflect jupyter setup --host my-vm --target gpu \
+reflect jupyter target add gpu --host my-vm \
   --python /home/user/gpu/bin/python
 ```
 
@@ -80,7 +80,7 @@ On a VM with working NVIDIA drivers, prepare and validate the supported PyTorch
 recipe explicitly (a multi-GB download):
 
 ```sh
-reflect jupyter setup --host my-vm --target gpu \
+reflect jupyter target add gpu --host my-vm \
   --environment pytorch --recipe pytorch-cu128
 ```
 
@@ -96,18 +96,18 @@ kernel name, target and paths as JSON.
 
 ## Lifecycle
 
-Like `reflect list` and `reflect forward list`, Jupyter commands default to
+Like `reflect sync list` and `reflect forward list`, Jupyter commands default to
 human-readable output using the same table style. Use `--json` for automation:
 
 ```sh
 reflect jupyter list
 reflect jupyter list --json
 reflect jupyter targets
-reflect jupyter probe --host my-vm --json
+reflect jupyter discover --host my-vm --json
 reflect jupyter status SESSION_ID --json
 ```
 
-`sessions` is an alias for `list`. The list reads local session records without
+The list reads local session records without
 contacting each VM: `unverified` means that a remote status check is needed,
 not that the kernel is known to be running. Use `status SESSION_ID` to check.
 All management commands support `--json`; `launch` is the foreground kernel
@@ -135,7 +135,7 @@ parse Jupyter messages, so comms and binary buffers use the same wire protocol.
 - A VM reboot loses kernel memory and requires an explicit new kernel.
 - Stopping a kernel does not stop or change billing for its VM.
 
-Remove a target with `reflect jupyter remove --target gpu`. This disables new
+Remove a target with `reflect jupyter target remove gpu`. --stop This disables new
 launches and confirms that its recorded sessions are stopped before deleting the
 kernelspec/configuration. It does not delete remote environments or stop the VM.
 If SSH is unavailable, removal stays disabled and reports an error; retry once

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { registerSessionCommands } from "./session-cli.js";
+import { registerSessionDaemon } from "./session-daemon.js";
 import { registerForwardCommands } from "./forward-cli.js";
 import { registerJupyterCommands } from "./jupyter-cli.js";
 import { CLI_NAME } from "./constants.js";
@@ -21,6 +22,7 @@ import { configureSchedulerCommand } from "./scheduler.js";
 import { configureWatchCommand } from "./watch.js";
 import { detectFilesystemCapabilities } from "./fs-capabilities.js";
 import { registerDoctorCommand } from "./doctor.js";
+import { inheritedOption } from "./cli-options.js";
 
 if (!process.env.REFLECT_ENTRY) {
   const entry = process.argv[1];
@@ -36,8 +38,7 @@ if (!process.env.REFLECT_ENTRY) {
 }
 
 function resolveLogLevel(command: Command): LogLevel {
-  const raw = (command.optsWithGlobals() as any)?.logLevel as
-    string | undefined;
+  const raw = inheritedOption(command, "logLevel", "info");
   return parseLogLevel(raw, "info");
 }
 
@@ -57,7 +58,7 @@ function mergeOptsWithLogger<T extends Record<string, unknown>>(
 
 const program = new Command()
   .name(CLI_NAME)
-  .description("Fast rsync-powered two-way sync with SQLite metadata and SSH")
+  .description("File sync, SSH port forwards, and remote Jupyter kernels")
   .version(pkg.version);
 
 // Global flags you want available everywhere
@@ -79,7 +80,13 @@ program
   )
   .option("--dry-run", "do not modify files", false);
 
-registerSessionCommands(program);
+const sync = program
+  .command("sync")
+  .description("Manage bidirectional file sync")
+  .option("--session-db <file>", "override path to sessions.db")
+  .option("--log-level <level>", "log verbosity");
+registerSessionCommands(sync);
+registerSessionDaemon(program);
 registerForwardCommands(program);
 registerJupyterCommands(program);
 registerInstallCommand(program);
@@ -101,7 +108,7 @@ const shouldShowAdvanced = () => {
   return (raw ?? []).some((arg) => arg === "--advanced" || arg === "-A");
 };
 
-program.configureHelp({
+sync.configureHelp({
   visibleCommands(cmd) {
     const showAdvanced = shouldShowAdvanced();
     return cmd.commands.filter(
@@ -110,12 +117,12 @@ program.configureHelp({
   },
 });
 
-program.addHelpText(
+sync.addHelpText(
   "after",
-  "\nAdvanced plumbing commands are hidden by default. Use `reflect --help --advanced` to show them.\n",
+  "\nUse `reflect --advanced sync --help` to show sync plumbing commands.\n",
 );
 
-configureScanCommand(program.command("scan")).action(
+configureScanCommand(sync.command("scan")).action(
   async (
     opts: {
       root: string;
@@ -137,7 +144,7 @@ configureScanCommand(program.command("scan")).action(
   },
 );
 
-program
+sync
   .command("ingest")
   .description("Ingest NDJSON deltas from stdin into the local nodes table")
   .requiredOption("--db <path>", "sqlite db file")
@@ -147,7 +154,7 @@ program
     await runIngestDelta(params as any);
   });
 
-configureSchedulerCommand(program.command("scheduler")).action(
+configureSchedulerCommand(sync.command("scheduler")).action(
   async (opts, command) => {
     // Import and run in-process so we can manage lifecycle cleanly
     const { runScheduler, cliOptsToSchedulerOptions } =
@@ -157,19 +164,17 @@ configureSchedulerCommand(program.command("scheduler")).action(
   },
 );
 
-configureWatchCommand(program.command("watch")).action(
-  async (opts, command) => {
-    const { runWatch } = await import("./watch.js");
-    const merged = {
-      ...command.optsWithGlobals(),
-      ...opts,
-    } as any;
-    if (Array.isArray(merged.ignore)) {
-      merged.ignoreRules = merged.ignore;
-    }
-    await runWatch(merged);
-  },
-);
+configureWatchCommand(sync.command("watch")).action(async (opts, command) => {
+  const { runWatch } = await import("./watch.js");
+  const merged = {
+    ...command.optsWithGlobals(),
+    ...opts,
+  } as any;
+  if (Array.isArray(merged.ignore)) {
+    merged.ignoreRules = merged.ignore;
+  }
+  await runWatch(merged);
+});
 
 program
   .command("fs-capabilities")
@@ -193,4 +198,7 @@ if (process.argv.length <= 2) {
 const normalizedArgv = process.argv.map((arg) =>
   arg === "--no-ignore" ? "--clear-ignore" : arg,
 );
-program.parse(normalizedArgv);
+program.parseAsync(normalizedArgv).catch((err) => {
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = 1;
+});

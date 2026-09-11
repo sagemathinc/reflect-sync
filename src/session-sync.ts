@@ -14,6 +14,8 @@ import { collectListOption } from "./restrict.js";
 import { touchCommandSignal } from "./session-command-signal.js";
 import { wait } from "./util.js";
 import { ConsoleLogger } from "./logger.js";
+import { batch } from "./cli-output.js";
+import { inheritedOption } from "./cli-options.js";
 
 const POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
@@ -79,7 +81,7 @@ function checkSessionRunning(
 
 function renderProgressRow(row: SessionLogRow, asJson: boolean): void {
   if (asJson) {
-    // Match the JSON emitted by `reflect logs --json`
+    // Match the JSON emitted by `reflect sync logs --json`
     const payload = {
       id: row.id,
       session_id: row.session_id,
@@ -89,7 +91,7 @@ function renderProgressRow(row: SessionLogRow, asJson: boolean): void {
       message: row.message,
       meta: row.meta ?? null,
     };
-    console.log(JSON.stringify(payload));
+    process.stderr.write(JSON.stringify(payload) + "\n");
     return;
   }
 
@@ -99,7 +101,7 @@ function renderProgressRow(row: SessionLogRow, asJson: boolean): void {
     row.meta && Object.keys(row.meta).length
       ? ` ${JSON.stringify(row.meta)}`
       : "";
-  console.log(
+  console.error(
     `${timestamp} ${row.level.toUpperCase()}${scope} ${row.message}${meta}`,
   );
 }
@@ -224,7 +226,7 @@ async function runSyncForSession(
     : undefined;
 
   for (let attempt = 1; attempt <= maxCycles; attempt += 1) {
-    console.log(
+    console.error(
       `session ${label}: starting sync attempt ${attempt}/${maxCycles}`,
     );
     const cmdId = enqueueSyncCommand(db, sessionRow.id, attempt, paths, {
@@ -256,7 +258,7 @@ async function runSyncForSession(
       const pendingAlpha = countCopyPending(alphaDbPath);
       const pendingBeta = countCopyPending(betaDbPath);
       if (pendingAlpha || pendingBeta) {
-        console.log(
+        console.error(
           `session ${label}: waiting for ${pendingAlpha + pendingBeta} copy_pending entries to settle`,
         );
         if (attempt === maxCycles) {
@@ -267,11 +269,11 @@ async function runSyncForSession(
         continue;
       }
       if (plan.diffs.length > 0) {
-        console.log(
+        console.error(
           `session ${label}: only case-conflict differences remain; treating as synchronized`,
         );
       }
-      console.log(
+      console.error(
         `session ${label} synchronized after ${attempt} ${
           attempt === 1 ? "cycle" : "cycles"
         }`,
@@ -280,7 +282,7 @@ async function runSyncForSession(
     }
 
     const sample = actionableDiffs.slice(0, 5).map((row) => row.path);
-    console.log(
+    console.error(
       `session ${label}: ${actionableDiffs.length} paths still differ (examples: ${
         sample.join(", ") || "n/a"
       })`,
@@ -311,16 +313,12 @@ function countCopyPending(dbPath: string): number {
 
 export function registerSessionSync(sessionCmd: Command) {
   sessionCmd
-    .command("sync")
+    .command("flush")
     .description(
       "trigger immediate sync cycle(s) and verify no differences remain",
     )
     .argument("<id-or-name...>", "session id(s) or name(s)")
-    .option(
-      "--session-db <file>",
-      "path to sessions database",
-      getSessionDbPath(),
-    )
+    .option("--session-db <file>", "path to sessions database")
     .option(
       "--max-cycles <n>",
       "maximum number of full cycles before failing",
@@ -348,7 +346,7 @@ export function registerSessionSync(sessionCmd: Command) {
       false,
     )
     .option("--progress", "stream progress logs while syncing", false)
-    .option("--json", "emit progress logs as JSON", false)
+    .option("--json", "emit result JSON (progress is on stderr)", false)
     .action(
       async (
         refs: string[],
@@ -362,40 +360,36 @@ export function registerSessionSync(sessionCmd: Command) {
           vacuum?: boolean;
           rehash?: boolean;
         },
+        command: Command,
       ) => {
         const maxCycles = parsePositiveInt(opts.maxCycles, DEFAULT_MAX_CYCLES);
         const timeoutMs = parsePositiveInt(opts.timeout, DEFAULT_TIMEOUT_MS);
-        const sessionDbPath = opts.sessionDb ?? getSessionDbPath();
+        const sessionDbPath = inheritedOption(
+          command,
+          "sessionDb",
+          getSessionDbPath(),
+        );
         const progressConfig = opts.progress
           ? { enabled: true, json: !!opts.json }
           : undefined;
 
         const db = ensureSessionDb(sessionDbPath);
         try {
-          for (const ref of refs) {
+          await batch(refs, opts.json, async (ref) => {
             const trimmed = ref.trim();
-            if (!trimmed) continue;
-            try {
-              await runSyncForSession(
-                db,
-                sessionDbPath,
-                trimmed,
-                maxCycles,
-                timeoutMs,
-                progressConfig,
-                opts.path ?? [],
-                { vacuum: !!opts.vacuum, rehash: !!opts.rehash },
-              );
-            } catch (err) {
-              const message =
-                err instanceof Error
-                  ? err.message
-                  : String(err ?? "unknown error");
-              console.error(message);
-              process.exitCode = 1;
-              return;
-            }
-          }
+            if (!trimmed) throw Error("Empty session selector");
+            await runSyncForSession(
+              db,
+              sessionDbPath,
+              trimmed,
+              maxCycles,
+              timeoutMs,
+              progressConfig,
+              opts.path ?? [],
+              { vacuum: !!opts.vacuum, rehash: !!opts.rehash },
+            );
+            return { synchronized: true };
+          });
         } finally {
           db.close();
         }

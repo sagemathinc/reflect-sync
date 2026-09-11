@@ -4,10 +4,13 @@ import {
   loadForwardById,
   selectForwardSessions,
   type ForwardRow,
+  updateForwardSession,
 } from "./session-db.js";
 import { launchForwardProcess } from "./forward-runner.js";
 import { stopPid } from "./session-manage.js";
 import type { Logger } from "./logger.js";
+import { isProcessAlive, stopProcess } from "./process-lifecycle.js";
+import { withResourceLock } from "./resource-lock.js";
 
 export interface ForwardCreateOptions {
   sessionDb: string;
@@ -15,6 +18,7 @@ export interface ForwardCreateOptions {
   left: string;
   right: string;
   compress?: boolean;
+  stopped?: boolean;
   logger?: Logger;
 }
 
@@ -115,8 +119,11 @@ export async function createForward({
   left,
   right,
   compress,
+  stopped = false,
   logger,
 }: ForwardCreateOptions): Promise<number> {
+  if (name && /^\d+$/.test(name.trim()))
+    throw Error("Names must not be numeric-only");
   const leftEp = parseEndpoint(left);
   const rightEp = parseEndpoint(right);
   const direction = detectDirection(leftEp, rightEp);
@@ -162,24 +169,74 @@ export async function createForward({
     local_port: localPort,
     remote_host: remoteHost,
     remote_port: remotePort,
-    desired_state: "running",
+    desired_state: stopped ? "stopped" : "running",
     actual_state:
-      process.env.REFLECT_DISABLE_FORWARD === "1" ? "stopped" : "running",
+      stopped || process.env.REFLECT_DISABLE_FORWARD === "1"
+        ? "stopped"
+        : "running",
   });
 
-  if (process.env.REFLECT_DISABLE_FORWARD !== "1") {
-    const row = loadForwardById(sessionDb, id);
-    if (row) {
-      const pid = await launchForwardProcess(sessionDb, row);
-      if (pid) {
-        logger?.debug?.("launched forward ssh", { id, pid });
-      } else {
-        logger?.error?.("failed to launch forward ssh", { id });
+  if (!stopped && process.env.REFLECT_DISABLE_FORWARD !== "1") {
+    await withResourceLock(sessionDb, "forward", id, async () => {
+      const row = loadForwardById(sessionDb, id);
+      if (
+        row &&
+        row.desired_state === "running" &&
+        !isProcessAlive(row.monitor_pid)
+      ) {
+        const pid = await launchForwardProcess(sessionDb, row);
+        if (pid) {
+          logger?.debug?.("launched forward ssh", { id, pid });
+        } else {
+          throw Error(`Unable to start forward ${id}; configuration retained`);
+        }
       }
-    }
+    });
   }
 
   return id;
+}
+
+export async function stopForward(
+  sessionDb: string,
+  id: number,
+): Promise<void> {
+  const row = loadForwardById(sessionDb, id);
+  if (!row) throw Error(`Forward ${id} not found`);
+  updateForwardSession(sessionDb, id, { desired_state: "stopped" });
+  await stopProcess(row.monitor_pid);
+  updateForwardSession(sessionDb, id, {
+    actual_state: "stopped",
+    monitor_pid: null,
+  });
+}
+
+export async function startForward(
+  sessionDb: string,
+  id: number,
+): Promise<void> {
+  const row = loadForwardById(sessionDb, id);
+  if (!row) throw Error(`Forward ${id} not found`);
+  updateForwardSession(sessionDb, id, { desired_state: "running" });
+  if (isProcessAlive(row.monitor_pid)) return;
+  if (!(await launchForwardProcess(sessionDb, row)))
+    throw Error(`Unable to start forward ${id}`);
+}
+
+export async function removeForward(
+  sessionDb: string,
+  id: number,
+  stop = false,
+): Promise<void> {
+  const row = loadForwardById(sessionDb, id);
+  if (!row) throw Error(`Forward ${id} not found`);
+  if (
+    !stop &&
+    (row.desired_state === "running" || isProcessAlive(row.monitor_pid))
+  )
+    throw Error("Forward is active; stop it first or use --stop");
+  await stopForward(sessionDb, id);
+  deleteForwardSession(sessionDb, id);
 }
 
 export function terminateForward(

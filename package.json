@@ -1,6 +1,6 @@
 {
   "name": "reflect-sync",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "description": "Fast bidirectional file synchronization using rsync and sqlite",
   "type": "module",
   "main": "dist/index.js",
@@ -66,6 +66,8 @@
     "runtime/rsync/runtime.json",
     "runtime/rsync/README.md",
     "README.md",
+    "docs/cli-contract.md",
+    "docs/jupyter.md",
     "CHANGELOG.md",
     "RELEASING.md",
     "LICENSE.txt"

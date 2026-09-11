@@ -17,6 +17,7 @@ import { JUPYTER_SUPERVISOR } from "./jupyter-supervisor.js";
 import { downloadJupyterUv } from "./jupyter-bootstrap.js";
 import { withJupyterTargetLock } from "./jupyter-lock.js";
 import { JUPYTER_DISCOVERY } from "./jupyter-discovery.js";
+import { isProcessAlive } from "./process-lifecycle.js";
 
 export const CHANNEL_PORTS = [
   "shell_port",
@@ -46,6 +47,7 @@ export interface JupyterTarget {
   disabled?: boolean;
 }
 interface SessionSummary {
+  id: number;
   session: string;
   target: string;
   host: string;
@@ -57,6 +59,13 @@ interface RemoteState {
   connection?: ConnectionInfo;
   boot?: string;
   error?: string;
+}
+
+function confirmedStopped(state: RemoteState): boolean {
+  return (
+    ["stopped", "failed"].includes(state.status) ||
+    state.reason === "VM rebooted"
+  );
 }
 
 export function validateConnection(value: unknown): ConnectionInfo {
@@ -494,12 +503,79 @@ export async function listJupyterSessions(): Promise<SessionSummary[]> {
     const record = JSON.parse(await readFile(join(dir, file), "utf8"));
     result.push({
       session: id,
+      id: await jupyterSessionId(id),
       target: record.targetName,
       host: record.host,
       stopped: record.stopped,
     });
   }
   return result;
+}
+
+export async function jupyterSessionId(session: string): Promise<number> {
+  validateTargetName(session);
+  return await withJupyterTargetLock(
+    join(home(), "registry"),
+    "sessions",
+    async () => {
+      const path = join(home(), "session-ids.json");
+      let index: { next: number; ids: Record<string, number> } = {
+        next: 1,
+        ids: {},
+      };
+      try {
+        index = JSON.parse(await readFile(path, "utf8"));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      if (!Number.isSafeInteger(index.next) || index.next < 1 || !index.ids)
+        throw Error("Invalid Jupyter session ID registry");
+      if (Object.hasOwn(index.ids, session)) return index.ids[session];
+      const id = index.next++;
+      Object.defineProperty(index.ids, session, {
+        value: id,
+        enumerable: true,
+        configurable: true,
+      });
+      await savePrivate(path, index);
+      return id;
+    },
+  );
+}
+
+async function resolveJupyterSession(ref: string): Promise<string> {
+  validateTargetName(ref);
+  const session = (await listJupyterSessions()).find(
+    (row) => String(row.id) === ref || row.session === ref,
+  );
+  if (!session) throw Error(`Jupyter session '${ref}' not found`);
+  return session.session;
+}
+
+export async function removeJupyterSession(
+  ref: string,
+  stop = false,
+): Promise<void> {
+  const id = await resolveJupyterSession(ref);
+  const path = join(home(), "sessions", `${id}.json`);
+  const record = JSON.parse(await readFile(path, "utf8"));
+  await withJupyterTargetLock(home(), record.targetName, async () => {
+    if (stop) await jupyterSessionCommand(id, "stop");
+    const state = await rpc(record.host, record.script, {
+      operation: "status",
+      session: id,
+    });
+    if (!confirmedStopped(state))
+      throw Error("Kernel is active; stop it first or use --stop");
+    // Wait for the launcher to finish writing its final record before removing it.
+    const deadline = Date.now() + 10000;
+    while (record.launcherPid && isProcessAlive(record.launcherPid)) {
+      if (Date.now() >= deadline)
+        throw Error("Kernel launcher has not exited; record retained");
+      await delay(100);
+    }
+    await rm(path);
+  });
 }
 
 async function savePrivate(path: string, value: unknown): Promise<void> {
@@ -589,11 +665,7 @@ async function stopRemote(
   const deadline = Date.now() + 15000;
   while (true) {
     const state = await rpc(host, script, { operation: "status", session });
-    if (
-      ["stopped", "failed"].includes(state.status) ||
-      state.reason === "VM rebooted"
-    )
-      return;
+    if (confirmedStopped(state)) return;
     if (state.status === "lost" || Date.now() > deadline)
       throw Error(
         "Remote termination is unconfirmed; retry after the lease expires",
@@ -602,11 +674,28 @@ async function stopRemote(
   }
 }
 
-export async function removeJupyterTarget(name: string): Promise<void> {
+export async function removeJupyterTarget(
+  name: string,
+  stop = false,
+): Promise<void> {
   validateTargetName(name);
   await withJupyterTargetLock(home(), name, async () => {
     const path = join(home(), "targets", `${name}.json`);
     const target = JSON.parse(await readFile(path, "utf8"));
+    const sessions = (await listJupyterSessions()).filter(
+      (session) => session.target === name && !session.stopped,
+    );
+    if (!stop)
+      for (const session of sessions) {
+        const state = (await jupyterSessionCommand(
+          session.session,
+          "status",
+        )) as RemoteState;
+        if (!confirmedStopped(state))
+          throw Error(
+            "Target has active kernels; stop them first or use --stop",
+          );
+      }
     await savePrivate(path, { ...target, disabled: true });
     for (const session of await listJupyterSessions()) {
       if (session.target !== name || session.stopped) continue;
@@ -640,7 +729,7 @@ export async function jupyterSessionCommand(
   id: string,
   operation: "status" | "interrupt" | "stop",
 ): Promise<unknown> {
-  validateTargetName(id);
+  id = await resolveJupyterSession(id);
   const record = JSON.parse(
     await readFile(join(home(), "sessions", `${id}.json`), "utf8"),
   );
@@ -656,7 +745,7 @@ export async function jupyterSessionCommand(
     session: id,
   });
   const { connection: _connection, ...publicState } = state;
-  return publicState;
+  return { id: await jupyterSessionId(id), session: id, ...publicState };
 }
 
 export async function launchJupyter(
@@ -706,6 +795,7 @@ export async function launchJupyter(
       if (JSON.stringify(currentTarget) !== JSON.stringify(target))
         throw Error("Target changed during launch; select it again");
       if (stopping) return;
+      await jupyterSessionId(session);
       await savePrivate(join(home(), "sessions", `${session}.json`), {
         host: target.host,
         script,
