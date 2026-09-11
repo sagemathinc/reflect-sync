@@ -364,12 +364,13 @@ export async function probeJupyter(
 }
 
 export function jupyterName(host: string): string {
+  const normalized = host.replace(/[^a-zA-Z0-9_-]+/g, "-");
+  let start = 0;
+  let end = normalized.length;
+  while (start < end && normalized[start] === "-") start++;
+  while (end > start && normalized[end - 1] === "-") end--;
   return (
-    host
-      .replace(/[^a-zA-Z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 80)
-      .toLowerCase() || "remote"
+    normalized.slice(start, Math.min(end, start + 80)).toLowerCase() || "remote"
   );
 }
 

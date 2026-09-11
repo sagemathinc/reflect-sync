@@ -85,6 +85,15 @@ it("derives stable safe names", () => {
   );
 });
 
+it("normalizes long names without changing trimming or truncation semantics", () => {
+  const padding = "-".repeat(100_000);
+  expect(jupyterName(`${padding}Student@GPU${padding}`)).toBe("student-gpu");
+  expect(jupyterName(padding)).toBe("remote");
+  expect(jupyterName(`CPU${padding}GPU`)).toBe(`cpu${"-".repeat(77)}`);
+  expect(jupyterName("--A__B--C--")).toBe("a__b--c");
+  expect(jupyterName("!@#")).toBe("remote");
+});
+
 it.each([
   ["printf 'NVIDIA L40S, 580.173.02\\n'", "available"],
   ["exit 1", "unavailable"],
