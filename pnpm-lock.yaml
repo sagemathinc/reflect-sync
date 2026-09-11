@@ -31,6 +31,9 @@ importers:
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
+      ssh-config:
+        specifier: 5.2.1
+        version: 5.2.1
     devDependencies:
       "@commander-js/extra-typings":
         specifier: ^15.0.0
@@ -2005,6 +2008,13 @@ packages:
       }
     engines: { node: ">=0.10.0" }
 
+  ssh-config@5.2.1:
+    resolution:
+      {
+        integrity: sha512-czqHa80E1tct44LC6rOuDGB9Pr6M9nfwX88WJkwhEz6IPxgh0Q1dSNEbem9NsUijjd261/QlToTPUFHeYiV/0Q==,
+      }
+    engines: { node: ">= 14.13.1" }
+
   stackback@0.0.2:
     resolution:
       {
@@ -3257,6 +3267,8 @@ snapshots:
       source-map: 0.6.1
 
   source-map@0.6.1: {}
+
+  ssh-config@5.2.1: {}
 
   stackback@0.0.2: {}
 

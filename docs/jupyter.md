@@ -1,6 +1,6 @@
 # Remote Jupyter Kernels
 
-Reflect can register a standard local Jupyter kernelspec backed by a Python
+Reflect can register a standard local Jupyter kernelspec backed by a Jupyter
 kernel on a remote Linux machine. Only SSH is exposed; there is no remote
 Jupyter web server, Node runtime, or CoCalc runtime.
 
@@ -10,6 +10,39 @@ Passwordless SSH and verified host keys must already work from the machine
 running Jupyter. Use an SSH alias to configure the hostname, account, key, port,
 and jump hosts. A changing VM IP should be addressed through its stable DNS name.
 Reflect never disables host-key checking or forwards your SSH agent.
+
+## Discovery And Other Languages
+
+```sh
+reflect jupyter ssh-targets
+reflect jupyter probe --host my-vm
+reflect jupyter probe --host my-vm --search-path /opt/env/share/jupyter/kernels
+reflect jupyter setup --host my-vm --target bash \
+  --kernel /opt/env/share/jupyter/kernels/bash/kernel.json
+```
+
+`ssh-targets` enumerates concrete Host aliases and Includes without evaluating
+Match exec. `probe` checks SSH, then returns JSON with GPU status, kernelspecs,
+managed environments, warnings, and an available local target name. It does not
+install software or launch kernels. Unknown/failed hardware probes are distinct
+from confirmed absence. Python 3 is required for discovery and supervision,
+but the selected kernel may use any language.
+
+Discovery merges Jupyter's reported catalog, standard data directories and
+Reflect-managed environments. Additional search paths cover kernels in other
+virtual environments; this is not an exhaustive disk scan. `--kernel` preserves
+the remote kernelspec's argv, env, language, resource directory, and interrupt
+mode. It checks the executable and connection-file argument before registration;
+the client verifies readiness at launch. Existing kernels require no recipe
+installation. The Python and PyTorch recipes below are conveniences, not a
+restriction to Python kernels.
+
+Local kernel names cannot be overwritten. Compatible, recipe-marked managed
+environments can be reused; unknown or incompatible environment names cannot.
+CoCalc uses the structured probe output to suggest names and offer GPU setup only
+when a supported NVIDIA GPU/driver has been positively identified.
+
+## Python Recipes
 
 ```sh
 reflect jupyter setup --host my-vm --target gpu --environment teaching
@@ -64,6 +97,8 @@ separate session with independent remote ports and signing key. Reflect does not
 parse Jupyter messages, so comms and binary buffers use the same wire protocol.
 
 - SIGINT interrupts the remote kernel process group without killing SSH.
+- Kernelspecs declaring message interruption use the standard control-channel
+  interrupt request in clients that honor `interrupt_mode`, including CoCalc.
 - SIGTERM requests remote termination and waits for confirmation.
 - A lifetime-pipe guardian kills the owned process group if its supervisor dies;
   it also checks the lease independently.
@@ -105,6 +140,7 @@ python3 scripts/test-jupyter-lease.py gpu kernel
 python3 scripts/test-jupyter-removal.py gpu
 python3 scripts/test-jupyter-startup-failures.py gpu
 python3 scripts/test-jupyter-gpu.py reflect-gpu
+python3 scripts/test-jupyter-bash.py reflect-bash
 ```
 
 These cover execution, completions, inspection, stdin, errors/rich output,

@@ -1,7 +1,7 @@
 // Shipped with Reflect and installed by content hash. Only Python's standard
 // library is needed by the supervisor; the selected interpreter runs the kernel.
 export const JUPYTER_SUPERVISOR = String.raw`
-import fcntl, hashlib, json, os, pathlib, re, selectors, shutil, signal, subprocess, sys, time, uuid
+import fcntl, hashlib, json, os, pathlib, re, selectors, shutil, signal, socket, string, subprocess, sys, time, uuid
 
 os.umask(0o077)
 ROOT = pathlib.Path.home() / ".local/share/reflect/jupyter"
@@ -27,6 +27,29 @@ def locked(path):
     lock = open(path, "a+")
     fcntl.flock(lock, fcntl.LOCK_EX)
     return lock
+
+def resolve_kernel(path):
+    path = pathlib.Path(path)
+    if not path.is_absolute(): raise ValueError("Absolute kernelspec path required")
+    spec = read(path)
+    argv = spec.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\x00" not in x for x in argv):
+        raise ValueError("Invalid kernelspec argv")
+    if not any("{connection_file}" in x for x in argv): raise ValueError("Kernelspec must accept {connection_file}")
+    if spec.get("interrupt_mode", "signal") not in ("signal", "message"): raise ValueError("Unsupported interrupt mode")
+    env = spec.get("env", {})
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()): raise ValueError("Invalid kernelspec environment")
+    spec["resource_dir"] = str(path.parent)
+    # ipykernel's packaged kernelspec uses 'python'; resolve it in its own
+    # environment rather than accidentally selecting the system interpreter.
+    prefix = path.parent.parent.parent.parent.parent
+    if argv[0] in ("python", "python3") and (prefix / "bin/python").is_file():
+        argv[0] = str(prefix / "bin/python")
+    executable = argv[0].replace("{resource_dir}", str(path.parent))
+    effective = dict(os.environ)
+    effective.update({k: string.Template(v).safe_substitute(os.environ) for k, v in env.items()})
+    if not shutil.which(executable, path=effective.get("PATH")): raise ValueError("Kernel executable unavailable: " + executable)
+    return {"argv": argv, "env": env, "language": spec.get("language", ""), "display_name": spec.get("display_name", path.parent.name), "interrupt_mode": spec.get("interrupt_mode", "signal"), "resource_dir": str(path.parent)}
 
 def status(directory):
     state = read(directory / "state.json")
@@ -63,8 +86,13 @@ def guard_kernel(directory):
         def child_signals():
             signal.signal(signal.SIGINT, signal.SIG_DFL)
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        process = subprocess.Popen([request["python"], "-m", "ipykernel_launcher", "-f", str(directory / "kernel.json")],
-            stdin=subprocess.DEVNULL, preexec_fn=child_signals)
+        spec = request.get("kernel")
+        env = dict(os.environ)
+        if spec:
+            argv = [x.replace("{connection_file}", str(directory / "kernel.json")).replace("{resource_dir}", spec.get("resource_dir", "")) for x in spec["argv"]]
+            env.update({k: string.Template(v).safe_substitute(os.environ) for k, v in spec.get("env", {}).items()})
+        else: argv = [request["python"], "-m", "ipykernel_launcher", "-f", str(directory / "kernel.json")]
+        process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, preexec_fn=child_signals)
         while True:
             code = process.poll()
             if code is not None:
@@ -84,6 +112,18 @@ def supervise(directory):
     connection["ip"] = "127.0.0.1"
     for port in PORTS:
         connection[port] = 0
+    if request.get("kernel"):
+        # General kernels expect assigned ports, unlike ipykernel which can
+        # rewrite zero ports. Hold all reservations until allocation is complete.
+        reserved = []
+        try:
+            for port in PORTS:
+                s = socket.socket()
+                s.bind(("127.0.0.1", 0))
+                reserved.append(s)
+                connection[port] = s.getsockname()[1]
+        finally:
+            for s in reserved: s.close()
     file = directory / "kernel.json"
     write(file, connection)
     process = None
@@ -125,6 +165,9 @@ def supervise(directory):
                 try:
                     info = read(file)
                     if all(isinstance(info.get(p), int) and info[p] > 0 for p in PORTS):
+                        if request.get("kernel"):
+                            for p in PORTS:
+                                with socket.create_connection(("127.0.0.1", info[p]), timeout=0.1): pass
                         state = {"status": "ready", "connection": info}
                 except (ValueError, OSError):
                     pass
@@ -153,6 +196,7 @@ def supervise(directory):
 
 def main(request):
     operation = request["operation"]
+    if operation == "resolve_kernel": return resolve_kernel(request["path"])
     if operation == "validate":
         # A real handshake, not just an import, before publishing a kernelspec.
         code = '''
@@ -184,11 +228,13 @@ finally:
                 raise ValueError("Unknown kernel recipe")
             if python.exists():
                 marker = environment / "reflect-ready.json"
-                previous = read(marker).get("recipe") if marker.exists() else "python"
+                previous = read(marker).get("recipe") if marker.exists() else None
                 if previous != recipe:
                     raise ValueError("Environment already exists with another recipe; choose a new environment name")
                 main({"operation": "validate", "python": str(python)})
                 return {"python": str(python), "environment": environment.name}
+            if os.path.lexists(environment):
+                raise ValueError("Environment name already exists but is not ready; choose a new environment name")
             versions = ROOT / "environment-versions"
             versions.mkdir(exist_ok=True, mode=0o700)
             version = versions / (environment.name + "-" + str(uuid.uuid4()))

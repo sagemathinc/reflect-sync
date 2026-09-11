@@ -87,7 +87,8 @@
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
     "fast-ignore": "^2.0.0",
-    "proper-lockfile": "4.1.2"
+    "proper-lockfile": "4.1.2",
+    "ssh-config": "5.2.1"
   },
   "devDependencies": {
     "@commander-js/extra-typings": "^15.0.0",

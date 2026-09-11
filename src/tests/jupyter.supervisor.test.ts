@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -101,6 +108,24 @@ describe.runIf(process.platform === "linux")(
           ),
         ).toEqual([]);
       }
+    });
+    it("does not prepare over an unknown environment directory", async () => {
+      const environment = join(
+        root,
+        ".local/share/reflect/jupyter/environments/existing",
+      );
+      await mkdir(environment, { recursive: true });
+      await writeFile(join(environment, "user-content"), "untouched");
+      expect(
+        rpc({
+          operation: "prepare",
+          environment: "existing",
+          uv: "/nonexistent",
+        }).error,
+      ).toContain("already exists");
+      expect(await readFile(join(environment, "user-content"), "utf8")).toBe(
+        "untouched",
+      );
     });
   },
 );

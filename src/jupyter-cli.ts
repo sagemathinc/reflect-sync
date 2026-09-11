@@ -9,12 +9,31 @@ import {
   removeJupyterTarget,
   prepareJupyter,
   registerJupyterTarget,
+  probeJupyter,
+  existingJupyterKernel,
+  assertJupyterNameAvailable,
 } from "./jupyter.js";
+import { jupyterSshAliases } from "./jupyter-ssh.js";
 
 export function registerJupyterCommands(program: Command): void {
   const jupyter = program
     .command("jupyter")
     .description("Manage standard Jupyter kernels running over SSH");
+  jupyter.command("ssh-targets").action(async () => {
+    process.stdout.write(JSON.stringify(await jupyterSshAliases()) + "\n");
+  });
+  jupyter
+    .command("probe")
+    .requiredOption("--host <host>")
+    .option(
+      "--search-path <paths...>",
+      "additional remote kernelspec directories",
+    )
+    .action(async (opts) => {
+      process.stdout.write(
+        JSON.stringify(await probeJupyter(opts.host, opts.searchPath)) + "\n",
+      );
+    });
   jupyter.command("targets").action(async () => {
     process.stdout.write(JSON.stringify(await listJupyterTargets()) + "\n");
   });
@@ -34,29 +53,39 @@ export function registerJupyterCommands(program: Command): void {
     .requiredOption("--host <host>")
     .option("--environment <name>", "managed environment", "teaching")
     .option("--python <path>", "existing remote interpreter (no installation)")
+    .option("--kernel <path>", "existing remote kernel.json (any language)")
     .option("--uv <path>", "local bootstrap executable override")
     .option("--recipe <recipe>", "python or pytorch-cu128", "python")
     .action(async (opts) => {
-      const target = opts.python
-        ? {
-            host: opts.host,
-            python: opts.python,
-            environment: opts.environment,
-          }
-        : await prepareJupyter(
-            opts.host,
-            opts.environment,
-            opts.uv,
-            opts.recipe,
-          );
+      if (opts.python && opts.kernel)
+        throw Error("Choose a Python interpreter or a kernelspec, not both");
+      await assertJupyterNameAvailable(opts.target);
+      const target = opts.kernel
+        ? await existingJupyterKernel(opts.host, opts.kernel)
+        : opts.python
+          ? {
+              host: opts.host,
+              python: opts.python,
+              environment: opts.environment,
+            }
+          : await prepareJupyter(
+              opts.host,
+              opts.environment,
+              opts.uv,
+              opts.recipe,
+            );
       const path = await registerJupyterTarget(
         opts.target,
         target,
         defaultLauncherArgv(),
       );
       process.stdout.write(
-        JSON.stringify({ kernel: `reflect-${opts.target}`, path, ...target }) +
-          "\n",
+        JSON.stringify({
+          kernel: `reflect-${opts.target}`,
+          path,
+          host: target.host,
+          environment: target.environment,
+        }) + "\n",
       );
     });
   jupyter

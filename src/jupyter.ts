@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -15,6 +16,7 @@ import { argsJoin } from "./shell-args.js";
 import { JUPYTER_SUPERVISOR } from "./jupyter-supervisor.js";
 import { downloadJupyterUv } from "./jupyter-bootstrap.js";
 import { withJupyterTargetLock } from "./jupyter-lock.js";
+import { JUPYTER_DISCOVERY } from "./jupyter-discovery.js";
 
 export const CHANNEL_PORTS = [
   "shell_port",
@@ -31,8 +33,16 @@ export type ConnectionInfo = {
 } & Record<(typeof CHANNEL_PORTS)[number], number>;
 export interface JupyterTarget {
   host: string;
-  python: string;
+  python?: string;
   environment: string;
+  kernel?: {
+    argv: string[];
+    env?: Record<string, string>;
+    display_name: string;
+    language: string;
+    interrupt_mode?: string;
+    resource_dir?: string;
+  };
   disabled?: boolean;
 }
 interface SessionSummary {
@@ -289,14 +299,169 @@ export async function listJupyterEnvironments(host: string): Promise<unknown> {
   return await rpc(host, await helper(host), { operation: "kernels" });
 }
 
+export interface JupyterProbe {
+  platform: string;
+  gpu: {
+    status: "available" | "absent" | "unknown" | "unavailable" | "unsupported";
+    reason?: string;
+    description?: string;
+  };
+  kernels: {
+    id: string;
+    name: string;
+    display_name: string;
+    language: string;
+    interrupt_mode: string;
+  }[];
+  environments: { name: string; recipe: string | null }[];
+  warnings: string[];
+  search_paths: string[];
+  suggested_name?: string;
+}
+
+export async function probeJupyter(
+  host: string,
+  paths: string[] = [],
+): Promise<JupyterProbe> {
+  // This first command fails immediately and distinctly for SSH/auth errors.
+  const python = (
+    await command(host, [
+      "sh",
+      "-c",
+      'command -v python3 || { p="$HOME/.local/share/reflect/jupyter/runtime/bin/python"; if [ -x "$p" ]; then printf "%s" "$p"; fi; }',
+    ])
+  ).trim();
+  let result: JupyterProbe;
+  if (!python) {
+    result = {
+      platform: (await command(host, ["uname", "-sm"])).trim(),
+      gpu: {
+        status: "unknown",
+        reason:
+          "Python is unavailable; hardware and kernel discovery require a Python 3 interpreter",
+      },
+      kernels: [],
+      environments: [],
+      search_paths: [],
+      warnings: [
+        "No Python 3 available for discovery. Explicit Python preparation is still available.",
+      ],
+    };
+  } else {
+    if (!python.startsWith("/") || /[\r\n]/.test(python))
+      throw Error("Invalid remote Python path");
+    result = JSON.parse(
+      await command(
+        host,
+        [python, "-", JSON.stringify(paths)],
+        JUPYTER_DISCOVERY,
+        45000,
+      ),
+    );
+  }
+  result.suggested_name = await availableJupyterName(host);
+  return result;
+}
+
+export function jupyterName(host: string): string {
+  return (
+    host
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80)
+      .toLowerCase() || "remote"
+  );
+}
+
+async function occupiedNames(): Promise<Set<string>> {
+  const dirs = [
+    process.env.JUPYTER_DATA_DIR ||
+      join(
+        process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+        "jupyter",
+      ),
+    ...(process.env.JUPYTER_PATH || "").split(":"),
+    "/usr/local/share/jupyter",
+    "/usr/share/jupyter",
+  ];
+  const names = new Set<string>();
+  try {
+    const { stdout } = await promisify(execFile)(
+      "jupyter",
+      ["kernelspec", "list", "--json"],
+      { timeout: 15000, maxBuffer: 1024 * 1024 },
+    );
+    for (const name of Object.keys(JSON.parse(stdout).kernelspecs || {}))
+      names.add(name.toLowerCase());
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+      throw Error(`Local kernelspec discovery failed: ${String(err)}`);
+  }
+  for (const dir of dirs.filter(Boolean)) {
+    try {
+      for (const name of await readdir(join(dir, "kernels")))
+        names.add(name.toLowerCase());
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
+  try {
+    for (const file of await readdir(join(home(), "targets")))
+      if (file.endsWith(".json"))
+        names.add(`reflect-${file.slice(0, -5).toLowerCase()}`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  return names;
+}
+
+export async function assertJupyterNameAvailable(name: string): Promise<void> {
+  validateTargetName(name);
+  const names = await occupiedNames();
+  if (
+    names.has(name.toLowerCase()) ||
+    names.has(`reflect-${name.toLowerCase()}`)
+  )
+    throw Error("Kernel name already exists; choose another name");
+}
+
+export async function availableJupyterName(host: string): Promise<string> {
+  const names = await occupiedNames();
+  const base = jupyterName(host);
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? base : `${base}-${n}`;
+    if (!names.has(name) && !names.has(`reflect-${name}`)) return name;
+  }
+}
+
+export async function existingJupyterKernel(
+  host: string,
+  path: string,
+): Promise<JupyterTarget> {
+  if (!path.startsWith("/"))
+    throw Error("Remote kernelspec requires an absolute path");
+  const kernel = await rpc<NonNullable<JupyterTarget["kernel"]>>(
+    host,
+    await helper(host),
+    { operation: "resolve_kernel", path },
+  );
+  return { host, environment: "existing", kernel };
+}
+
 export async function listJupyterTargets(): Promise<unknown[]> {
   const dir = join(home(), "targets");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const result: unknown[] = [];
   for (const file of (await readdir(dir)).filter((x) => x.endsWith(".json"))) {
+    const target: JupyterTarget = JSON.parse(
+      await readFile(join(dir, file), "utf8"),
+    );
     result.push({
       name: file.slice(0, -5),
-      ...JSON.parse(await readFile(join(dir, file), "utf8")),
+      host: target.host,
+      environment: target.environment,
+      python: target.python,
+      disabled: target.disabled,
     });
   }
   return result;
@@ -333,49 +498,68 @@ export async function registerJupyterTarget(
 ): Promise<string> {
   validateTargetName(name);
   sshArgs(target.host);
-  if (!target.python.startsWith("/"))
+  if (!target.kernel && !target.python?.startsWith("/"))
     throw Error("Remote interpreter must be an absolute path");
   validateTargetName(target.environment);
-  await rpc(target.host, await helper(target.host), {
-    operation: "validate",
-    python: target.python,
-  });
-  return await withJupyterTargetLock(home(), name, async () => {
-    const targetPath = join(home(), "targets", `${name}.json`);
-    try {
-      if (JSON.parse(await readFile(targetPath, "utf8")).disabled) {
-        throw Error(
-          "Target removal is incomplete; retry remove before registering again",
-        );
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    await savePrivate(targetPath, target);
-    const dataHome =
-      process.env.JUPYTER_DATA_DIR ||
-      join(
-        process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
-        "jupyter",
-      );
-    const spec = join(dataHome, "kernels", `reflect-${name}`, "kernel.json");
-    await savePrivate(spec, {
-      argv: [
-        ...launcherArgv,
-        "jupyter",
-        "launch",
-        "--target",
-        name,
-        "--connection-file",
-        "{connection_file}",
-      ],
-      display_name: `Python - ${name}`,
-      language: "python",
-      interrupt_mode: "signal",
-      metadata: { reflect: { remote: true, protocol: 1 } },
+  if (!target.kernel)
+    await rpc(target.host, await helper(target.host), {
+      operation: "validate",
+      python: target.python,
     });
-    return spec;
-  });
+  return await withJupyterTargetLock(
+    join(home(), "registry"),
+    "registration",
+    () =>
+      withJupyterTargetLock(home(), name, async () => {
+        await assertJupyterNameAvailable(name);
+        const targetPath = join(home(), "targets", `${name}.json`);
+        const dataHome =
+          process.env.JUPYTER_DATA_DIR ||
+          join(
+            process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+            "jupyter",
+          );
+        const spec = join(
+          dataHome,
+          "kernels",
+          `reflect-${name}`,
+          "kernel.json",
+        );
+        const specification = {
+          argv: [
+            ...launcherArgv,
+            "jupyter",
+            "launch",
+            "--target",
+            name,
+            "--connection-file",
+            "{connection_file}",
+          ],
+          display_name: `${target.kernel?.display_name || "Python"} - ${name}`,
+          language: target.kernel?.language || "python",
+          interrupt_mode: target.kernel?.interrupt_mode || "signal",
+          metadata: { reflect: { remote: true, protocol: 1 } },
+        };
+        // Reserve the directory exclusively, including against other kernelspec installers.
+        await mkdir(join(dataHome, "kernels"), { recursive: true });
+        await mkdir(join(spec, ".."), { mode: 0o700 });
+        let createdTarget = false;
+        try {
+          await mkdir(join(targetPath, ".."), { recursive: true, mode: 0o700 });
+          await writeFile(targetPath, JSON.stringify(target, null, 2), {
+            mode: 0o600,
+            flag: "wx",
+          });
+          createdTarget = true;
+          await savePrivate(spec, specification);
+        } catch (err) {
+          if (createdTarget) await rm(targetPath, { force: true });
+          await rm(join(spec, ".."), { recursive: true, force: true });
+          throw err;
+        }
+        return spec;
+      }),
+  );
 }
 
 async function stopRemote(
@@ -515,6 +699,7 @@ export async function launchJupyter(
         session,
         connection,
         python: target.python,
+        kernel: target.kernel,
         leaseSeconds,
       };
       // An ambiguous SSH response must not create a second remote kernel.
