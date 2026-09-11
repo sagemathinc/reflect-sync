@@ -43,10 +43,10 @@ with tempfile.TemporaryDirectory() as directory:
             log.seek(0)
             session = next(line.split()[-1] for line in log if line.startswith("Reflect kernel session "))
             if failure == "supervisor":
-                state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session]))
+                state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session, "--json"]))
                 pid = int(state["supervisorPid"])
                 assert pid > 1
-                targets = json.loads(subprocess.check_output(["node", cli, "jupyter", "targets"]))
+                targets = json.loads(subprocess.check_output(["node", cli, "jupyter", "targets", "--json"]))
                 host = next(t["host"] for t in targets if t["name"] == sys.argv[1])
                 subprocess.check_call(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host, "kill -KILL %s" % pid])
             elif failure == "kernel":
@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as directory:
                 launcher.wait(timeout=5)
             deadline = time.monotonic() + 30
             while True:
-                state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session]))
+                state = json.loads(subprocess.check_output(["node", cli, "jupyter", "status", session, "--json"]))
                 if state["status"] in ("stopped", "failed"):
                     if failure == "launcher":
                         assert state["reason"] == "lease expired", state

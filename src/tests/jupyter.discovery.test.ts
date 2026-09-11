@@ -17,6 +17,7 @@ import {
   availableJupyterName,
   jupyterName,
   registerJupyterTarget,
+  probeJupyter,
 } from "../jupyter.js";
 
 let root: string;
@@ -83,6 +84,60 @@ it("derives stable safe names", () => {
   expect(jupyterName("student@GPU.example.com")).toBe(
     "student-gpu-example-com",
   );
+});
+
+async function mockSshProbe(changed: boolean): Promise<string> {
+  const bin = join(root, "bin");
+  const log = join(root, "ssh-log.json");
+  await mkdir(bin);
+  await writeFile(
+    join(bin, "ssh"),
+    `#!${process.execPath}
+const fs = require("node:fs");
+const log = ${JSON.stringify(log)};
+const args = process.argv.slice(2);
+const calls = fs.existsSync(log) ? JSON.parse(fs.readFileSync(log)) : [];
+calls.push(args); fs.writeFileSync(log, JSON.stringify(calls));
+process.stdin.resume();
+if (${changed} || !args.includes("StrictHostKeyChecking=accept-new") && calls.length === 1) {
+  process.stderr.write(${JSON.stringify(changed ? "REMOTE HOST IDENTIFICATION HAS CHANGED!" : "No ED25519 host key is known for gpu and you have requested strict checking.")});
+  process.exitCode = 255;
+} else if (args.includes("StrictHostKeyChecking=accept-new")) {
+  process.stderr.write("Warning: Permanently added 'gpu' (ED25519) to the list of known hosts.\\n");
+} else if (calls.length === 2) process.stdout.write("/usr/bin/python3\\n");
+else process.stdout.write(JSON.stringify({ platform: "Linux", gpu: {status: "absent"}, kernels: [], environments: [], warnings: [], search_paths: [] }));
+`,
+    { mode: 0o700 },
+  );
+  vi.stubEnv("PATH", bin);
+  vi.stubEnv("REFLECT_JUPYTER_HOME", join(root, "reflect"));
+  vi.stubEnv("JUPYTER_DATA_DIR", join(root, "jupyter"));
+  return log;
+}
+
+it("does not continue discovery after a changed key is rejected", async () => {
+  const log = await mockSshProbe(true);
+  await expect(probeJupyter("gpu", [], true)).rejects.toThrow(
+    "HOST IDENTIFICATION HAS CHANGED",
+  );
+  expect(JSON.parse(await readFile(log, "utf8"))).toHaveLength(1);
+});
+
+it("enrolls only on explicit trust and keeps discovery strict", async () => {
+  const log = await mockSshProbe(false);
+  await expect(probeJupyter("gpu")).rejects.toThrow("strict checking");
+  await rm(log);
+  expect(await probeJupyter("gpu", [], true)).toMatchObject({
+    gpu: { status: "absent" },
+    suggested_name: "gpu",
+  });
+  const calls = JSON.parse(await readFile(log, "utf8"));
+  expect(calls).toHaveLength(3);
+  expect(calls[0]).toContain("StrictHostKeyChecking=accept-new");
+  for (const args of calls.slice(1)) {
+    expect(args).toContain("StrictHostKeyChecking=yes");
+    expect(args).not.toContain("StrictHostKeyChecking=accept-new");
+  }
 });
 
 it("normalizes long names without changing trimming or truncation semantics", () => {

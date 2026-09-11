@@ -38,6 +38,11 @@ describe("standard remote kernel connection contract", () => {
     expect(args).toContain("BatchMode=yes");
     expect(args).toContain("ExitOnForwardFailure=yes");
     expect(args).toContain("ForwardAgent=no");
+    const enrollment = sshArgs("jupyter", true);
+    expect(enrollment).toContain("StrictHostKeyChecking=accept-new");
+    expect(enrollment).not.toContain("StrictHostKeyChecking=no");
+    expect(enrollment).toContain("BatchMode=yes");
+    expect(enrollment).toContain("ForwardAgent=no");
   });
   it.each(["-oProxyCommand=bad", "host\ncommand", ""])(
     "rejects invalid SSH destination %j",

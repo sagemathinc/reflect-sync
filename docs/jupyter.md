@@ -11,6 +11,12 @@ running Jupyter. Use an SSH alias to configure the hostname, account, key, port,
 and jump hosts. A changing VM IP should be addressed through its stable DNS name.
 Reflect never disables host-key checking or forwards your SSH agent.
 
+For explicit first-use trust without an interactive terminal, run
+`reflect jupyter probe --host my-vm --trust-new-host`. This records the first
+observed key using OpenSSH's `accept-new` policy; it does not independently
+verify the server's identity. Changed known keys are rejected. Subsequent
+discovery and kernel commands continue to require a known matching key.
+
 ## Discovery And Other Languages
 
 ```sh
@@ -89,6 +95,23 @@ by absolute path. `targets` and `sessions` emit JSON. Setup emits the installed
 kernel name, target and paths as JSON.
 
 ## Lifecycle
+
+Like `reflect list` and `reflect forward list`, Jupyter commands default to
+human-readable output using the same table style. Use `--json` for automation:
+
+```sh
+reflect jupyter list
+reflect jupyter list --json
+reflect jupyter targets
+reflect jupyter probe --host my-vm --json
+reflect jupyter status SESSION_ID --json
+```
+
+`sessions` is an alias for `list`. The list reads local session records without
+contacting each VM: `unverified` means that a remote status check is needed,
+not that the kernel is known to be running. Use `status SESSION_ID` to check.
+All management commands support `--json`; `launch` is the foreground kernel
+process and does not emit a management result.
 
 The kernelspec launches `reflect jupyter launch` in the foreground. It honors the
 caller's signed loopback TCP connection file and forwards all five Jupyter ports.

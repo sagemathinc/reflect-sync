@@ -94,7 +94,7 @@ function home(): string {
   );
 }
 
-export function sshArgs(host: string): string[] {
+export function sshArgs(host: string, trustNewHost = false): string[] {
   if (!host || host.startsWith("-") || /[\s\x00-\x1f]/.test(host))
     throw Error("Invalid SSH host");
   return [
@@ -102,7 +102,7 @@ export function sshArgs(host: string): string[] {
     "-o",
     "BatchMode=yes",
     "-o",
-    "StrictHostKeyChecking=yes",
+    `StrictHostKeyChecking=${trustNewHost ? "accept-new" : "yes"}`,
     "-o",
     "ConnectTimeout=10",
     "-o",
@@ -122,12 +122,17 @@ async function command(
   argv: string[],
   input: string | Uint8Array = "",
   timeout = 20000,
+  trustNewHost = false,
 ): Promise<string> {
   return await new Promise((resolveResult, reject) => {
-    const child = spawn("ssh", [...sshArgs(host), argsJoin(argv)], {
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      "ssh",
+      [...sshArgs(host, trustNewHost), argsJoin(argv)],
+      {
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     let output = "",
       error = "";
     let expired = false;
@@ -322,7 +327,11 @@ export interface JupyterProbe {
 export async function probeJupyter(
   host: string,
   paths: string[] = [],
+  trustNewHost = false,
 ): Promise<JupyterProbe> {
+  // Explicit first-use enrollment only. Later commands remain strict, and
+  // accept-new itself refuses a changed key already recorded by OpenSSH.
+  if (trustNewHost) await command(host, ["true"], "", 20000, true);
   // This first command fails immediately and distinctly for SSH/auth errors.
   const python = (
     await command(host, [
@@ -449,10 +458,18 @@ export async function existingJupyterKernel(
   return { host, environment: "existing", kernel };
 }
 
-export async function listJupyterTargets(): Promise<unknown[]> {
+export async function listJupyterTargets(): Promise<
+  {
+    name: string;
+    host: string;
+    environment: string;
+    python?: string;
+    disabled?: boolean;
+  }[]
+> {
   const dir = join(home(), "targets");
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const result: unknown[] = [];
+  const result: Awaited<ReturnType<typeof listJupyterTargets>> = [];
   for (const file of (await readdir(dir)).filter((x) => x.endsWith(".json"))) {
     const target: JupyterTarget = JSON.parse(
       await readFile(join(dir, file), "utf8"),

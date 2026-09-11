@@ -10,7 +10,7 @@ import tempfile
 from jupyter_client.connect import write_connection_file
 
 cli = ["node", str(pathlib.Path(__file__).resolve().parents[1] / "dist/cli.js"), "jupyter"]
-target = next(t for t in json.loads(subprocess.check_output(cli + ["targets"])) if t["name"] == sys.argv[1])
+target = next(t for t in json.loads(subprocess.check_output(cli + ["targets", "--json"])) if t["name"] == sys.argv[1])
 for failure in ("occupied-port", "missing-interpreter"):
     with tempfile.TemporaryDirectory() as root, socket.socket() as occupied:
         home = pathlib.Path(root)
@@ -31,8 +31,8 @@ for failure in ("occupied-port", "missing-interpreter"):
         assert result.returncode != 0, failure
         assert "synthetic-test-key" not in result.stderr
         assert pathlib.Path(connection).read_bytes() == before
-        sessions = json.loads(subprocess.check_output(cli + ["sessions"], env=env))
+        sessions = json.loads(subprocess.check_output(cli + ["list", "--json"], env=env))
         assert len(sessions) == 1
-        status = json.loads(subprocess.check_output(cli + ["status", sessions[0]["session"]], env=env))
+        status = json.loads(subprocess.check_output(cli + ["status", sessions[0]["session"], "--json"], env=env))
         assert status["status"] in ("stopped", "failed"), status
         print("PASS:", failure, "unwinds session and preserves client connection file")
