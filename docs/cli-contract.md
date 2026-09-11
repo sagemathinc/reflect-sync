@@ -36,6 +36,10 @@ under `reflect sync`; no top-level sync convenience aliases remain.
   remote prevents removal. `jupyter target remove NAME --stop` additionally
   disables new launches before stopping executions and removing registration.
   Removal never deletes users' synced files, remote environments, or VMs.
+  For a permanently unavailable remote, `jupyter remove ID --force` forgets
+  only the local record without SSH or confirming remote shutdown. It cannot
+  be combined with `--stop`; any local launcher must still exit first so it
+  cannot recreate the record. The integer handle is not reused.
 - `sync flush ID`: request convergence now (formerly top-level `sync ID`).
   Domain-specific edit, diff, logs, monitor, reset, and query operations remain.
 

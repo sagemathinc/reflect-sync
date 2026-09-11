@@ -257,11 +257,21 @@ export function registerJupyterCommands(program: Command): void {
     .command("remove")
     .argument("<id...>", "local IDs or remote UUIDs")
     .option("--stop", "stop active kernels before removing their records")
+    .option(
+      "--force",
+      "forget local records without contacting the remote; kernels may remain running",
+    )
     .option("--json", "emit JSON instead of human text")
     .action(async (refs: string[], opts) => {
       await batch(refs, opts.json, async (ref) => {
-        await removeJupyterSession(ref, opts.stop);
-        return { removed: ref };
+        await removeJupyterSession(ref, opts.stop, opts.force);
+        return opts.force
+          ? {
+              removed: ref,
+              warning:
+                "Local record forgotten; remote kernel shutdown was not confirmed",
+            }
+          : { removed: ref };
       });
     });
 }

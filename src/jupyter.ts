@@ -555,17 +555,21 @@ async function resolveJupyterSession(ref: string): Promise<string> {
 export async function removeJupyterSession(
   ref: string,
   stop = false,
+  force = false,
 ): Promise<void> {
+  if (stop && force) throw Error("Choose --stop or --force, not both");
   const id = await resolveJupyterSession(ref);
   const path = join(home(), "sessions", `${id}.json`);
   const record = JSON.parse(await readFile(path, "utf8"));
   await withJupyterTargetLock(home(), record.targetName, async () => {
     if (stop) await jupyterSessionCommand(id, "stop");
-    const state = await rpc(record.host, record.script, {
-      operation: "status",
-      session: id,
-    });
-    if (!confirmedStopped(state))
+    const state = force
+      ? undefined
+      : await rpc(record.host, record.script, {
+          operation: "status",
+          session: id,
+        });
+    if (!force && (!state || !confirmedStopped(state)))
       throw Error("Kernel is active; stop it first or use --stop");
     // Wait for the launcher to finish writing its final record before removing it.
     const deadline = Date.now() + 10000;

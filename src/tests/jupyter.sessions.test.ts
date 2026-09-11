@@ -114,3 +114,32 @@ it("target removal requires explicit permission to stop active kernels", async (
   ).rejects.toMatchObject({ code: "ENOENT" });
   expect((await listJupyterSessions())[0].stopped).toBe(true);
 });
+
+it("force forgets an unreachable session without SSH, preserving its target and ID history", async () => {
+  const id = (await listJupyterSessions())[0].id;
+  await rm(join(root, "bin/ssh"));
+  await expect(removeJupyterSession(uid, true, true)).rejects.toThrow(
+    "not both",
+  );
+  expect(await listJupyterSessions()).toHaveLength(1);
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      ["dist/cli.js", "jupyter", "remove", String(id), "--force", "--json"],
+      { encoding: "utf8", env: process.env },
+    ),
+  );
+  expect(result[0]).toMatchObject({
+    ok: true,
+    result: {
+      removed: String(id),
+      warning: expect.stringContaining("not confirmed"),
+    },
+  });
+  expect(await listJupyterSessions()).toEqual([]);
+  expect(await readFile(join(root, "targets/teaching.json"), "utf8")).toContain(
+    "gpu",
+  );
+  expect(await readFile(join(root, "state"), "utf8")).toBe("ready");
+  expect(await jupyterSessionId("next-session")).toBeGreaterThan(id);
+});
