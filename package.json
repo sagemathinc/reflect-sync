@@ -98,8 +98,8 @@
     "prettier": "^3.9.6",
     "rollup": "^4.63.1",
     "tsx": "^4.23.13",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   },
   "author": "William Stein (wstein@sagemath.com)",
   "repository": {
