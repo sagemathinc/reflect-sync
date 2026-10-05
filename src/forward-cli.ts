@@ -52,6 +52,10 @@ export function registerForwardCommands(program: Command) {
     )
     .option("-n, --name <name>", "friendly name")
     .option("--compress", "enable SSH compression", false)
+    .option(
+      "--remote-bind <host>",
+      "address the remote sshd listens on for remote -> local forwards: 127.0.0.1 for loopback only, * for all interfaces",
+    )
     .option("--session-db <file>", "override path to sessions.db")
     .action(
       async (left: string, right: string, opts: any, command: Command) => {
@@ -66,6 +70,7 @@ export function registerForwardCommands(program: Command) {
             right,
             compress: !!opts.compress,
             stopped: !!opts.stopped,
+            remoteBind: opts.remoteBind,
             logger,
           });
           ensureDaemonRunning(sessionDb, logger.child("daemon"));

@@ -31,6 +31,8 @@ describe("forward runner args", () => {
     });
     expect(buildSshArgs(row)).toEqual([
       "-N",
+      "-o",
+      "ExitOnForwardFailure=yes",
       "-L",
       "127.0.0.1:7100:localhost:7100",
       "user@example.com",
@@ -43,9 +45,43 @@ describe("forward runner args", () => {
     });
     expect(buildSshArgs(row)).toEqual([
       "-N",
+      "-o",
+      "ExitOnForwardFailure=yes",
       "-L",
       "127.0.0.1:7100:my-service.internal:7100",
       "user@example.com",
     ]);
+  });
+
+  it("binds legacy remote -> local rows on all interfaces", () => {
+    const row = makeForwardRow({
+      direction: "remote_to_local",
+      remote_host: "",
+      remote_port: 9222,
+      local_port: 9333,
+    });
+    expect(buildSshArgs(row)).toContain("0.0.0.0:9222:127.0.0.1:9333");
+  });
+
+  it("uses the stored remote bind for remote -> local rows", () => {
+    for (const [bind, spec] of [
+      ["127.0.0.1", "127.0.0.1:9222:127.0.0.1:9333"],
+      ["[::1]", "[::1]:9222:127.0.0.1:9333"],
+    ]) {
+      const row = makeForwardRow({
+        direction: "remote_to_local",
+        remote_host: bind,
+        remote_port: 9222,
+        local_port: 9333,
+      });
+      expect(buildSshArgs(row)).toEqual([
+        "-N",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-R",
+        spec,
+        "user@example.com",
+      ]);
+    }
   });
 });
