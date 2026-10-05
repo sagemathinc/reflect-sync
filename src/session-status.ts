@@ -8,6 +8,7 @@ import {
 import { type Database } from "./db.js";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
 import { deserializeIgnoreRules } from "./ignore.js";
+import { inheritedOption } from "./cli-options.js";
 
 type AnyRow = Record<string, any>;
 
@@ -251,73 +252,81 @@ export function registerSessionStatus(sessionCmd: Command) {
     .command("status")
     .description("show runtime status of a sync session")
     .argument("<id-or-name>", "session id or name")
-    .addOption(
-      new Option("--session-db <file>", "path to sessions database").default(
-        getSessionDbPath(),
-      ),
-    )
+    .addOption(new Option("--session-db <file>", "path to sessions database"))
     .option("--json", "output JSON instead of human text", false)
-    .action((idArg: string, opts: { sessionDb: string; json?: boolean }) => {
-      const ref = idArg.trim();
-      const row = resolveSessionRow(opts.sessionDb, ref);
-      if (!row) {
-        console.error(`session status: session '${ref}' not found`);
-        process.exit(1);
-      }
-      const id = row.id;
-      const db = ensureSessionDb(opts.sessionDb);
-      try {
-        const sess = getSession(db, id);
-        if (!sess) {
+    .action(
+      (
+        idArg: string,
+        opts: { sessionDb: string; json?: boolean },
+        command: Command,
+      ) => {
+        opts.sessionDb = inheritedOption(
+          command,
+          "sessionDb",
+          getSessionDbPath(),
+        );
+        const ref = idArg.trim();
+        const row = resolveSessionRow(opts.sessionDb, ref);
+        if (!row) {
           console.error(`session status: session '${ref}' not found`);
           process.exit(1);
         }
-        const labels = tryGetLabels(db, id);
-        const state = getState(db, id);
-        const lastHb = getLastHeartbeat(db, id);
-        const ignoreRules = deserializeIgnoreRules(sess.ignore_rules);
+        const id = row.id;
+        const db = ensureSessionDb(opts.sessionDb);
+        try {
+          const sess = getSession(db, id);
+          if (!sess) {
+            console.error(`session status: session '${ref}' not found`);
+            process.exit(1);
+          }
+          const labels = tryGetLabels(db, id);
+          const state = getState(db, id);
+          const lastHb = getLastHeartbeat(db, id);
+          const ignoreRules = deserializeIgnoreRules(sess.ignore_rules);
 
-        if (opts.json) {
-          const { health, reason } = computeHealth(state, lastHb);
-          const out = {
-            session: {
+          if (opts.json) {
+            const { health, reason } = computeHealth(state, lastHb);
+            const out = {
               id,
-              name: sess.name ?? null,
-              labels,
-              config: {
-                alpha: {
-                  host: sess.alpha_host ?? null,
-                  port: sess.alpha_port ?? null,
-                  root: sess.alpha_root ?? null,
-                  db: sess.alpha_db ?? null,
-                  alpha_remote_db: sess.alpha_remote_db,
+              session: {
+                id,
+                name: sess.name ?? null,
+                labels,
+                config: {
+                  alpha: {
+                    host: sess.alpha_host ?? null,
+                    port: sess.alpha_port ?? null,
+                    root: sess.alpha_root ?? null,
+                    db: sess.alpha_db ?? null,
+                    alpha_remote_db: sess.alpha_remote_db,
+                  },
+                  beta: {
+                    host: sess.beta_host ?? null,
+                    port: sess.beta_port ?? null,
+                    root: sess.beta_root ?? null,
+                    db: sess.beta_db ?? null,
+                    beta_remote_db: sess.beta_remote_db,
+                  },
+                  baseDb: sess.base_db ?? null,
+                  prefer: sess.prefer ?? null,
+                  createdAt: sess.created_at ?? null,
+                  ignoreRules,
                 },
-                beta: {
-                  host: sess.beta_host ?? null,
-                  port: sess.beta_port ?? null,
-                  root: sess.beta_root ?? null,
-                  db: sess.beta_db ?? null,
-                  beta_remote_db: sess.beta_remote_db,
+                sync: {
+                  lastCleanAt: sess.last_clean_sync_at ?? null,
                 },
-                baseDb: sess.base_db ?? null,
-                prefer: sess.prefer ?? null,
-                createdAt: sess.created_at ?? null,
-                ignoreRules,
               },
-              sync: {
-                lastCleanAt: sess.last_clean_sync_at ?? null,
-              },
-            },
-            state: state ?? null,
-            lastHeartbeat: lastHb ?? null,
-            health: { status: health, reason },
-          };
-          console.log(JSON.stringify(out, null, 2));
-        } else {
-          console.log(tableOutput(id, sess, labels, state, lastHb));
+              state: state ?? null,
+              lastHeartbeat: lastHb ?? null,
+              health: { status: health, reason },
+            };
+            console.log(JSON.stringify(out, null, 2));
+          } else {
+            console.log(tableOutput(id, sess, labels, state, lastHb));
+          }
+        } finally {
+          db.close();
         }
-      } finally {
-        db.close();
-      }
-    });
+      },
+    );
 }

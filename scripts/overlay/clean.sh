@@ -8,7 +8,7 @@ sudo rm -rf "$root" "$upperdir" "$upperdir2" "$workdir"
 # work around HORRIBLE bug
 rm -f $HOME/.local/share/reflect-sync/beta.db
 
-reflect terminate o
+reflect sync remove --stop o
 
 # remove custom env var config
 reflect daemon restart

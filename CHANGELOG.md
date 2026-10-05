@@ -3,6 +3,17 @@
 All notable changes to ReflectSync are recorded here. The project follows
 semantic versioning while its public interfaces remain pre-1.0.
 
+## [0.17.0] - Unreleased
+
+- Move all sync commands under `reflect sync`; replace immediate `sync ID`
+  with `sync flush ID`. No top-level sync aliases remain.
+- Standardize stop/remove semantics; `remove --stop` explicitly permits
+  stopping active work, and failed stops retain configuration and exit nonzero.
+- Add forward start/stop/restart/status and consistent management JSON output.
+- Separate Jupyter target/environment/discovery commands and add persistent
+  local session IDs while retaining remote UUIDs. Add stopped-session removal.
+- Support explicit first-use SSH trust and a versioned CoCalc tools baseline.
+
 ## [0.16.0] - 2026-09-02
 
 ### Added

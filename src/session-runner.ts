@@ -27,6 +27,7 @@ export function spawnSchedulerForSession(
   const launcher = resolveSelfLaunch();
   const args: string[] = [
     ...launcher.args,
+    "sync",
     "scheduler",
     "--alpha-root",
     row.alpha_root,

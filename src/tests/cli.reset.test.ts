@@ -16,7 +16,7 @@ import { newSession } from "../session-manage.js";
 
 const { mkdtemp, mkdir, rm, stat } = fs;
 
-describe("reflect reset CLI", () => {
+describe("reflect sync reset CLI", () => {
   let previousHome: string | undefined;
   let tmpHome: string;
   let sessionDbPath: string;
@@ -99,10 +99,18 @@ describe("reflect reset CLI", () => {
     program.option("--session-db <file>", "path to session database");
     program.option("-A, --advanced", "show advanced commands", false);
     program.option("--dry-run", "do not modify files", false);
-    registerSessionCommands(program);
+    registerSessionCommands(program.command("sync"));
 
     await program.parseAsync(
-      ["node", "reflect", "--session-db", sessionDbPath, "reset", sessionName],
+      [
+        "node",
+        "reflect",
+        "--session-db",
+        sessionDbPath,
+        "sync",
+        "reset",
+        sessionName,
+      ],
       { from: "node" },
     );
 

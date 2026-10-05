@@ -36,6 +36,8 @@ try {
     "package/dist/index.d.ts",
     "package/LICENSE.txt",
     "package/README.md",
+    "package/docs/cli-contract.md",
+    "package/docs/jupyter.md",
     "package/CHANGELOG.md",
     "package/RELEASING.md",
   ];

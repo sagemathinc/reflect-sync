@@ -1,0 +1,173 @@
+# Remote Jupyter Kernels
+
+Reflect can register a standard local Jupyter kernelspec backed by a Jupyter
+kernel on a remote Linux machine. Only SSH is exposed; there is no remote
+Jupyter web server, Node runtime, or CoCalc runtime.
+
+## Setup
+
+Passwordless SSH and verified host keys must already work from the machine
+running Jupyter. Use an SSH alias to configure the hostname, account, key, port,
+and jump hosts. A changing VM IP should be addressed through its stable DNS name.
+Reflect never disables host-key checking or forwards your SSH agent.
+
+For explicit first-use trust without an interactive terminal, run
+`reflect jupyter discover --host my-vm --trust-new-host`. This records the first
+observed key using OpenSSH's `accept-new` policy; it does not independently
+verify the server's identity. Changed known keys are rejected. Subsequent
+discovery and kernel commands continue to require a known matching key.
+
+## Discovery And Other Languages
+
+```sh
+reflect jupyter ssh-targets
+reflect jupyter discover --host my-vm
+reflect jupyter discover --host my-vm --search-path /opt/env/share/jupyter/kernels
+reflect jupyter target add bash --host my-vm \
+  --kernel /opt/env/share/jupyter/kernels/bash/kernel.json
+```
+
+`ssh-targets` enumerates concrete Host aliases and Includes without evaluating
+Match exec. `probe` checks SSH, then returns JSON with GPU status, kernelspecs,
+managed environments, warnings, and an available local target name. It does not
+install software or launch kernels. Unknown/failed hardware probes are distinct
+from confirmed absence. Python 3 is required for discovery and supervision,
+but the selected kernel may use any language.
+
+Discovery merges Jupyter's reported catalog, standard data directories and
+Reflect-managed environments. Additional search paths cover kernels in other
+virtual environments; this is not an exhaustive disk scan. `--kernel` preserves
+the remote kernelspec's argv, env, language, resource directory, and interrupt
+mode. It checks the executable and connection-file argument before registration;
+the client verifies readiness at launch. Existing kernels require no recipe
+installation. The Python and PyTorch recipes below are conveniences, not a
+restriction to Python kernels.
+
+Local kernel names cannot be overwritten. Compatible, recipe-marked managed
+environments can be reused; unknown or incompatible environment names cannot.
+CoCalc uses the structured probe output to suggest names and offer GPU setup only
+when a supported NVIDIA GPU/driver has been positively identified.
+
+## Python Recipes
+
+```sh
+reflect jupyter target add gpu --host my-vm --environment teaching
+jupyter console --kernel reflect-gpu
+```
+
+`setup` downloads pinned uv 0.8.22 with a compiled-in SHA256, uploads it using a
+second content hash check, and prepares an isolated user-owned environment with
+ipykernel 6.30.1 and ipywidgets 8.1.7. Linux x86_64 and aarch64 bootstrap artifacts
+are provided; the live validation environment is Ubuntu 24.04 x86_64.
+No sudo or system package modifications occur. Python 3 is used if present;
+otherwise uv installs a private Python 3.12.11 runtime. Preparation requires HTTPS
+access to GitHub and the Python package index. A local trusted uv binary for the
+remote architecture may be supplied with `--uv /absolute/path`.
+
+To retain an existing framework/CUDA environment without modifying it:
+
+```sh
+reflect jupyter target add gpu --host my-vm \
+  --python /home/user/gpu/bin/python
+```
+
+The selected Python must already contain ipykernel and jupyter_client. Setup
+performs a real local-on-VM Jupyter handshake before registering it. GPU drivers
+and frameworks are separate from kernel preparation. An ordinary Ubuntu CPU
+image plus ipykernel is not a GPU software installation.
+
+On a VM with working NVIDIA drivers, prepare and validate the supported PyTorch
+recipe explicitly (a multi-GB download):
+
+```sh
+reflect jupyter target add gpu --host my-vm \
+  --environment pytorch --recipe pytorch-cu128
+```
+
+This installs PyTorch 2.8.0 with CUDA 12.8 wheels and NumPy 2.2.6. It performs
+a CUDA matrix multiplication before publishing the environment. Use a new
+environment name when changing recipes; existing environments are not silently
+upgraded. See [PyTorch's release instructions](https://pytorch.org/get-started/previous-versions/#v280).
+
+`prepare` and `register` are also separate commands. `kernels --host my-vm` lists
+Reflect-managed environments; arbitrary existing interpreters can be registered
+by absolute path. `targets` and `sessions` emit JSON. Setup emits the installed
+kernel name, target and paths as JSON.
+
+## Lifecycle
+
+Like `reflect sync list` and `reflect forward list`, Jupyter commands default to
+human-readable output using the same table style. Use `--json` for automation:
+
+```sh
+reflect jupyter list
+reflect jupyter list --json
+reflect jupyter targets
+reflect jupyter discover --host my-vm --json
+reflect jupyter status SESSION_ID --json
+```
+
+The list reads local session records without
+contacting each VM: `unverified` means that a remote status check is needed,
+not that the kernel is known to be running. Use `status SESSION_ID` to check.
+All management commands support `--json`; `launch` is the foreground kernel
+process and does not emit a management result.
+
+The kernelspec launches `reflect jupyter launch` in the foreground. It honors the
+caller's signed loopback TCP connection file and forwards all five Jupyter ports.
+The original descriptor is never replaced or removed. Each launch creates a
+separate session with independent remote ports and signing key. Reflect does not
+parse Jupyter messages, so comms and binary buffers use the same wire protocol.
+
+- SIGINT interrupts the remote kernel process group without killing SSH.
+- Kernelspecs declaring message interruption use the standard control-channel
+  interrupt request in clients that honor `interrupt_mode`, including CoCalc.
+- SIGTERM requests remote termination and waits for confirmation.
+- A lifetime-pipe guardian kills the owned process group if its supervisor dies;
+  it also checks the lease independently.
+- Protocol shutdown is handled by the kernel, whose exit terminates the launcher.
+- SIGKILL cannot be intercepted. The kernel lease expires after 60 seconds by
+  default, even if other Reflect processes remain alive. For forced client-manager
+  restarts that use SIGKILL, the old kernel may remain until this lease expires.
+- SSH is retried for a bounded period; a live remote incarnation is reused, never
+  a new kernel. Check client readiness before submitting new work after reconnect.
+  In-flight work/output may be lost or uncertain; it is never automatically replayed.
+- A VM reboot loses kernel memory and requires an explicit new kernel.
+- Stopping a kernel does not stop or change billing for its VM.
+
+Remove a target with `reflect jupyter target remove gpu`. --stop This disables new
+launches and confirms that its recorded sessions are stopped before deleting the
+kernelspec/configuration. It does not delete remote environments or stop the VM.
+If SSH is unavailable, removal stays disabled and reports an error; retry once
+connectivity returns. Admission and removal use a cross-process target lock.
+On unconfirmed SIGTERM cleanup, the launcher waits out its lease before exiting;
+clients that force SIGKILL can still start a replacement before lease expiry.
+
+Session IDs appear on launcher stderr. Diagnostics do not print connection keys.
+Use `reflect jupyter status ID`, `interrupt ID`, and `stop ID` from the same local
+account. Status strips connection credentials. Private local session records live
+under `~/.local/share/reflect/jupyter` (override with `REFLECT_JUPYTER_HOME`), and
+the supervisor/environment/session files are under the same path on the VM.
+
+## Tests
+
+The following explicitly opt-in scripts use a registered kernelspec and only
+create synthetic kernels, cleaning up their own sessions:
+
+```sh
+python3 scripts/test-jupyter-client.py reflect-gpu
+python3 scripts/test-jupyter-multikernel.py reflect-gpu
+python3 scripts/test-jupyter-lease.py gpu
+python3 scripts/test-jupyter-lease.py gpu supervisor
+python3 scripts/test-jupyter-lease.py gpu kernel
+python3 scripts/test-jupyter-removal.py gpu
+python3 scripts/test-jupyter-startup-failures.py gpu
+python3 scripts/test-jupyter-gpu.py reflect-gpu
+python3 scripts/test-jupyter-bash.py reflect-bash
+```
+
+These cover execution, completions, inspection, stdin, errors/rich output,
+interrupt, restart, independent kernels, binary comms, widget initialization,
+tunnel reconnect, and abrupt launcher death. They do not constitute validation
+of every notebook frontend, GPU framework, VM provider, or file-sharing workflow.
+File synchronization remains independent of kernel transport.

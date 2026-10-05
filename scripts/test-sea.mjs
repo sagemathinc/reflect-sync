@@ -73,7 +73,7 @@ try {
     path.join(scanRoot, "sea-smoke.txt"),
     "SEA functional smoke\n",
   );
-  run(["scan", "--root", scanRoot, "--db", scanDatabase]);
+  run(["sync", "scan", "--root", scanRoot, "--db", scanDatabase]);
   if ((await stat(scanDatabase)).size === 0) {
     throw new Error("SEA scan did not create a database");
   }

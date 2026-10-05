@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import { AsciiTable3, AlignmentEnum } from "ascii-table3";
-import { spawnSync } from "node:child_process";
 import {
   ensureSessionDb,
   getSessionDbPath,
@@ -10,8 +9,14 @@ import {
 import {
   createForward,
   listForwards,
-  terminateForward,
+  stopForward,
+  startForward,
+  removeForward,
 } from "./forward-manage.js";
+import { batch, output } from "./cli-output.js";
+import { isProcessAlive } from "./process-lifecycle.js";
+import { inheritedOption } from "./cli-options.js";
+import { withResourceLock } from "./resource-lock.js";
 import { ConsoleLogger } from "./logger.js";
 import { ensureDaemonRunning } from "./session-daemon.js";
 
@@ -25,18 +30,20 @@ function resolveSessionDb(
     return path;
   };
   if (opts.sessionDb) return ensure(opts.sessionDb);
-  const globals = command.optsWithGlobals() as { sessionDb?: string };
-  if (globals.sessionDb) return ensure(globals.sessionDb);
-  return ensure(getSessionDbPath());
+  return ensure(inheritedOption(command, "sessionDb", getSessionDbPath()));
 }
 
 export function registerForwardCommands(program: Command) {
   const forward = program
     .command("forward")
-    .description("Manage SSH port forwards");
+    .description("Manage SSH port forwards")
+    .option("--session-db <file>", "override path to sessions.db")
+    .option("--log-level <level>", "log verbosity");
 
   forward
     .command("create")
+    .option("--json", "emit JSON instead of human text")
+    .option("--stopped", "create without starting", false)
     .description("Create an SSH port forward")
     .argument("<left>", "left endpoint (host:port or :port)")
     .argument(
@@ -45,16 +52,11 @@ export function registerForwardCommands(program: Command) {
     )
     .option("-n, --name <name>", "friendly name")
     .option("--compress", "enable SSH compression", false)
-    .option(
-      "--session-db <file>",
-      "override path to sessions.db",
-      getSessionDbPath(),
-    )
+    .option("--session-db <file>", "override path to sessions.db")
     .action(
       async (left: string, right: string, opts: any, command: Command) => {
         const sessionDb = resolveSessionDb(command, opts);
-        const root = command.parent?.parent ?? command.parent ?? command;
-        const level = (root.optsWithGlobals?.() as any)?.logLevel ?? "info";
+        const level = inheritedOption(command, "logLevel", "info");
         const logger = new ConsoleLogger(level);
         try {
           const id = await createForward({
@@ -63,11 +65,18 @@ export function registerForwardCommands(program: Command) {
             left,
             right,
             compress: !!opts.compress,
+            stopped: !!opts.stopped,
             logger,
           });
           ensureDaemonRunning(sessionDb, logger.child("daemon"));
-          console.log(
-            `created forward ${id}${opts.name ? ` (${opts.name})` : ""}`,
+          output(
+            {
+              id,
+              name: opts.name ?? null,
+              desired_state: opts.stopped ? "stopped" : "running",
+            },
+            opts.json,
+            "Forward Created",
           );
         } catch (err) {
           console.error(`failed to create forward: ${(err as Error).message}`);
@@ -80,11 +89,7 @@ export function registerForwardCommands(program: Command) {
     .command("list")
     .description("List SSH port forwards")
     .argument("[id-or-name...]", "forward id(s) or name(s) to list")
-    .option(
-      "--session-db <file>",
-      "override path to sessions.db",
-      getSessionDbPath(),
-    )
+    .option("--session-db <file>", "override path to sessions.db")
     .option("--json", "emit JSON instead of a table", false)
     .action((refs: string[], opts: any, command: Command) => {
       const sessionDb = resolveSessionDb(command, opts);
@@ -115,8 +120,7 @@ export function registerForwardCommands(program: Command) {
 
       rows = rows.map((row) => {
         if (row.actual_state === "running" && row.monitor_pid) {
-          const check = spawnSync("ps", ["-p", String(row.monitor_pid)]);
-          if (check.status !== 0) {
+          if (!isProcessAlive(row.monitor_pid)) {
             return {
               ...row,
               actual_state: "error",
@@ -179,36 +183,72 @@ export function registerForwardCommands(program: Command) {
     });
 
   forward
-    .command("terminate")
-    .description("Terminate a forward")
-    .argument("<id-or-name...>", "forward id(s) or name(s)")
-    .option(
-      "--session-db <file>",
-      "override path to sessions.db",
-      getSessionDbPath(),
-    )
-    .action((refs: string[], opts: any, command: Command) => {
-      const sessionDb = resolveSessionDb(command, opts);
-      const targets = refs.map((r) => r.trim()).filter(Boolean);
-      if (!targets.length) {
-        console.error("forward terminate: at least one id or name is required");
-        process.exit(1);
-      }
-
-      let hadError = false;
-      for (const ref of targets) {
-        const row = resolveForwardRow(sessionDb, ref);
-        if (!row) {
-          console.error(`forward '${ref}' not found`);
-          hadError = true;
-          continue;
-        }
-        terminateForward(sessionDb, row.id);
-        console.log(`terminated forward ${row.name ?? row.id}`);
-      }
-
-      if (hadError) {
-        process.exitCode = 1;
-      }
+    .command("status")
+    .argument("<id-or-name>", "forward ID or name")
+    .option("--session-db <file>", "override path to sessions.db")
+    .option("--json", "emit JSON instead of human text")
+    .action((ref: string, opts, command: Command) => {
+      const row = resolveForwardRow(resolveSessionDb(command, opts), ref);
+      if (!row) throw Error(`Forward '${ref}' not found`);
+      output(
+        {
+          ...row,
+          actual_state: isProcessAlive(row.monitor_pid)
+            ? "running"
+            : row.desired_state === "stopped"
+              ? "stopped"
+              : "error",
+        },
+        opts.json,
+        "Forward Status",
+      );
     });
+  for (const operation of ["start", "stop", "restart", "remove"] as const) {
+    const cmd = forward
+      .command(operation)
+      .argument("<id-or-name...>", "forward IDs or names")
+      .option("--session-db <file>", "override path to sessions.db")
+      .option("--json", "emit JSON instead of human text");
+    if (operation === "remove")
+      cmd.option("--stop", "stop active work before removal");
+    cmd.action(async (refs: string[], opts, command: Command) => {
+      const sessionDb = resolveSessionDb(command, opts);
+      await batch(refs, opts.json, async (ref) => {
+        const selected = resolveForwardRow(sessionDb, ref);
+        if (!selected) throw Error(`Forward '${ref}' not found`);
+        return await withResourceLock(
+          sessionDb,
+          "forward",
+          selected.id,
+          async () => {
+            const row = resolveForwardRow(sessionDb, String(selected.id));
+            if (!row) throw Error(`Forward '${ref}' not found`);
+            if (operation === "remove") {
+              await removeForward(sessionDb, row.id, opts.stop);
+              return { id: row.id, removed: true };
+            }
+            if (operation === "stop" || operation === "restart")
+              await stopForward(sessionDb, row.id);
+            if (operation === "start" || operation === "restart") {
+              await startForward(sessionDb, row.id);
+              ensureDaemonRunning(
+                sessionDb,
+                new ConsoleLogger(inheritedOption(command, "logLevel", "info")),
+              );
+            }
+            const current = resolveForwardRow(sessionDb, String(row.id))!;
+            return {
+              id: row.id,
+              state: isProcessAlive(current.monitor_pid)
+                ? "running"
+                : current.desired_state === "stopped"
+                  ? "stopped"
+                  : "error",
+              pid: current.monitor_pid,
+            };
+          },
+        );
+      });
+    });
+  }
 }

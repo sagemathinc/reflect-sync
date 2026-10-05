@@ -15,7 +15,7 @@ import { newSession } from "../session-manage.js";
 
 const { mkdtemp, mkdir, rm } = fs;
 
-describe("reflect edit CLI", () => {
+describe("reflect sync edit CLI", () => {
   let previousHome: string | undefined;
   let tmpHome: string;
   let sessionDbPath: string;
@@ -77,7 +77,7 @@ describe("reflect edit CLI", () => {
       program.option("--session-db <file>", "path to session database");
       program.option("-A, --advanced", "show advanced commands", false);
       program.option("--dry-run", "do not modify files", false);
-      registerSessionCommands(program);
+      registerSessionCommands(program.command("sync"));
       return program;
     };
 
@@ -87,6 +87,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         sessionName,
         "--compress",
@@ -111,6 +112,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         sessionName,
         "--name",
@@ -156,7 +158,7 @@ describe("reflect edit CLI", () => {
     program.option("--session-db <file>", "path to session database");
     program.option("-A, --advanced", "show advanced commands", false);
     program.option("--dry-run", "do not modify files", false);
-    registerSessionCommands(program);
+    registerSessionCommands(program.command("sync"));
 
     await program.parseAsync(
       [
@@ -164,6 +166,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         "hash-reset",
         "--hash",
@@ -190,7 +193,7 @@ describe("reflect edit CLI", () => {
       program.option("--session-db <file>", "path to session database");
       program.option("-A, --advanced", "show advanced commands", false);
       program.option("--dry-run", "do not modify files", false);
-      registerSessionCommands(program);
+      registerSessionCommands(program.command("sync"));
       return program;
     };
 
@@ -200,6 +203,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "create",
         alphaRoot,
         betaRoot,
@@ -222,6 +226,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         "flag-test",
         "--enable-hot-sync",
@@ -238,6 +243,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         "flag-test",
         "--disable-hot-sync",
@@ -255,6 +261,7 @@ describe("reflect edit CLI", () => {
         "reflect",
         "--session-db",
         sessionDbPath,
+        "sync",
         "edit",
         "flag-test",
         "--disable-full-sync",
