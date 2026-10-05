@@ -13,6 +13,11 @@ semantic versioning while its public interfaces remain pre-1.0.
 - Separate Jupyter target/environment/discovery commands and add persistent
   local session IDs while retaining remote UUIDs. Add stopped-session removal.
 - Support explicit first-use SSH trust and a versioned CoCalc tools baseline.
+- Add `forward create --remote-bind <host>` to choose where the remote side of
+  a remote -> local forward listens (e.g. `127.0.0.1` for loopback only). The
+  value is validated; IPv6 literals are bracketed for ssh.
+- Forwards run ssh with `ExitOnForwardFailure=yes`, so a listener that cannot
+  be bound fails visibly and is retried instead of idling as "running".
 
 ## [0.16.0] - 2026-09-02
 

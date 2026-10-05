@@ -243,9 +243,19 @@ Reflect can keep long-lived SSH tunnels alive via the daemon supervisor:
 ```bash
 reflect forward create localhost:8443 user@host:443    # local -> remote
 reflect forward create user@host:2222:22 :2022         # remote -> local
+reflect forward create user@host:9222 :9333 --remote-bind 127.0.0.1  # remote -> local, loopback only
 reflect forward list                                   # ASCII table with live PIDs & ssh args
-reflect forward terminate <id-or-name>
+reflect forward remove <id-or-name> --stop
 ```
+
+The first endpoint is the listener. **A remote -> local forward listens on
+all interfaces of the remote host by default** (like mutagen), whenever the
+remote sshd allows it (OpenSSH `GatewayPorts clientspecified`, dropbear
+`-a`). Anyone who can reach that host can then connect to the forwarded
+local service. Pass `--remote-bind 127.0.0.1` (or `[::1]`) so only processes
+on the remote host can reach it; `--remote-bind` also accepts a hostname or
+`*`. Forwards exit and are retried when the listener cannot be bound (for
+example, the port is already in use).
 
 Each forward row stores its `ssh` invocation. The daemon \(`reflect daemon start`\) keeps the background `ssh` process alive and restarts it if necessary. `reflect forward list` surfaces the recorded PID and command, and marks forwards as `error` when the underlying process has disappeared.
 
