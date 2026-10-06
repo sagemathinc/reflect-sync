@@ -16,6 +16,7 @@ overrides:
   flatted@<3.4.2: 3.4.2
   "picomatch@>=4.0.0 <5": 4.0.7
   "serialize-javascript@>=5.0.0 <7.0.5": 7.0.5
+  "source-map-js@>=1.0.0 <1.2.2": 1.2.2
 
 packages:
   - .
