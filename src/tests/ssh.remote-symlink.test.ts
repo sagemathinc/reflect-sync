@@ -53,7 +53,14 @@ describeIfSsh("SSH remote sync – symlink moves", () => {
 
   afterAll(async () => {
     if (!KEEP_TMP && tmp) {
-      await fsp.rm(tmp, { recursive: true, force: true });
+      // The remote side can still be finishing writes for a moment after
+      // stopScheduler returns; rm retries ENOTEMPTY/EBUSY.
+      await fsp.rm(tmp, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 

@@ -44,7 +44,14 @@ describeIfSsh("SSH remote sync – bulk image dataset", () => {
 
   afterAll(async () => {
     if (tmp) {
-      await fsp.rm(tmp, { recursive: true, force: true });
+      // The remote side can still be finishing writes for a moment after
+      // stopScheduler returns; rm retries ENOTEMPTY/EBUSY.
+      await fsp.rm(tmp, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 
