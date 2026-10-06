@@ -20,7 +20,7 @@ importers:
         version: 3.0.1
       ascii-table3:
         specifier: ^1.0.3
-        version: 1.0.3
+        version: 1.0.4
       chokidar:
         specifier: ^5.0.0
         version: 5.0.0
@@ -34,8 +34,8 @@ importers:
         specifier: 4.1.2
         version: 4.1.2
       ssh-config:
-        specifier: 5.2.1
-        version: 5.2.1
+        specifier: 5.3.0
+        version: 5.3.0
     devDependencies:
       '@commander-js/extra-typings':
         specifier: ^15.0.0
@@ -784,8 +784,8 @@ packages:
   ajv@6.14.0:
     resolution: {integrity: sha512-IWrosm/yrn43eiKqkfkHis7QioDleaXQHdDVPKg0FSwwd/DuvyX79TZnFOnYpB7dcsFAMmtFztZuXPDvSePkFw==}
 
-  ascii-table3@1.0.3:
-    resolution: {integrity: sha512-54a1CN1ldhV+nKP36cYBdiWYNl6ETvdZKUqeqR0Eoq6xpjD/Z5zSwXfw3qW605H1qPwVuiZqfSMAP6SMKfj24g==}
+  ascii-table3@1.0.4:
+    resolution: {integrity: sha512-EkgkeIYO7RaDUo7JpmI1yrFxGVYiyt30OdU11wgnxPRYIBWqSaSXVKTZ+3yy6NZUHSlqNISE+PrOxVXaxoVBaQ==}
     engines: {node: '>=11.14.0'}
 
   assertion-error@2.0.1:
@@ -1264,9 +1264,9 @@ packages:
     resolution: {integrity: sha512-UjgapumWlbMhkBgzT7Ykc5YXUT46F0iKu8SGXq0bcwP5dz/h0Plj6enJqjz1Zbq2l5WaqYnrVbwWOWMyF3F47g==}
     engines: {node: '>=0.10.0'}
 
-  ssh-config@5.2.1:
-    resolution: {integrity: sha512-czqHa80E1tct44LC6rOuDGB9Pr6M9nfwX88WJkwhEz6IPxgh0Q1dSNEbem9NsUijjd261/QlToTPUFHeYiV/0Q==}
-    engines: {node: '>= 14.13.1'}
+  ssh-config@5.3.0:
+    resolution: {integrity: sha512-JIsoWax2CAJraGLvhXa4e9zfh+/KzoL6SKxjupQywLjGpuigYsZ+5OVmfZo1mBslxehA8kHWwFQ38eotFoLj6Q==}
+    engines: {node: '>= 14.18.0'}
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -1975,7 +1975,7 @@ snapshots:
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
 
-  ascii-table3@1.0.3:
+  ascii-table3@1.0.4:
     dependencies:
       printable-characters: 1.0.42
 
@@ -2453,7 +2453,7 @@ snapshots:
 
   source-map@0.6.1: {}
 
-  ssh-config@5.2.1: {}
+  ssh-config@5.3.0: {}
 
   stackback@0.0.2: {}
 
