@@ -12,7 +12,10 @@ function resolveRemoteTargetHost(host: string): string {
 }
 
 export function buildSshArgs(row: ForwardRow): string[] {
-  const args: string[] = ["-N"]; // no shell, just forward
+  // -N: no shell, just forward.  ExitOnForwardFailure: if the listener cannot
+  // be bound (port in use, bind refused), exit instead of idling as a
+  // "running" forward that forwards nothing; the daemon retries.
+  const args: string[] = ["-N", "-o", "ExitOnForwardFailure=yes"];
   if (row.ssh_port) {
     args.push("-p", String(row.ssh_port));
   }

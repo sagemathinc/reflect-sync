@@ -1,3 +1,4 @@
+import { isIPv4, isIPv6 } from "node:net";
 import {
   createForwardSession,
   deleteForwardSession,
@@ -19,7 +20,39 @@ export interface ForwardCreateOptions {
   right: string;
   compress?: boolean;
   stopped?: boolean;
+  // Address the remote sshd listens on for remote -> local forwards (ssh -R).
+  remoteBind?: string;
   logger?: Logger;
+}
+
+// Stored remote_host for new remote -> local forwards without --remote-bind:
+// loopback only, like plain `ssh -R`.  Rows created before 0.17 stored "",
+// which buildSshArgs still maps to all interfaces (0.0.0.0).
+const DEFAULT_REMOTE_BIND = "127.0.0.1";
+
+const HOSTNAME =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+// Validate a --remote-bind value and return it in the form used inside ssh's
+// colon-separated -R specification: IPv4, a hostname, `*` (all interfaces),
+// or an IPv6 literal, which must be bracketed there.  Anything else is
+// rejected rather than passed through, since stray ':' or brackets would
+// change the meaning of the specification.
+export function normalizeRemoteBind(value: string): string {
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    throw Error("Invalid --remote-bind: control characters are not allowed");
+  }
+  const bind = value.trim();
+  if (!bind) throw Error("--remote-bind must not be empty");
+  if (bind === "*" || isIPv4(bind) || HOSTNAME.test(bind)) return bind;
+  const unbracketed =
+    bind.startsWith("[") && bind.endsWith("]") ? bind.slice(1, -1) : bind;
+  if (isIPv6(unbracketed) && !unbracketed.includes("%")) {
+    return `[${unbracketed}]`;
+  }
+  throw Error(
+    `Invalid --remote-bind '${value}': expected an IPv4 or IPv6 address, a hostname, or *`,
+  );
 }
 
 export interface ParsedEndpoint {
@@ -120,6 +153,7 @@ export async function createForward({
   right,
   compress,
   stopped = false,
+  remoteBind,
   logger,
 }: ForwardCreateOptions): Promise<number> {
   if (name && /^\d+$/.test(name.trim()))
@@ -127,6 +161,11 @@ export async function createForward({
   const leftEp = parseEndpoint(left);
   const rightEp = parseEndpoint(right);
   const direction = detectDirection(leftEp, rightEp);
+  if (remoteBind !== undefined && direction !== "remote_to_local") {
+    throw Error(
+      "--remote-bind only applies to remote -> local forwards (remote endpoint first)",
+    );
+  }
 
   let sshHost: string;
   let sshPort: number | null;
@@ -155,7 +194,10 @@ export async function createForward({
     sshPort = remote.sshPort ?? null;
     localHost = local.host;
     localPort = local.port;
-    remoteHost = "";
+    remoteHost =
+      remoteBind === undefined
+        ? DEFAULT_REMOTE_BIND
+        : normalizeRemoteBind(remoteBind);
     remotePort = remote.port;
   }
 
