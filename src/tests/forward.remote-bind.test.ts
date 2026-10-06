@@ -62,6 +62,29 @@ describe("forward --remote-bind", () => {
     }
   });
 
+  it("defaults new remote -> local forwards to loopback", async () => {
+    const id = await createForward({
+      sessionDb,
+      left: "user@example.com:9222",
+      right: ":9333",
+    });
+    const row = loadForwardById(sessionDb, id)!;
+    expect(row.remote_host).toBe("127.0.0.1");
+    expect(buildSshArgs(row)).toContain("127.0.0.1:9222:127.0.0.1:9333");
+  });
+
+  it("listens on all interfaces only when asked", async () => {
+    const id = await createForward({
+      sessionDb,
+      left: "user@example.com:9222",
+      right: ":9333",
+      remoteBind: "0.0.0.0",
+    });
+    expect(buildSshArgs(loadForwardById(sessionDb, id)!)).toContain(
+      "0.0.0.0:9222:127.0.0.1:9333",
+    );
+  });
+
   it("stores the normalized bind for remote -> local forwards", async () => {
     const id = await createForward({
       sessionDb,

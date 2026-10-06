@@ -25,9 +25,10 @@ export interface ForwardCreateOptions {
   logger?: Logger;
 }
 
-// Stored remote_host for new remote -> local forwards without --remote-bind;
-// "" means all interfaces (buildSshArgs maps it to 0.0.0.0).
-const DEFAULT_REMOTE_BIND = "";
+// Stored remote_host for new remote -> local forwards without --remote-bind:
+// loopback only, like plain `ssh -R`.  Rows created before 0.17 stored "",
+// which buildSshArgs still maps to all interfaces (0.0.0.0).
+const DEFAULT_REMOTE_BIND = "127.0.0.1";
 
 const HOSTNAME =
   /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;

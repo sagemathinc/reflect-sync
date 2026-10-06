@@ -54,7 +54,7 @@ export function registerForwardCommands(program: Command) {
     .option("--compress", "enable SSH compression", false)
     .option(
       "--remote-bind <host>",
-      "address the remote sshd listens on for remote -> local forwards: 127.0.0.1 for loopback only, * for all interfaces",
+      "address the remote sshd listens on for remote -> local forwards (default 127.0.0.1, loopback only; 0.0.0.0 or * for all interfaces)",
     )
     .option("--session-db <file>", "override path to sessions.db")
     .action(
