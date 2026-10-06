@@ -13,6 +13,8 @@ semantic versioning while its public interfaces remain pre-1.0.
 - Separate Jupyter target/environment/discovery commands and add persistent
   local session IDs while retaining remote UUIDs. Add stopped-session removal.
 - Support explicit first-use SSH trust and a versioned CoCalc tools baseline.
+- Require Node.js 22.13 or newer (was 22.12), the minimum the pnpm 11
+  toolchain runs on, so CI tests the declared floor again.
 
 ## [0.16.0] - 2026-09-02
 
