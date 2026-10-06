@@ -55,7 +55,7 @@
     "sanity": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "files": [
     "bin/*.mjs",

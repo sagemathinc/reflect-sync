@@ -25,7 +25,7 @@ commits or external repository-setting changes made.
 3. **SSH CI complete:** CI configures an ephemeral localhost sshd and requires
    the SSH suite instead of silently accepting an unavailable daemon.
 4. **Repository security files complete:** Actions are commit-SHA pinned with
-   least-privilege permissions; the Node matrix covers 22.12.0, 24, and 26.7.0;
+   least-privilege permissions; the Node matrix covers 22.13.0, 24, and 26.7.0;
    CodeQL, dependency review, Dependabot, scheduled audits, and policy checks
    are present. Admin-only GitHub settings remain in the owner-action list.
 5. **Runtime preflight complete:** `reflect doctor` and `doctor --json` report
