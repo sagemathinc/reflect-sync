@@ -86,7 +86,7 @@
   "dependencies": {
     "@nodelib/fs.walk": "^3.0.1",
     "ascii-table3": "^1.0.3",
-    "chokidar": "^5.0.0",
+    "chokidar": "^6.0.0",
     "commander": "^15.0.0",
     "fast-ignore": "^2.0.0",
     "proper-lockfile": "4.1.2",
