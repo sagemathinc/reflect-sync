@@ -23,11 +23,11 @@ importers:
         specifier: ^1.0.3
         version: 1.0.4
       chokidar:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: ^6.0.0
+        version: 6.0.0
       commander:
         specifier: ^15.0.0
-        version: 15.0.0
+        version: 15.1.0
       fast-ignore:
         specifier: ^2.0.0
         version: 2.0.0
@@ -40,7 +40,7 @@ importers:
     devDependencies:
       '@commander-js/extra-typings':
         specifier: ^15.0.0
-        version: 15.0.0(commander@15.0.0)
+        version: 15.0.0(commander@15.1.0)
       '@rollup/plugin-commonjs':
         specifier: ^29.0.3
         version: 29.0.3(rollup@4.63.1)
@@ -811,12 +811,12 @@ packages:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
 
-  chokidar@5.0.0:
-    resolution: {integrity: sha512-TQMmc3w+5AxjpL8iIiwebF73dRDF4fBIieAqGn9RGCWaEVwQ6Fb2cGe31Yns0RRIzii5goJ1Y7xbMwo1TxMplw==}
-    engines: {node: '>= 20.19.0'}
+  chokidar@6.0.0:
+    resolution: {integrity: sha512-Ec2Z7wpcKBiMpR7DxteoqS/sq5G5d2A4fpxzPv6+fD7xNNdrTghn7L11YwV5EN1B3i72Erc3XVT5FkWIDx90+A==}
+    engines: {node: '>= 22.22'}
 
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
+  commander@15.1.0:
+    resolution: {integrity: sha512-cgnQ88TRrWcC7pVq46RzJVRMktu3W2RcbnoidnfBsl1bmDCBwJS/udcIZpKoCrbAYYaCqsz1yZCVIgbIaU3ddQ==}
     engines: {node: '>=22.12.0'}
 
   commander@2.20.3:
@@ -1452,9 +1452,9 @@ snapshots:
       hashery: 1.5.1
       keyv: 5.6.0
 
-  '@commander-js/extra-typings@15.0.0(commander@15.0.0)':
+  '@commander-js/extra-typings@15.0.0(commander@15.1.0)':
     dependencies:
-      commander: 15.0.0
+      commander: 15.1.0
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
@@ -2000,11 +2000,11 @@ snapshots:
 
   chai@6.2.2: {}
 
-  chokidar@5.0.0:
+  chokidar@6.0.0:
     dependencies:
       readdirp: 5.1.1
 
-  commander@15.0.0: {}
+  commander@15.1.0: {}
 
   commander@2.20.3: {}
 
